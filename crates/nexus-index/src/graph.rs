@@ -183,6 +183,49 @@ impl GraphStore {
             .map_err(Into::into)
     }
 
+    /// `detect_changes`-equivalent: definitions whose line range overlaps a
+    /// given span in a file (e.g. a git diff hunk).
+    pub fn nodes_overlapping(
+        &self,
+        file_path: &str,
+        start_line: u32,
+        end_line: u32,
+    ) -> Result<Vec<NodeRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, name, qualified_name, file_path, start_line, end_line
+             FROM nodes
+             WHERE file_path = ?1 AND kind != 'File' AND start_line <= ?3 AND end_line >= ?2",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![file_path, start_line, end_line],
+            |row| {
+                Ok(NodeRecord {
+                    id: row.get(0)?,
+                    kind: NodeKind::from_str(&row.get::<_, String>(1)?),
+                    name: row.get(2)?,
+                    qualified_name: row.get(3)?,
+                    file_path: row.get(4)?,
+                    start_line: row.get(5)?,
+                    end_line: row.get(6)?,
+                })
+            },
+        )?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// `get_architecture`-equivalent building block: files ranked by how
+    /// many definitions they contain.
+    pub fn busiest_files(&self, limit: u32) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT file_path, COUNT(*) as cnt FROM nodes
+             WHERE kind != 'File' GROUP BY file_path ORDER BY cnt DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
     /// `trace_call_path`-equivalent: BFS over CALLS edges up to `max_depth`.
     pub fn trace_calls(
         &self,
