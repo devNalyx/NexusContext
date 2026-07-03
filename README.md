@@ -119,8 +119,8 @@ Tree-sitter watcher, knowledge graph construction (nodes/edges in SQLite), CLI f
 **Phase 2 — MCP Implementation** ✅ *(vertical slice done)*
 `listTools`/`callTool` over stdio; `index_repository`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes` all working end-to-end (verified by piping real JSON-RPC messages into the binary, including a `detect_changes` run against this repo's own uncommitted diff). `search_codebase`/`query_memory` correctly degrade with a clear error, since the embeddings pipeline isn't built yet. Remaining: verify against an actual IDE client (e.g. Claude Code, Continue) rather than hand-crafted JSON-RPC. Stretch goal: an `install` subcommand that auto-detects installed agents and wires MCP config for each, rather than requiring manual `.mcp.json` edits.
 
-**Phase 3 — Control API + Desktop GUI**
-Unix socket control API; GTK4/libadwaita app with Dashboard, Search, Projects, Config, Logs views.
+**Phase 3 — Control API + Desktop GUI** ✅ *(vertical slice done)*
+`nexusd` gained explicit `mcp`/`serve` subcommands to resolve the tension between MCP's per-session stdio transport and an always-on daemon. `serve` hosts the Unix-socket control API (`status.get`, `projects.list`/`reindex`, `config.get`/`set`, `search.adhoc`) and now logs to a file instead of stderr, since the GUI's Logs view needs something to tail. The GTK4/libadwaita app (`nexus-gui`) has all five views (Dashboard, Projects, Search, Config, Logs) wired to the control socket and was verified running against a real desktop session. Remaining: exercise the interactive paths (button clicks) rather than just the auto-load-on-open calls, and replace the deprecated `ViewSwitcherTitle` with the `AdwBreakpoint`-based pattern libadwaita 1.4+ recommends.
 
 **Phase 4 — GNOME Shell Integration** *(optional, do only if Phase 3 GUI proves useful)*
 Thin top-bar extension for status + quick search, delegating anything nontrivial to the GTK4 app.
