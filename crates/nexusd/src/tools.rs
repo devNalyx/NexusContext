@@ -93,6 +93,19 @@ pub fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "search_code",
+            "description": "Grep-like full-text search over indexed file content (not symbol names) via SQLite FTS5. Only covers files tree-sitter already parsed (Rust/Python currently), not every file in the repo. Query is matched as a literal phrase.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo_path": { "type": "string" },
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "default": 20 }
+                },
+                "required": ["repo_path", "query"]
+            }
+        },
+        {
             "name": "query_planner",
             "description": "Picks the cheapest retrieval strategy for a query instead of the agent guessing: a specific file goes straight to get_file_context, a single identifier-like token goes to search_graph, and a descriptive multi-word query goes to semantic search if configured or a keyword-over-the-graph fallback otherwise. Returns which strategy was used alongside the results.",
             "inputSchema": {
@@ -144,6 +157,7 @@ pub fn call(params: Value) -> Result<Value> {
         "get_architecture" => get_architecture(args),
         "detect_changes" => detect_changes(args),
         "detect_dead_code" => detect_dead_code(args),
+        "search_code" => search_code(args),
         "query_planner" => query_planner(args),
         "search_codebase" | "query_memory" => Err(embeddings_unavailable_error()),
         _ => bail!("unknown tool: {name}"),
@@ -321,6 +335,21 @@ fn detect_dead_code(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
     let dead = index::detect_dead_code(&repo_path)?;
     Ok(serde_json::to_string_pretty(&records_to_json(&dead))?)
+}
+
+fn search_code(args: Value) -> Result<String> {
+    let repo_path = repo_path_arg(&args)?;
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing 'query' argument"))?;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as u32;
+
+    let hits = index::search_code(&repo_path, query, limit)?;
+    Ok(serde_json::to_string_pretty(&json!(hits
+        .iter()
+        .map(|h| json!({ "file": h.file_path, "snippet": h.snippet }))
+        .collect::<Vec<_>>()))?)
 }
 
 fn detect_changes(args: Value) -> Result<String> {

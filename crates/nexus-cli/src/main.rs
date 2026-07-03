@@ -89,6 +89,14 @@ enum Command {
     },
     /// Auto-detect MCP-capable agents on this machine and configure `nexusd mcp` for each.
     Install,
+    /// Grep-like full-text search over indexed file content (not symbol names).
+    SearchCode {
+        query: String,
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -238,6 +246,19 @@ fn main() -> Result<()> {
             println!("deleted index for {}", path.display());
         }
         Command::Install => install::run()?,
+        Command::SearchCode {
+            query,
+            project,
+            limit,
+        } => {
+            let hits = index::search_code(&project, &query, limit)?;
+            if hits.is_empty() {
+                println!("no matches for '{query}'");
+            }
+            for hit in hits {
+                println!("{}\n  {}\n", hit.file_path, hit.snippet);
+            }
+        }
     }
 
     Ok(())

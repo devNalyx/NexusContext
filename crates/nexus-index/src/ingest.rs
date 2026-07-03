@@ -59,6 +59,11 @@ fn index_file(path: &Path, language: Language, root: &Path, store: &GraphStore) 
     let tree = language.parse(&source)?;
 
     let file_id = store.insert_node(NodeKind::File, &rel_path, &rel_path, &rel_path, 0, 0)?;
+    // Full-text search only covers files tree-sitter already parsed (i.e.
+    // the languages in `Language::from_path`) - it doesn't walk every file
+    // in the repo independently, so config/doc files outside that set
+    // aren't searchable yet.
+    store.insert_file_content(&rel_path, &String::from_utf8_lossy(&source))?;
 
     let functions = language.extract_functions(&tree, &source)?;
     let types = language.extract_types(&tree, &source)?;

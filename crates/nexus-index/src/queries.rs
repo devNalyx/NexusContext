@@ -1,6 +1,6 @@
 use crate::graph::GraphStore;
 use crate::project::graph_db_path;
-use crate::NodeRecord;
+use crate::{CodeSearchHit, NodeRecord};
 use anyhow::{bail, Result};
 use nexus_core::{Config, EmbeddingsPolicy, Paths};
 use std::collections::HashSet;
@@ -41,6 +41,10 @@ pub fn get_architecture(repo_path: &Path) -> Result<ArchitectureSummary> {
 
 pub fn detect_dead_code(repo_path: &Path) -> Result<Vec<NodeRecord>> {
     open_store(repo_path)?.dead_functions()
+}
+
+pub fn search_code(repo_path: &Path, query: &str, limit: u32) -> Result<Vec<CodeSearchHit>> {
+    open_store(repo_path)?.search_code(query, limit)
 }
 
 pub fn detect_changes(repo_path: &Path) -> Result<Vec<NodeRecord>> {

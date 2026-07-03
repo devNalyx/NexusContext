@@ -68,6 +68,12 @@ pub struct NodeRecord {
     pub end_line: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct CodeSearchHit {
+    pub file_path: String,
+    pub snippet: String,
+}
+
 impl GraphStore {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -99,6 +105,8 @@ impl GraphStore {
             CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
             CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_id, kind);
             CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id, kind);
+            CREATE VIRTUAL TABLE IF NOT EXISTS file_contents_fts
+                USING fts5(file_path UNINDEXED, content);
             ",
         )?;
         Ok(Self { conn })
@@ -108,6 +116,7 @@ impl GraphStore {
     /// incremental edge correctness is flagged as an open risk in the
     /// proposal and deferred past this vertical slice.
     pub fn clear(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM file_contents_fts", [])?;
         self.conn.execute("DELETE FROM edges", [])?;
         self.conn.execute("DELETE FROM nodes", [])?;
         Ok(())
@@ -186,6 +195,38 @@ impl GraphStore {
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+
+    /// Stores a file's raw text for full-text search - separate from the
+    /// symbol graph entirely, since `search_by_name` only ever matched
+    /// symbol names, never file content.
+    pub fn insert_file_content(&self, file_path: &str, content: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO file_contents_fts (file_path, content) VALUES (?1, ?2)",
+            rusqlite::params![file_path, content],
+        )?;
+        Ok(())
+    }
+
+    /// Grep-like search over indexed file content (not symbol names) via
+    /// SQLite FTS5. The query is always treated as a literal phrase (quoted
+    /// and internal quotes escaped) rather than passed through as raw FTS5
+    /// query syntax - safer for arbitrary free-text input, at the cost of
+    /// not exposing FTS5's AND/OR/NOT/prefix operators in this version.
+    pub fn search_code(&self, query: &str, limit: u32) -> Result<Vec<CodeSearchHit>> {
+        let phrase = format!("\"{}\"", query.replace('"', "\"\""));
+        let mut stmt = self.conn.prepare(
+            "SELECT file_path, snippet(file_contents_fts, 1, '>>>', '<<<', ' ... ', 20)
+             FROM file_contents_fts WHERE file_contents_fts MATCH ?1
+             ORDER BY rank LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![phrase, limit], |row| {
+            Ok(CodeSearchHit {
+                file_path: row.get(0)?,
+                snippet: row.get(1)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
 
     /// All nodes in the graph - used by the Obsidian export, which needs
