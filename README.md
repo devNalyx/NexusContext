@@ -67,7 +67,7 @@ The daemon runs as a `systemd --user` service, independent of any GUI. The GUI i
 - `listTools` / `callTool` per spec, newline-delimited JSON-RPC 2.0 over stdio. Logging goes to stderr exclusively - stdout is reserved for the protocol stream.
 - Structural tools (graph-backed, no embeddings required): `index_repository` (build/rebuild the graph for a path - the prerequisite for everything else), `search_graph`, `trace_call_path`, `get_architecture`, `detect_changes`, `get_file_context` (plain file/line-range read, no embeddings involved either).
 - Retrieval tools (embedding-backed, degrade gracefully with a clear error if no endpoint configured): `search_codebase` (semantic), `query_memory`.
-- `Query Planner` tool (Phase-5 item below) decides graph query vs. vector search vs. direct file read to cut token spend — now a three-way choice instead of two.
+- `query_planner` tool decides file-read vs. graph search vs. keyword-fallback-graph-search (semantic search once the embeddings pipeline exists) to cut token spend - see Phase 5 for the honest version of what it does today.
 
 **Control API (for GUI/extension, not MCP)**
 - Unix socket, same JSON-RPC framing for consistency, but a distinct method namespace (`status.*`, `config.*`, `search.adhoc`).
@@ -125,8 +125,8 @@ Tree-sitter watcher, knowledge graph construction (nodes/edges in SQLite), CLI f
 **Phase 4 — GNOME Shell Integration** ✅ *(vertical slice done)*
 `extension/nexuscontext@nexuscontext.local/` - a top-bar icon polling `status.get` over the control socket every 15s, showing project count or a clear "not reachable" state, plus a menu item that launches the GTK4 app via `Gio.Subprocess`. Uses the modern ESM extension format (GNOME 45+, targets 45-50). Validated statically - `gnome-extensions pack` accepts the metadata/structure, and `gjs -m` confirms the JS parses cleanly (it only fails at the expected point, resolving `resource:///org/gnome/shell/...`, which only exists inside a running Shell process). Not yet loaded into a live Shell session: doing that requires a full Shell restart, which under Wayland means logging out, so live verification is deferred to whenever that's convenient rather than forced mid-session.
 
-**Phase 5 — Agentic Intelligence & Caching**
-Prefix caching for system prompts/codebase metadata; Query Planner tool for vector-search-vs-file-read decisions.
+**Phase 5 — Agentic Intelligence & Caching** ✅ *(vertical slice done, scope narrowed to what's actually ours to build)*
+`query_planner` MCP tool: a named file wins outright (`file_read`), a single identifier-like token goes straight to `search_graph` (`graph_search`), and a descriptive multi-word query gets a naive per-word graph search (`keyword_fallback_graph_search`) - the true semantic-search arm doesn't exist yet since there's no embedding pipeline, so the tool says so explicitly (`embeddings_configured` + a note) rather than pretending. On caching: we don't control the calling agent's LLM-side prompt cache, so "prefix caching for system prompts" isn't ours to implement directly - what we built instead is an in-process cache for `get_architecture`, keyed on the project's `last_indexed_unix`, so repeated calls against an unchanged index skip SQLite entirely and a reindex busts the cache automatically. Verified: all three planner strategies return correct results, and the cache shows miss→hit→(miss after reindex) exactly as expected.
 
 **Phase 6 — Packaging & Distribution**
 `.deb` for the daemon + CLI; Flatpak for the GUI (sandboxing a GTK app is straightforward and is the expected distribution path on Ubuntu/GNOME); systemd user unit shipped with the package; GNOME extension submitted to extensions.gnome.org only if Phase 4 happens.

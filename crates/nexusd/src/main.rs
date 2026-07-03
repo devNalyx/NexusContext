@@ -1,3 +1,4 @@
+mod cache;
 mod control;
 mod mcp;
 mod tools;

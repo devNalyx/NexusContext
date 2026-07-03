@@ -1,6 +1,8 @@
 use anyhow::{anyhow, bail, Result};
+use nexus_core::{project_hash, Config, Paths, Registry};
 use nexus_index::{graph_db_path, index_project, Direction, GraphStore, NodeRecord};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub fn tool_definitions() -> Value {
@@ -74,6 +76,21 @@ pub fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "query_planner",
+            "description": "Picks the cheapest retrieval strategy for a query instead of the agent guessing: a specific file goes straight to get_file_context, a single identifier-like token goes to search_graph, and a descriptive multi-word query goes to semantic search if configured or a keyword-over-the-graph fallback otherwise. Returns which strategy was used alongside the results.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo_path": { "type": "string" },
+                    "query": { "type": "string" },
+                    "file": { "type": "string" },
+                    "start_line": { "type": "integer" },
+                    "end_line": { "type": "integer" }
+                },
+                "required": ["repo_path", "query"]
+            }
+        },
+        {
             "name": "search_codebase",
             "description": "Semantic search over code. Requires an [embeddings] endpoint configured in config.toml; returns an error otherwise.",
             "inputSchema": {
@@ -108,6 +125,7 @@ pub fn call(params: Value) -> Result<Value> {
         "get_file_context" => get_file_context(args),
         "get_architecture" => get_architecture(args),
         "detect_changes" => detect_changes(args),
+        "query_planner" => query_planner(args),
         "search_codebase" | "query_memory" => Err(anyhow!(
             "embeddings backend not configured - this tool needs an [embeddings] endpoint \
              in config.toml. Structural tools (search_graph, trace_call_path, get_architecture, \
@@ -229,18 +247,110 @@ fn get_file_context(args: Value) -> Result<String> {
     }
 }
 
+fn last_indexed_unix(repo_path: &Path) -> u64 {
+    let paths = Paths::resolve();
+    let hash = project_hash(repo_path);
+    Registry::load(&paths.registry_file())
+        .projects
+        .into_iter()
+        .find(|p| p.hash == hash)
+        .map(|p| p.last_indexed_unix)
+        .unwrap_or(0)
+}
+
 fn get_architecture(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
+    let cache_key = format!("get_architecture:{}", project_hash(&repo_path));
+
+    let value = crate::cache::get_or_compute(&cache_key, last_indexed_unix(&repo_path), || {
+        let store = open_store(&repo_path)?;
+        let (nodes, edges) = store.stats()?;
+        let busiest = store.busiest_files(10)?;
+        Ok(json!({
+            "total_nodes": nodes,
+            "total_edges": edges,
+            "busiest_files": busiest.into_iter()
+                .map(|(file, count)| json!({ "file": file, "definitions": count }))
+                .collect::<Vec<_>>()
+        }))
+    })?;
+
+    Ok(serde_json::to_string_pretty(&value)?)
+}
+
+/// Rule-based dispatcher, not an LLM-backed one - the daemon deliberately
+/// has no embedded reasoning model (the calling agent is the intelligence
+/// layer). This just picks the cheapest of the strategies that already
+/// exist instead of making the agent guess: a named file wins outright, a
+/// single identifier-like token goes straight to the graph, and anything
+/// more descriptive would go to semantic search once that pipeline exists -
+/// for now it falls back to a naive per-word graph search instead of
+/// erroring out.
+fn query_planner(args: Value) -> Result<String> {
+    let repo_path = repo_path_arg(&args)?;
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing 'query' argument"))?
+        .to_string();
+
+    if args.get("file").and_then(|v| v.as_str()).is_some() {
+        let text = get_file_context(args.clone())?;
+        return Ok(serde_json::to_string_pretty(
+            &json!({ "strategy": "file_read", "result": text }),
+        )?);
+    }
+
+    let is_identifier = !query.trim().is_empty()
+        && query
+            .chars()
+            .next()
+            .map(|c| c.is_alphabetic() || c == '_')
+            .unwrap_or(false)
+        && query.chars().all(|c| c.is_alphanumeric() || c == '_');
+
+    if is_identifier {
+        let store = open_store(&repo_path)?;
+        let results = store.search_by_name(&query, 20)?;
+        return Ok(serde_json::to_string_pretty(&json!({
+            "strategy": "graph_search",
+            "result": records_to_json(&results)
+        }))?);
+    }
+
+    let config = Config::load(&Paths::resolve().config_file())?;
     let store = open_store(&repo_path)?;
-    let (nodes, edges) = store.stats()?;
-    let busiest = store.busiest_files(10)?;
+
+    const STOPWORDS: &[&str] = &[
+        "the", "a", "an", "is", "are", "of", "to", "in", "for", "and", "or", "find", "get",
+        "where", "how", "what", "does", "do",
+    ];
+    let mut seen = HashSet::new();
+    let mut merged = Vec::new();
+    for word in query.split_whitespace() {
+        let word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+        if word.len() < 3 || STOPWORDS.contains(&word.to_lowercase().as_str()) {
+            continue;
+        }
+        for record in store.search_by_name(word, 10)? {
+            if seen.insert(record.qualified_name.clone()) {
+                merged.push(record);
+            }
+        }
+    }
+
+    let note = if config.embeddings.endpoint.is_some() {
+        "an embeddings endpoint is configured, but semantic search isn't implemented yet - \
+         falling back to keyword search over the graph"
+    } else {
+        "no embeddings endpoint configured - falling back to keyword search over the graph"
+    };
 
     Ok(serde_json::to_string_pretty(&json!({
-        "total_nodes": nodes,
-        "total_edges": edges,
-        "busiest_files": busiest.into_iter()
-            .map(|(file, count)| json!({ "file": file, "definitions": count }))
-            .collect::<Vec<_>>()
+        "strategy": "keyword_fallback_graph_search",
+        "embeddings_configured": config.embeddings.endpoint.is_some(),
+        "note": note,
+        "result": records_to_json(&merged)
     }))?)
 }
 
