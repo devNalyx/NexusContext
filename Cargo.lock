@@ -883,6 +883,7 @@ dependencies = [
  "clap",
  "nexus-core",
  "nexus-index",
+ "serde_json",
 ]
 
 [[package]]

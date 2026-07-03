@@ -13,3 +13,4 @@ nexus-core.workspace = true
 nexus-index.workspace = true
 clap.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true

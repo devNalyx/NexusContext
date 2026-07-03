@@ -1,3 +1,5 @@
+mod install;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use nexus_core::{Config, Paths};
@@ -85,6 +87,8 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+    /// Auto-detect MCP-capable agents on this machine and configure `nexusd mcp` for each.
+    Install,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -233,6 +237,7 @@ fn main() -> Result<()> {
             delete_project(&path)?;
             println!("deleted index for {}", path.display());
         }
+        Command::Install => install::run()?,
     }
 
     Ok(())
