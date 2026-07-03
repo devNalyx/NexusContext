@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NexusContext — Local codebase intelligence for AI agents</title>
+<meta name="description" content="A self-hosted MCP daemon that gives AI coding agents a knowledge-graph view of your codebase — structural search, call tracing, and architecture summaries, with zero embeddings required.">
+<style>
+  :root {
+    --bg: #0b0d12;
+    --bg-elevated: #12151c;
+    --bg-card: #151923;
+    --border: #232838;
+    --text: #e7e9ee;
+    --text-dim: #9aa2b1;
+    --text-faint: #5f6779;
+    --accent: #7c8cff;
+    --accent-2: #4dd6c4;
+    --accent-glow: rgba(124, 140, 255, 0.25);
+    --mono: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7fb;
+    --bg-elevated: #ffffff;
+    --bg-card: #ffffff;
+    --border: #e3e6ee;
+    --text: #191c24;
+    --text-dim: #565f72;
+    --text-faint: #8892a3;
+    --accent: #4d5edb;
+    --accent-2: #0f9e8c;
+    --accent-glow: rgba(77, 94, 219, 0.15);
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f6f7fb;
+      --bg-elevated: #ffffff;
+      --bg-card: #ffffff;
+      --border: #e3e6ee;
+      --text: #191c24;
+      --text-dim: #565f72;
+      --text-faint: #8892a3;
+      --accent: #4d5edb;
+      --accent-2: #0f9e8c;
+      --accent-glow: rgba(77, 94, 219, 0.15);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+  a { color: inherit; }
+
+  .glow {
+    position: fixed;
+    top: -20%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 1200px;
+    height: 800px;
+    background: radial-gradient(circle, var(--accent-glow) 0%, transparent 65%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    backdrop-filter: blur(12px);
+    background: color-mix(in srgb, var(--bg) 80%, transparent);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 16px;
+    text-decoration: none;
+    letter-spacing: -0.01em;
+  }
+  .brand .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 0 12px var(--accent-glow);
+  }
+  .nav-links { display: flex; gap: 28px; font-size: 14px; }
+  .nav-links a { text-decoration: none; color: var(--text-dim); transition: color .15s; }
+  .nav-links a:hover { color: var(--text); }
+
+  main { position: relative; z-index: 1; }
+
+  .hero {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 96px 24px 64px;
+    text-align: center;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    font-family: var(--mono);
+    color: var(--accent-2);
+    background: color-mix(in srgb, var(--accent-2) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-2) 30%, transparent);
+    padding: 5px 12px;
+    border-radius: 100px;
+    margin-bottom: 28px;
+  }
+  h1 {
+    font-size: clamp(2.4rem, 5.5vw, 3.8rem);
+    line-height: 1.08;
+    letter-spacing: -0.03em;
+    margin: 0 0 20px;
+    font-weight: 700;
+  }
+  h1 .grad {
+    background: linear-gradient(120deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .lede {
+    font-size: clamp(1.05rem, 2vw, 1.25rem);
+    color: var(--text-dim);
+    max-width: 620px;
+    margin: 0 auto 40px;
+  }
+  .lede code { font-family: var(--mono); color: var(--text); }
+
+  .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 22px;
+    border-radius: 10px;
+    font-size: 14.5px;
+    font-weight: 600;
+    text-decoration: none;
+    border: 1px solid transparent;
+    transition: transform .15s, box-shadow .15s, background .15s;
+  }
+  .btn-primary {
+    background: linear-gradient(120deg, var(--accent), var(--accent-2));
+    color: #0b0d12;
+  }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 24px var(--accent-glow); }
+  .btn-ghost {
+    background: var(--bg-card);
+    border-color: var(--border);
+    color: var(--text);
+  }
+  .btn-ghost:hover { border-color: var(--accent); }
+
+  section { max-width: 1080px; margin: 0 auto; padding: 48px 24px; }
+  .section-head { text-align: center; margin-bottom: 44px; }
+  .section-head .kicker {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    margin-bottom: 10px;
+  }
+  .section-head h2 {
+    font-size: clamp(1.6rem, 3vw, 2.1rem);
+    letter-spacing: -0.02em;
+    margin: 0;
+  }
+  .section-head p { color: var(--text-dim); max-width: 560px; margin: 12px auto 0; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 26px;
+    transition: border-color .15s, transform .15s;
+  }
+  .card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); transform: translateY(-2px); }
+  .card .icon {
+    width: 34px; height: 34px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    margin-bottom: 16px;
+    font-size: 17px;
+  }
+  .card h3 { font-size: 15.5px; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .card p { font-size: 13.5px; color: var(--text-dim); margin: 0; }
+
+  .diagram {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px 24px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-dim);
+    overflow-x: auto;
+  }
+  .diagram pre { margin: 0; white-space: pre; }
+  .diagram .hl { color: var(--accent); }
+  .diagram .hl2 { color: var(--accent-2); }
+
+  .code-block {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .code-block .code-head {
+    display: flex;
+    gap: 6px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .code-block .code-head span {
+    width: 10px; height: 10px; border-radius: 50%; background: var(--border);
+  }
+  .code-block pre {
+    margin: 0;
+    padding: 18px 20px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.7;
+    overflow-x: auto;
+    color: var(--text);
+  }
+  .code-block .cmt { color: var(--text-faint); }
+  .code-block .dim { color: var(--text-dim); }
+
+  .phases {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+  }
+  .phase-chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px;
+  }
+  .phase-chip .check {
+    color: var(--accent-2);
+    font-family: var(--mono);
+    font-weight: 700;
+  }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 40px 24px;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 13px;
+  }
+  footer a { color: var(--text-dim); text-decoration: none; }
+  footer a:hover { color: var(--text); }
+  .footer-links { display: flex; gap: 20px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
+
+  @media (max-width: 640px) {
+    .nav-links { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="glow"></div>
+
+<header>
+  <div class="nav">
+    <a class="brand" href="#">
+      <span class="dot"></span>
+      NexusContext
+    </a>
+    <nav class="nav-links">
+      <a href="#why">Why</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#install">Install</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="https://github.com/devNalyx/NexusContext">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="badge">● all 10 phases shipped &amp; verified</div>
+    <h1>Give your AI agent a <span class="grad">knowledge graph</span> of your codebase</h1>
+    <p class="lede">
+      A self-hosted MCP daemon that indexes your code into a structural graph —
+      <code>search_graph</code>, <code>trace_call_path</code>, <code>get_architecture</code> —
+      so agents like Claude Code stop grepping and start reasoning. No embeddings required.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/devNalyx/NexusContext">View on GitHub</a>
+      <a class="btn btn-ghost" href="#install">Quick install</a>
+    </div>
+  </section>
+
+  <section id="why">
+    <div class="section-head">
+      <div class="kicker">Design philosophy</div>
+      <h2>The agent is the intelligence. NexusContext is the memory.</h2>
+      <p>No LLM lives in the daemon. It builds structure and answers queries — your agent still does all the reasoning.</p>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <div class="icon">◈</div>
+        <h3>Knowledge graph, not just vectors</h3>
+        <p>Tree-sitter parses Rust &amp; Python into a SQLite graph of functions, types, and call edges — structural queries that need zero embeddings.</p>
+      </div>
+      <div class="card">
+        <div class="icon">⌁</div>
+        <h3>MCP-native</h3>
+        <p>A real JSON-RPC 2.0 stdio server with 9 tools, verified against real IDE-style sessions — drop it into any MCP-compatible agent.</p>
+      </div>
+      <div class="card">
+        <div class="icon">▣</div>
+        <h3>Desktop-first on Linux</h3>
+        <p>A native GTK4 + libadwaita manager app and a thin GNOME Shell status indicator — not a web dashboard bolted on afterward.</p>
+      </div>
+      <div class="card">
+        <div class="icon">◆</div>
+        <h3>Safe by default</h3>
+        <p>Embeddings endpoints are blocked unless loopback/private or explicitly allowed. Indexing can be scoped to an allowlist. Opt-in, not implicit.</p>
+      </div>
+      <div class="card">
+        <div class="icon">⇄</div>
+        <h3>Team-shareable index</h3>
+        <p>Export a compressed graph snapshot next to your source so teammates skip the first reindex on clone — never committed unless you choose to.</p>
+      </div>
+      <div class="card">
+        <div class="icon">✦</div>
+        <h3>Obsidian-ready export</h3>
+        <p>Turn the call graph into a folder of markdown files with <code>[[wikilinks]]</code> — browse your codebase's structure in a vault, for free.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="architecture">
+    <div class="section-head">
+      <div class="kicker">How it fits together</div>
+      <h2>One daemon, two transports, three clients</h2>
+      <p>stdio is reserved for MCP agents; a Unix socket serves the GUI and Shell extension — they never compete for the same pipe.</p>
+    </div>
+    <div class="diagram">
+<pre>                    ┌──────────────────────────────┐
+   MCP clients ──────► <span class="hl">nexusd mcp</span>  (stdio, per-session) │
+ (Claude Code, etc.)  │   listTools / callTool        │
+                    │   search_graph · trace_call_path│
+                    │   get_architecture · query_planner│
+                    └──────────────────────────────┘
+                               │
+                               ▼  shared SQLite graph.db (WAL mode)
+                               ▲
+                    ┌──────────────────────────────┐
+    GUI + Shell ext ──► <span class="hl2">nexusd serve</span> (Unix socket, systemd)│
+                    │   status · projects · config    │
+                    │   search.adhoc · reindex         │
+                    └──────────────────────────────┘</pre>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="section-head">
+      <div class="kicker">Get running in a minute</div>
+      <h2>Install, index, ask</h2>
+    </div>
+    <div class="code-block">
+      <div class="code-head"><span></span><span></span><span></span></div>
+      <pre><span class="cmt"># build &amp; package</span>
+cargo build --release
+cargo deb -p nexusd --no-build
+sudo dpkg -i target/debian/nexuscontext_*.deb
+
+<span class="cmt"># run the daemon persistently</span>
+systemctl --user enable --now nexuscontext.service
+
+<span class="cmt"># index a project and query it</span>
+nexus reindex /path/to/your/project
+nexus search-graph SomeFunction --project /path/to/your/project
+
+<span class="cmt"># register with Claude Code</span>
+claude mcp add -s user nexuscontext -- nexusd mcp</pre>
+    </div>
+    <p style="text-align:center; margin-top:20px; color:var(--text-dim); font-size:13.5px;">
+      Full walkthrough — GUI, GNOME extension, config, packaging — in
+      <a href="https://github.com/devNalyx/NexusContext/blob/main/INSTALL.md" style="color:var(--accent);">INSTALL.md</a>.
+    </p>
+  </section>
+
+  <section id="roadmap">
+    <div class="section-head">
+      <div class="kicker">Built, not just planned</div>
+      <h2>Every phase of the roadmap, shipped</h2>
+      <p>Each one verified end-to-end against the real running system, not just <code>cargo build</code>.</p>
+    </div>
+    <div class="phases">
+      <div class="phase-chip"><span class="check">✓</span> Core workspace</div>
+      <div class="phase-chip"><span class="check">✓</span> Knowledge graph</div>
+      <div class="phase-chip"><span class="check">✓</span> MCP server</div>
+      <div class="phase-chip"><span class="check">✓</span> Control API + GUI</div>
+      <div class="phase-chip"><span class="check">✓</span> GNOME extension</div>
+      <div class="phase-chip"><span class="check">✓</span> Query planner</div>
+      <div class="phase-chip"><span class="check">✓</span> .deb + systemd</div>
+      <div class="phase-chip"><span class="check">✓</span> Network policy</div>
+      <div class="phase-chip"><span class="check">✓</span> Shared index export</div>
+      <div class="phase-chip"><span class="check">✓</span> Obsidian export</div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="footer-links">
+    <a href="https://github.com/devNalyx/NexusContext">GitHub</a>
+    <a href="https://github.com/devNalyx/NexusContext/blob/main/README.md">Proposal &amp; roadmap</a>
+    <a href="https://github.com/devNalyx/NexusContext/blob/main/INSTALL.md">Install guide</a>
+    <a href="https://github.com/devNalyx/NexusContext/blob/main/LICENSE">MIT License</a>
+  </div>
+  NexusContext — self-hosted, local-first codebase intelligence.
+</footer>
+
+</body>
+</html>
