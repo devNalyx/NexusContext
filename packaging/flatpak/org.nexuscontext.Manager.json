@@ -1,0 +1,37 @@
+{
+  "app-id": "org.nexuscontext.Manager",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "47",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": ["org.freedesktop.Sdk.Extension.rust-stable"],
+  "command": "nexuscontext-gui",
+  "finish-args": [
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=dri",
+    "--filesystem=xdg-run/nexuscontext:rw",
+    "--filesystem=xdg-data/nexuscontext:rw",
+    "--filesystem=xdg-config/nexuscontext:rw"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "env": {
+      "CARGO_HOME": "/run/build/nexuscontext-gui/cargo"
+    }
+  },
+  "modules": [
+    {
+      "name": "nexuscontext-gui",
+      "buildsystem": "simple",
+      "build-commands": [
+        "cargo --offline build --release --manifest-path Cargo.toml -p nexus-gui",
+        "install -Dm755 target/release/nexuscontext-gui /app/bin/nexuscontext-gui",
+        "install -Dm644 packaging/flatpak/org.nexuscontext.Manager.desktop /app/share/applications/org.nexuscontext.Manager.desktop"
+      ],
+      "sources": [
+        { "type": "dir", "path": "../.." },
+        { "type": "file", "path": "generated-sources.json" }
+      ]
+    }
+  ]
+}

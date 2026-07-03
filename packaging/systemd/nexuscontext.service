@@ -1,0 +1,25 @@
+[Unit]
+Description=NexusContext codebase indexing daemon
+Documentation=https://github.com/shayne/nexuscontext
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/nexusd serve
+Restart=on-failure
+RestartSec=2
+# Structural tools and the control API don't need network access; only the
+# optional embeddings HTTP client does, and that's outbound-only anyway.
+# NoNewPrivileges/ProtectSystem are cheap wins for a user-scope daemon that
+# only ever touches its own config/data dirs.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/nexuscontext %h/.config/nexuscontext
+# Matches nexus_core::Paths, which puts the control socket at
+# $XDG_RUNTIME_DIR/nexuscontext/ - RuntimeDirectory manages that path (and
+# its write access) declaratively instead of needing it in ReadWritePaths.
+RuntimeDirectory=nexuscontext
+
+[Install]
+WantedBy=default.target

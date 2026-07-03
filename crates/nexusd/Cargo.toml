@@ -3,6 +3,26 @@ name = "nexusd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "NexusContext daemon: MCP server, knowledge-graph indexing, and control API for local codebase intelligence."
+
+[package.metadata.deb]
+name = "nexuscontext"
+maintainer = "NexusContext contributors"
+copyright = "2026, NexusContext contributors"
+depends = "$auto"
+section = "devel"
+priority = "optional"
+extended-description = """\
+Self-hosted daemon providing a standardized MCP interface for local \
+codebase indexing, knowledge-graph-based code intelligence (structural \
+search, call tracing, architecture summaries), and optional semantic \
+search. Ships the nexusd daemon and the nexus CLI together."""
+assets = [
+    ["../../target/release/nexusd", "usr/bin/", "755"],
+    ["../../target/release/nexus", "usr/bin/", "755"],
+    ["../../packaging/systemd/nexuscontext.service", "usr/lib/systemd/user/", "644"],
+    ["../../README.md", "usr/share/doc/nexuscontext/README.md", "644"],
+]
 
 [dependencies]
 nexus-core.workspace = true

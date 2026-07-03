@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NexusContext Manager
+Comment=Inspect and manage the NexusContext codebase daemon
+Exec=nexuscontext-gui
+Icon=org.nexuscontext.Manager
+Terminal=false
+Categories=Development;Utility;
