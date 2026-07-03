@@ -2,6 +2,7 @@ mod cache;
 mod control;
 mod mcp;
 mod tools;
+mod watcher;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -39,7 +40,8 @@ fn main() -> Result<()> {
             // GUI's Logs view reads this directly rather than needing a
             // streaming protocol.
             init_tracing_file(&paths.log_file())?;
-            tracing::info!("nexusd starting as background daemon (control API only)");
+            tracing::info!("nexusd starting as background daemon (control API + file watcher)");
+            watcher::spawn();
             control::serve(paths.control_socket())
         }
     }

@@ -101,7 +101,8 @@ fn status_get() -> Result<Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "data_dir": paths.data_dir.display().to_string(),
         "log_file": paths.log_file().display().to_string(),
-        "projects_indexed": registry.projects.len()
+        "projects_indexed": registry.projects.len(),
+        "projects_watched": crate::watcher::watched_count()
     }))
 }
 

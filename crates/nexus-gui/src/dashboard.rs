@@ -41,12 +41,16 @@ fn refresh(status_label: &Label) {
     match crate::client::call("status.get", serde_json::json!({})) {
         Ok(result) => {
             let text = format!(
-                "version: {}\ndata_dir: {}\nlog_file: {}\nprojects indexed: {}",
+                "version: {}\ndata_dir: {}\nlog_file: {}\nprojects indexed: {}\nauto-sync watching: {} project(s)",
                 result.get("version").and_then(|v| v.as_str()).unwrap_or("?"),
                 result.get("data_dir").and_then(|v| v.as_str()).unwrap_or("?"),
                 result.get("log_file").and_then(|v| v.as_str()).unwrap_or("?"),
                 result
                     .get("projects_indexed")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                result
+                    .get("projects_watched")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0),
             );
