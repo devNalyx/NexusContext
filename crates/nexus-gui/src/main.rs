@@ -1,3 +1,4 @@
+mod architecture;
 mod client;
 mod config;
 mod dashboard;
@@ -45,6 +46,12 @@ fn build_ui(app: &adw::Application) {
         Some("search"),
         "Search",
         "system-search-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &architecture::build(),
+        Some("architecture"),
+        "Architecture",
+        "view-grid-symbolic",
     );
     view_stack.add_titled_with_icon(
         &config::build(),

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use nexus_core::{Config, Paths, Registry};
-use nexus_index::{delete_project, graph_db_path, index_project, GraphStore};
+use nexus_index::{delete_project, get_architecture, graph_db_path, index_project, GraphStore};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -86,6 +86,7 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
         "projects.list" => projects_list(),
         "projects.reindex" => projects_reindex(params),
         "projects.delete" => projects_delete(params),
+        "projects.architecture" => projects_architecture(params),
         "config.get" => config_get(),
         "config.set" => config_set(params),
         "search.adhoc" => search_adhoc(params),
@@ -134,6 +135,36 @@ fn projects_delete(params: Value) -> Result<Value> {
         .ok_or_else(|| anyhow!("missing 'repo_path' argument"))?;
     delete_project(std::path::Path::new(repo_path))?;
     Ok(json!({ "status": "deleted" }))
+}
+
+fn projects_architecture(params: Value) -> Result<Value> {
+    let repo_path = params
+        .get("repo_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing 'repo_path' argument"))?;
+    let repo_path = std::path::Path::new(repo_path);
+
+    let summary = get_architecture(repo_path)?;
+
+    let hash = nexus_core::project_hash(repo_path);
+    let last_indexed_unix = Registry::load(&Paths::resolve().registry_file())
+        .projects
+        .into_iter()
+        .find(|p| p.hash == hash)
+        .map(|p| p.last_indexed_unix)
+        .unwrap_or(0);
+
+    Ok(json!({
+        "total_nodes": summary.total_nodes,
+        "total_edges": summary.total_edges,
+        "busiest_files": summary.busiest_files.into_iter()
+            .map(|(file, count)| json!({ "file": file, "definitions": count }))
+            .collect::<Vec<_>>(),
+        "language_breakdown": summary.language_breakdown.into_iter()
+            .map(|(ext, count)| json!({ "extension": ext, "files": count }))
+            .collect::<Vec<_>>(),
+        "last_indexed_unix": last_indexed_unix
+    }))
 }
 
 fn config_get() -> Result<Value> {

@@ -281,6 +281,9 @@ fn get_architecture(args: Value) -> Result<String> {
             "total_edges": summary.total_edges,
             "busiest_files": summary.busiest_files.into_iter()
                 .map(|(file, count)| json!({ "file": file, "definitions": count }))
+                .collect::<Vec<_>>(),
+            "language_breakdown": summary.language_breakdown.into_iter()
+                .map(|(ext, count)| json!({ "extension": ext, "files": count }))
                 .collect::<Vec<_>>()
         }))
     })?;

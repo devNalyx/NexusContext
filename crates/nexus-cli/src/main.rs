@@ -181,6 +181,10 @@ fn main() -> Result<()> {
             for (file, count) in summary.busiest_files {
                 println!("  {count:>4}  {file}");
             }
+            println!("language breakdown:");
+            for (ext, count) in summary.language_breakdown {
+                println!("  {count:>4}  .{ext}");
+            }
         }
         Command::DetectChanges { project } => {
             let affected = index::detect_changes(&project)?;

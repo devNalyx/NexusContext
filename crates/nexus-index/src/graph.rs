@@ -246,6 +246,33 @@ impl GraphStore {
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
 
+    /// File extension counts (a rough proxy for "language breakdown") -
+    /// derived from `File` nodes rather than parsed language metadata, since
+    /// we don't store the latter separately from what tree-sitter grammar
+    /// matched the extension in the first place.
+    pub fn file_extension_counts(&self) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT file_path FROM nodes WHERE kind = 'File'")?;
+        let paths: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+
+        let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for path in paths {
+            let ext = Path::new(&path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("(no extension)")
+                .to_string();
+            *counts.entry(ext).or_insert(0) += 1;
+        }
+
+        let mut result: Vec<_> = counts.into_iter().collect();
+        result.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(result)
+    }
+
     /// `detect_changes`-equivalent: definitions whose line range overlaps a
     /// given span in a file (e.g. a git diff hunk).
     pub fn nodes_overlapping(

@@ -23,16 +23,19 @@ pub struct ArchitectureSummary {
     pub total_nodes: i64,
     pub total_edges: i64,
     pub busiest_files: Vec<(String, i64)>,
+    pub language_breakdown: Vec<(String, i64)>,
 }
 
 pub fn get_architecture(repo_path: &Path) -> Result<ArchitectureSummary> {
     let store = open_store(repo_path)?;
     let (total_nodes, total_edges) = store.stats()?;
     let busiest_files = store.busiest_files(10)?;
+    let language_breakdown = store.file_extension_counts()?;
     Ok(ArchitectureSummary {
         total_nodes,
         total_edges,
         busiest_files,
+        language_breakdown,
     })
 }
 
