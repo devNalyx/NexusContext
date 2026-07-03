@@ -74,6 +74,11 @@ impl GraphStore {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
+        // WAL lets readers (nexusd mcp) and a writer (nexusd serve, or vice
+        // versa) work concurrently instead of the whole-file locking the
+        // default rollback journal uses - relevant now that the daemon and
+        // an MCP session can both hold a connection to the same graph.db.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS nodes (

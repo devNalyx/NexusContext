@@ -18,6 +18,15 @@ fn main() -> glib::ExitCode {
 }
 
 fn build_ui(app: &adw::Application) {
+    // `activate` fires again every time GNOME Shell "launches" an
+    // already-running single-instance app (app grid, search, gtk-launch,
+    // etc.) - without this check each re-activation stacked a brand new
+    // window in the same process instead of refocusing the existing one.
+    if let Some(window) = app.windows().first() {
+        window.present();
+        return;
+    }
+
     let view_stack = adw::ViewStack::new();
     view_stack.add_titled_with_icon(
         &dashboard::build(),
