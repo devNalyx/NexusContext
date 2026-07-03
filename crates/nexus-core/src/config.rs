@@ -49,4 +49,18 @@ impl Config {
 
         Ok(toml::from_str(&raw)?)
     }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| Error::ConfigRead {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        }
+        let raw = toml::to_string_pretty(self)?;
+        std::fs::write(path, raw).map_err(|source| Error::ConfigRead {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
 }

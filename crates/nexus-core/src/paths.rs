@@ -8,6 +8,11 @@ use std::path::{Path, PathBuf};
 pub struct Paths {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
+    /// Short-lived runtime files (currently just the control socket) live
+    /// here, not under `data_dir`: Unix domain socket paths are capped at
+    /// ~108 bytes (`SUN_LEN`), and `data_dir` has no such guarantee.
+    /// Falls back to `data_dir` if the platform has no runtime dir concept.
+    pub runtime_dir: PathBuf,
 }
 
 impl Paths {
@@ -19,10 +24,15 @@ impl Paths {
         let data_dir = std::env::var_os("NEXUS_CACHE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| dirs.data_dir().to_path_buf());
+        let runtime_dir = dirs
+            .runtime_dir()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| data_dir.clone());
 
         Self {
             config_dir,
             data_dir,
+            runtime_dir,
         }
     }
 
@@ -32,6 +42,14 @@ impl Paths {
 
     pub fn project_data_dir(&self, project_hash: &str) -> PathBuf {
         self.data_dir.join(project_hash)
+    }
+
+    pub fn registry_file(&self) -> PathBuf {
+        self.data_dir.join("projects.json")
+    }
+
+    pub fn control_socket(&self) -> PathBuf {
+        self.runtime_dir.join("nexuscontext.sock")
     }
 }
 
