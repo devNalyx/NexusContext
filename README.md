@@ -64,9 +64,9 @@ The daemon runs as a `systemd --user` service, independent of any GUI. The GUI i
 - **Post-write integrity check**: after indexing, compare persisted row count against the in-memory count; if it falls suspiciously short, report `status: "degraded"` from `index_status` instead of silently claiming success.
 
 **MCP Server**
-- `listTools` / `callTool` per spec.
-- Structural tools (graph-backed, no embeddings required): `search_graph`, `trace_call_path`, `get_architecture`, `detect_changes`.
-- Retrieval tools (embedding-backed, degrade gracefully if no endpoint configured): `search_codebase` (semantic), `get_file_context`, `query_memory`.
+- `listTools` / `callTool` per spec, newline-delimited JSON-RPC 2.0 over stdio. Logging goes to stderr exclusively - stdout is reserved for the protocol stream.
+- Structural tools (graph-backed, no embeddings required): `index_repository` (build/rebuild the graph for a path - the prerequisite for everything else), `search_graph`, `trace_call_path`, `get_architecture`, `detect_changes`, `get_file_context` (plain file/line-range read, no embeddings involved either).
+- Retrieval tools (embedding-backed, degrade gracefully with a clear error if no endpoint configured): `search_codebase` (semantic), `query_memory`.
 - `Query Planner` tool (Phase-5 item below) decides graph query vs. vector search vs. direct file read to cut token spend — now a three-way choice instead of two.
 
 **Control API (for GUI/extension, not MCP)**
@@ -116,8 +116,8 @@ Cargo workspace with `nexusd` (daemon), `nexus-cli` (manual indexing/query CLI),
 **Phase 1 — Context-Aware Core**
 Tree-sitter watcher, knowledge graph construction (nodes/edges in SQLite), CLI for manual reindex and graph queries. Embedding pipeline against a configurable endpoint is additive here, not a blocker for the rest of Phase 1.
 
-**Phase 2 — MCP Implementation**
-`listTools`/`callTool`; structural tools (`search_graph`, `trace_call_path`, `get_architecture`) plus the embedding-backed ones (`search_codebase`, `get_file_context`, `query_memory`); verified working as a subprocess from an IDE extension (e.g. Continue, Claude Code). Stretch goal: an `install` subcommand that auto-detects installed agents and wires MCP config for each, rather than requiring manual `.mcp.json` edits.
+**Phase 2 — MCP Implementation** ✅ *(vertical slice done)*
+`listTools`/`callTool` over stdio; `index_repository`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes` all working end-to-end (verified by piping real JSON-RPC messages into the binary, including a `detect_changes` run against this repo's own uncommitted diff). `search_codebase`/`query_memory` correctly degrade with a clear error, since the embeddings pipeline isn't built yet. Remaining: verify against an actual IDE client (e.g. Claude Code, Continue) rather than hand-crafted JSON-RPC. Stretch goal: an `install` subcommand that auto-detects installed agents and wires MCP config for each, rather than requiring manual `.mcp.json` edits.
 
 **Phase 3 — Control API + Desktop GUI**
 Unix socket control API; GTK4/libadwaita app with Dashboard, Search, Projects, Config, Logs views.
