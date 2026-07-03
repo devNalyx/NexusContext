@@ -30,7 +30,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "trace_call_path",
-            "description": "BFS over the CALLS graph to find callers/callees of a function. Same-file call resolution only in this version.",
+            "description": "BFS over the CALLS graph to find callers/callees of a function. Resolution is name-based, not import-aware: same-file matches win, and a cross-file call resolves only if the callee name is unique project-wide - ambiguous same-named functions across files are left unresolved.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -85,7 +85,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "detect_dead_code",
-            "description": "Functions with no inbound CALLS edge (excluding main). Caveat: call resolution is same-file only, so a function only ever called from a different file will show up as a false positive - treat results as worth a second look, not a guarantee.",
+            "description": "Functions with no inbound CALLS edge (excluding main). Caveat: call resolution is name-based (same-file, or cross-file only when the name is unique project-wide), so a function called only via an ambiguous same-named cross-file call may show up as a false positive - treat results as worth a second look, not a guarantee.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "repo_path": { "type": "string" } },

@@ -53,7 +53,7 @@ enum Command {
         #[arg(long, default_value = ".")]
         project: PathBuf,
     },
-    /// Functions with no inbound CALLS edge (same-file resolution only - see README).
+    /// Functions with no inbound CALLS edge (name-based resolution caveats apply - see README).
     DeadCode {
         #[arg(long, default_value = ".")]
         project: PathBuf,
@@ -180,7 +180,8 @@ fn main() -> Result<()> {
             if results.is_empty() {
                 println!(
                     "no {direction:?} calls found for '{name}' within depth {depth} \
-                     (same-file resolution only, see proposal)"
+                     (resolution is name-based - an ambiguous same-named function across \
+                     files won't resolve cross-file; see README)"
                 );
             }
             print_records(&results);
