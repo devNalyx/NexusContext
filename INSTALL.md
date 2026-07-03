@@ -54,6 +54,14 @@ nexus trace SomeFunctionName --project /path/to/your/project --direction inbound
 nexus status
 ```
 
+**Sharing an index with teammates** (skips the first reindex on their end):
+
+```bash
+nexus export /path/to/your/project   # writes .nexuscontext/index.db.zst next to source
+# ... teammate clones the repo, then:
+nexus import /path/to/their/checkout
+```
+
 ## 5. MCP tools available to agents
 
 Once `nexusd mcp` is wired into an agent, these tools are exposed (no embeddings/network required for any of them except the last two, which are stubbed pending an embedding pipeline):

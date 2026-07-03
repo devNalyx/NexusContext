@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use nexus_core::{Config, Paths};
-use nexus_index::{graph_db_path, index_project, Direction, GraphStore};
+use nexus_index::{export_project, graph_db_path, import_project, index_project, Direction, GraphStore};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -37,6 +37,16 @@ enum Command {
         direction: DirectionArg,
         #[arg(long, default_value_t = 3)]
         depth: u32,
+    },
+    /// Compress the local index into .nexuscontext/index.db.zst for teammates to import.
+    Export {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Load a teammate's exported index instead of reindexing from scratch.
+    Import {
+        #[arg(default_value = ".")]
+        path: PathBuf,
     },
 }
 
@@ -140,6 +150,17 @@ fn main() -> Result<()> {
                     node.end_line
                 );
             }
+        }
+        Command::Export { path } => {
+            let artifact = export_project(&path)?;
+            println!("exported index to {}", artifact.display());
+        }
+        Command::Import { path } => {
+            let stats = import_project(&path)?;
+            println!(
+                "imported index: nodes: {}, edges: {}",
+                stats.nodes, stats.edges
+            );
         }
     }
 
