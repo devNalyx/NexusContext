@@ -1,7 +1,10 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use nexus_core::{Config, Paths};
-use nexus_index::{export_project, graph_db_path, import_project, index_project, Direction, GraphStore};
+use nexus_index::{
+    export_obsidian, export_project, graph_db_path, import_project, index_project, Direction,
+    GraphStore,
+};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -38,10 +41,12 @@ enum Command {
         #[arg(long, default_value_t = 3)]
         depth: u32,
     },
-    /// Compress the local index into .nexuscontext/index.db.zst for teammates to import.
+    /// Export the local index for teammates (zstd) or for browsing in Obsidian (markdown vault).
     Export {
         #[arg(default_value = ".")]
         path: PathBuf,
+        #[arg(long, value_enum, default_value_t = ExportFormat::Zstd)]
+        format: ExportFormat,
     },
     /// Load a teammate's exported index instead of reindexing from scratch.
     Import {
@@ -54,6 +59,12 @@ enum Command {
 enum DirectionArg {
     Inbound,
     Outbound,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ExportFormat {
+    Zstd,
+    Obsidian,
 }
 
 impl From<DirectionArg> for Direction {
@@ -151,10 +162,16 @@ fn main() -> Result<()> {
                 );
             }
         }
-        Command::Export { path } => {
-            let artifact = export_project(&path)?;
-            println!("exported index to {}", artifact.display());
-        }
+        Command::Export { path, format } => match format {
+            ExportFormat::Zstd => {
+                let artifact = export_project(&path)?;
+                println!("exported index to {}", artifact.display());
+            }
+            ExportFormat::Obsidian => {
+                let vault = export_obsidian(&path)?;
+                println!("exported Obsidian vault to {}", vault.display());
+            }
+        },
         Command::Import { path } => {
             let stats = import_project(&path)?;
             println!(

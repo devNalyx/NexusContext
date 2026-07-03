@@ -183,6 +183,36 @@ impl GraphStore {
             .map_err(Into::into)
     }
 
+    /// All nodes in the graph - used by the Obsidian export, which needs
+    /// the whole graph rather than a name/range-scoped query.
+    pub fn all_nodes(&self) -> Result<Vec<NodeRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, name, qualified_name, file_path, start_line, end_line FROM nodes",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(NodeRecord {
+                id: row.get(0)?,
+                kind: NodeKind::from_str(&row.get::<_, String>(1)?),
+                name: row.get(2)?,
+                qualified_name: row.get(3)?,
+                file_path: row.get(4)?,
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// All `CALLS` edges as (caller_id, callee_id) pairs - same rationale as
+    /// `all_nodes`.
+    pub fn all_call_edges(&self) -> Result<Vec<(i64, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT src_id, dst_id FROM edges WHERE kind = 'CALLS'")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
     /// `detect_changes`-equivalent: definitions whose line range overlaps a
     /// given span in a file (e.g. a git diff hunk).
     pub fn nodes_overlapping(

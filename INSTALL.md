@@ -62,6 +62,14 @@ nexus export /path/to/your/project   # writes .nexuscontext/index.db.zst next to
 nexus import /path/to/their/checkout
 ```
 
+**Browsing the graph in Obsidian** (optional):
+
+```bash
+nexus export /path/to/your/project --format obsidian   # writes .nexuscontext/vault/*.md
+```
+
+Open `.nexuscontext/vault/` as an Obsidian vault to browse functions/types and their call relationships via the graph view.
+
 ## 5. MCP tools available to agents
 
 Once `nexusd mcp` is wired into an agent, these tools are exposed (no embeddings/network required for any of them except the last two, which are stubbed pending an embedding pipeline):
