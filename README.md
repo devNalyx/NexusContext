@@ -1,0 +1,157 @@
+# NexusContext
+
+**Objective:** A self-hosted, lightweight binary daemon that provides a standardized MCP interface for local codebase indexing, structural code intelligence (knowledge graph), semantic search, and RAG-based LLM orchestration — with a native Linux desktop GUI on top.
+
+---
+
+## 1. Architecture Overview
+
+```
+                     ┌─────────────────────────────┐
+                     │        nexusd (daemon)       │
+                     │  Rust binary, always-on      │
+                     │                              │
+   MCP clients ──────┤  MCP Server (JSON-RPC/stdio) │
+   (IDE, CLI agents) │                              │
+                     │  Ingestion Engine             │
+   File watcher ─────┤   - tree-sitter parsing       │
+                     │   - chunking                  │
+                     │                              │
+                     │  Knowledge Graph (SQLite)      │
+                     │   - nodes/edges, Cypher-lite   │
+                     │                              │
+   Embedding ────────┤  Embedding Pipeline           │
+   endpoint (net)    │   - optional, off by default  │
+                     │                              │
+                     │  Vector Store (LanceDB)       │
+                     │                              │
+                     │  RAG / Query Planner          │
+                     │                              │
+   GUI / extension ──┤  Control API (Unix socket)    │
+                     └─────────────────────────────┘
+```
+
+Two transports, two purposes:
+- **Stdio JSON-RPC** — reserved for MCP clients (IDE extensions, CLI agents). This is the actual MCP spec transport and shouldn't be shared with anything else.
+- **Local Unix domain socket** — a separate control/status API for the GUI and GNOME extension (indexing progress, watched paths, config, ad-hoc search). Keeps the GUI decoupled from whatever MCP client happens to be attached to stdio at the time.
+
+The daemon runs as a `systemd --user` service, independent of any GUI. The GUI is a client, not a requirement — the tool must be fully usable headless.
+
+## 2. Component Breakdown
+
+**Ingestion Engine**
+- Directory watcher (`notify` crate), git-diff-aware: on file change, re-parse only the changed files rather than polling everything.
+- Tree-sitter parsers per language, extracting functions/classes/interfaces as node boundaries instead of naive line-splitting.
+- **Layered ignore rules**: hardcoded patterns (`.git`, `node_modules`, build dirs) → `.gitignore` hierarchy → project-specific `.nexusignore` (gitignore syntax) for one-off excludes. Symlinks always skipped.
+- Incremental re-indexing — only re-parse/re-embed changed nodes, not whole files, on save.
+
+**Knowledge Graph Layer** *(new — the main structural addition over the original proposal)*
+- Every ingested file becomes graph nodes (`File`, `Function`, `Class`, `Interface`, `Route`, ...) linked by edges (`CALLS`, `IMPORTS`, `IMPLEMENTS`, `DEFINES`, `HTTP_CALLS`) derived straight from the tree-sitter AST — no embeddings involved.
+- Stored in SQLite (not LanceDB) at `~/.local/share/nexuscontext/<project-hash>/graph.db` — cheap, embeddable, and a natural fit for graph traversal queries via recursive CTEs or a small Cypher-lite query layer.
+- This is what makes `trace_call_path`, `get_architecture`, `detect_changes` (git-diff → affected-symbols mapping), and dead-code detection possible **without any embedding backend running at all** — directly relevant to keeping Ollama/embeddings optional rather than load-bearing.
+- Semantic search becomes one additional signal layered on top of the graph, not the only retrieval mechanism.
+
+**Embedding Pipeline** *(optional layer — daemon is fully useful without it)*
+- No embedding runtime is bundled or hardwired. The daemon speaks the **OpenAI-compatible `/v1/embeddings` API** — the de facto standard that Ollama, LM Studio, vLLM, and llama.cpp server all implement — over a plain configurable HTTP endpoint.
+- Config (`[embeddings]` in `config.toml`): `endpoint` (URL, e.g. `http://localhost:11434/v1` or a LAN host), `model` (e.g. `nomic-embed-text`), optional `api_key` (blank for local servers that don't need one).
+- Since `endpoint` is just a URL, "Ollama on this machine" and "Ollama/vLLM on another box on the network" are the same code path — no special-casing.
+- Startup health check against the endpoint; if unreachable, the daemon logs a clear error and keeps running in a degraded state (search/MCP tools return an explicit "embedding backend unavailable" instead of crashing).
+- Retry/timeout are config knobs, not assumptions — useful once the endpoint might be a network hop away rather than localhost.
+
+**Vector Store**
+- LanceDB, embedded, disk-backed at `~/.local/share/nexuscontext/<project-hash>/vectors/`.
+- One table per indexed project/workspace, keyed by content hash to dedupe.
+- **Post-write integrity check**: after indexing, compare persisted row count against the in-memory count; if it falls suspiciously short, report `status: "degraded"` from `index_status` instead of silently claiming success.
+
+**MCP Server**
+- `listTools` / `callTool` per spec.
+- Structural tools (graph-backed, no embeddings required): `search_graph`, `trace_call_path`, `get_architecture`, `detect_changes`.
+- Retrieval tools (embedding-backed, degrade gracefully if no endpoint configured): `search_codebase` (semantic), `get_file_context`, `query_memory`.
+- `Query Planner` tool (Phase-5 item below) decides graph query vs. vector search vs. direct file read to cut token spend — now a three-way choice instead of two.
+
+**Control API (for GUI/extension, not MCP)**
+- Unix socket, same JSON-RPC framing for consistency, but a distinct method namespace (`status.*`, `config.*`, `search.adhoc`).
+- Exposes: indexing status/progress, per-project stats, config get/set, manual reindex trigger, ad-hoc search for the GUI's own search box.
+
+**Desktop GUI — "NexusContext Manager"**
+- GTK4 + `libadwaita` via `gtk-rs`, native Ubuntu/GNOME look, no Electron overhead.
+- Views:
+  - **Dashboard** — daemon status, watched projects, index size, last reindex time.
+  - **Search** — ad-hoc semantic query box with code-preview results (this is the main reason a GUI is worth building at all — trying queries without an agent in the loop).
+  - **Projects** — add/remove watched directories, per-project ignore patterns.
+  - **Config** — embedding model choice, Ollama endpoint, cache limits.
+  - **Logs** — tail of daemon logs for troubleshooting.
+- Talks to the daemon exclusively over the control socket. Never touches stdio.
+- Not required to be running for the daemon or MCP integrations to work — it's a management/inspection tool.
+
+**GNOME Shell Extension (optional, thin)**
+- Deliberately minimal: a top-bar indicator only.
+  - Icon changes state (idle / indexing / error).
+  - Dropdown: quick stats + a "Search…" entry that either does an inline quick lookup or launches the full GTK4 app.
+- Runs inside `gnome-shell`'s process (GJS) — this is why it must stay thin. Anything heavier belongs in the GTK4 app, not the extension: Shell extensions that do real work are a common source of Shell crashes and are the most likely part of this stack to break across GNOME version upgrades.
+
+## 3. Technical Stack
+
+| Concern | Choice |
+|---|---|
+| Daemon language | Rust |
+| Knowledge graph | SQLite (nodes/edges, recursive-CTE or Cypher-lite traversal) |
+| Vector engine | LanceDB (embedded) |
+| Parsing | tree-sitter |
+| Embeddings | OpenAI-compatible `/v1/embeddings` over configurable HTTP endpoint (Ollama, LM Studio, vLLM, llama.cpp server, local or LAN) — optional, daemon is useful without it |
+| MCP transport | JSON-RPC 2.0 over stdio |
+| GUI/control transport | JSON-RPC 2.0 over Unix domain socket |
+| GUI toolkit | GTK4 + libadwaita (`gtk-rs`) |
+| Shell integration | GNOME Shell extension (GJS), status-only |
+| Config | TOML, `~/.config/nexuscontext/config.toml` + env var overrides (`NEXUS_CACHE_DIR`, `NEXUS_LOG_LEVEL`, `NEXUS_WORKERS`) |
+| Data dir | `~/.local/share/nexuscontext/` |
+| Service management | `systemd --user` unit, autostart |
+| Logging | `tracing` crate, structured, tailable by GUI; opt-in `NEXUS_DIAGNOSTICS=1` writes a periodic resource-trajectory log to temp dir for leak/perf reports without breaking the no-telemetry guarantee |
+
+## 4. Full Roadmap
+
+**Phase 0 — Scaffolding**
+Cargo workspace with `nexusd` (daemon), `nexus-cli` (manual indexing/query CLI), and later `nexus-gui` as separate crates sharing a `nexus-core` lib.
+
+**Phase 1 — Context-Aware Core**
+Tree-sitter watcher, knowledge graph construction (nodes/edges in SQLite), CLI for manual reindex and graph queries. Embedding pipeline against a configurable endpoint is additive here, not a blocker for the rest of Phase 1.
+
+**Phase 2 — MCP Implementation**
+`listTools`/`callTool`; structural tools (`search_graph`, `trace_call_path`, `get_architecture`) plus the embedding-backed ones (`search_codebase`, `get_file_context`, `query_memory`); verified working as a subprocess from an IDE extension (e.g. Continue, Claude Code). Stretch goal: an `install` subcommand that auto-detects installed agents and wires MCP config for each, rather than requiring manual `.mcp.json` edits.
+
+**Phase 3 — Control API + Desktop GUI**
+Unix socket control API; GTK4/libadwaita app with Dashboard, Search, Projects, Config, Logs views.
+
+**Phase 4 — GNOME Shell Integration** *(optional, do only if Phase 3 GUI proves useful)*
+Thin top-bar extension for status + quick search, delegating anything nontrivial to the GTK4 app.
+
+**Phase 5 — Agentic Intelligence & Caching**
+Prefix caching for system prompts/codebase metadata; Query Planner tool for vector-search-vs-file-read decisions.
+
+**Phase 6 — Packaging & Distribution**
+`.deb` for the daemon + CLI; Flatpak for the GUI (sandboxing a GTK app is straightforward and is the expected distribution path on Ubuntu/GNOME); systemd user unit shipped with the package; GNOME extension submitted to extensions.gnome.org only if Phase 4 happens.
+
+**Phase 7 — Hardening & Docs**
+No-network-by-default enforcement (embedding endpoint defaults to loopback, explicit opt-in for LAN/remote), directory allowlisting, structured logs for support, install/usage docs.
+
+**Phase 8 — Team-Shared Index Artifact** *(optional, nice-to-have)*
+A compressed graph+vector snapshot (e.g. `.nexuscontext/index.db.zst`) written next to source, so a teammate cloning the repo can bootstrap from the artifact and only run an incremental diff instead of a full reindex. Never committed unless the user opts in.
+
+## 5. Why This Counts as "Full-Fledged"
+
+A daemon alone is a backend, not a tool. What makes this complete for a Linux desktop user:
+- Headless-first: daemon + MCP server work with zero GUI, so IDE/agent integration isn't blocked on the GUI being built.
+- A real inspection/management surface (GTK4 app) for the parts a CLI is bad at — browsing search results, seeing indexing status at a glance.
+- Desktop-native integration (top-bar status) without over-investing in Shell extension surface area, which is the most fragile part of any GNOME-integrated tool.
+- Proper packaging (.deb/Flatpak + systemd unit) so it installs and runs like a normal Ubuntu service, not a script someone has to remember to start.
+
+## 6. Open Risks / Decisions to Revisit
+
+- **LanceDB Rust binding maturity** — verify current crate stability before committing; fallback candidate is embedded Qdrant.
+- **Tree-sitter grammar coverage** — decide initial supported-language list; unsupported files fall back to naive chunking.
+- **Embedding endpoint availability** — daemon must degrade gracefully (clear error, not crash) if the configured embedding endpoint is unreachable, whether that's localhost Ollama or a remote box.
+- **Remote embedding endpoint = network exposure of code** — if `endpoint` points off-box, code chunks leave the machine over HTTP. Worth defaulting to a loopback/private-network check with an explicit opt-in (or a TLS reminder) before sending to anything non-local, so the "self-contained, no cloud calls" claim doesn't get quietly broken by a config change.
+- **File watcher cost on large repos** — needs debouncing/batching strategy before Phase 1 is considered done.
+- **GNOME extension version churn** — GNOME Shell extensions frequently break across major GNOME releases; treat Phase 4 as low-priority/optional and keep it thin enough to be cheap to fix.
+- **Graph incremental-update correctness** — on file change, edges referencing the changed file (e.g. `CALLS` into a renamed function) must be retracted and rebuilt, not just the file's own nodes appended. Worth a full-reindex fallback if incremental graph diffing gets too complex early on.
+- **Bundled vs. network embedding model** — an alternative worth keeping in mind is embedding a small model directly in the binary (zero external process, at the cost of a fixed model). We're deliberately choosing the opposite tradeoff — a configurable external endpoint gives model choice and reuse of whatever's already running, at the cost of "semantic search needs something else up." Worth revisiting only if "zero external dependencies" becomes a hard requirement later; the graph layer already covers the tool's core value without embeddings either way.
