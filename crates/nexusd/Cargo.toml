@@ -9,20 +9,25 @@ description = "NexusContext daemon: MCP server, knowledge-graph indexing, and co
 name = "nexuscontext"
 maintainer = "NexusContext contributors"
 copyright = "2026, NexusContext contributors"
-depends = "$auto"
 section = "devel"
 priority = "optional"
 extended-description = """\
 Self-hosted daemon providing a standardized MCP interface for local \
 codebase indexing, knowledge-graph-based code intelligence (structural \
 search, call tracing, architecture summaries), and optional semantic \
-search. Ships the nexusd daemon and the nexus CLI together."""
+search. Ships the nexusd daemon, the nexus CLI, and the NexusContext \
+Manager GUI together."""
 assets = [
     ["../../target/release/nexusd", "usr/bin/", "755"],
     ["../../target/release/nexus", "usr/bin/", "755"],
+    ["../../target/release/nexuscontext-gui", "usr/bin/", "755"],
     ["../../packaging/systemd/nexuscontext.service", "usr/lib/systemd/user/", "644"],
+    ["../../packaging/nexuscontext-gui.desktop", "usr/share/applications/", "644"],
     ["../../README.md", "usr/share/doc/nexuscontext/README.md", "644"],
 ]
+# Depends declares the actual libs the linked GTK4/libadwaita binary needs;
+# $auto alone only inspects nexusd's own linkage, not nexus-gui's.
+depends = "$auto, libgtk-4-1, libadwaita-1-0"
 
 [dependencies]
 nexus-core.workspace = true

@@ -149,6 +149,9 @@ fn config_set(params: Value) -> Result<Value> {
         if let Some(timeout) = embeddings.get("timeout_secs").and_then(|v| v.as_u64()) {
             config.embeddings.timeout_secs = timeout;
         }
+        if let Some(allow_remote) = embeddings.get("allow_remote").and_then(|v| v.as_bool()) {
+            config.embeddings.allow_remote = allow_remote;
+        }
     }
 
     config.save(&paths.config_file())?;
