@@ -1,0 +1,7 @@
+{
+  "name": "NexusContext",
+  "description": "Top-bar status indicator for the NexusContext codebase daemon - shows whether nexusd is reachable and how many projects are indexed, and launches the full Manager app. Deliberately thin: anything more than status + a launcher belongs in the GTK4 app, not here.",
+  "uuid": "nexuscontext@nexuscontext.local",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/shayne/nexuscontext"
+}

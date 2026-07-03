@@ -122,8 +122,8 @@ Tree-sitter watcher, knowledge graph construction (nodes/edges in SQLite), CLI f
 **Phase 3 — Control API + Desktop GUI** ✅ *(vertical slice done)*
 `nexusd` gained explicit `mcp`/`serve` subcommands to resolve the tension between MCP's per-session stdio transport and an always-on daemon. `serve` hosts the Unix-socket control API (`status.get`, `projects.list`/`reindex`, `config.get`/`set`, `search.adhoc`) and now logs to a file instead of stderr, since the GUI's Logs view needs something to tail. The GTK4/libadwaita app (`nexus-gui`) has all five views (Dashboard, Projects, Search, Config, Logs) wired to the control socket and was verified running against a real desktop session. Remaining: exercise the interactive paths (button clicks) rather than just the auto-load-on-open calls, and replace the deprecated `ViewSwitcherTitle` with the `AdwBreakpoint`-based pattern libadwaita 1.4+ recommends.
 
-**Phase 4 — GNOME Shell Integration** *(optional, do only if Phase 3 GUI proves useful)*
-Thin top-bar extension for status + quick search, delegating anything nontrivial to the GTK4 app.
+**Phase 4 — GNOME Shell Integration** ✅ *(vertical slice done)*
+`extension/nexuscontext@nexuscontext.local/` - a top-bar icon polling `status.get` over the control socket every 15s, showing project count or a clear "not reachable" state, plus a menu item that launches the GTK4 app via `Gio.Subprocess`. Uses the modern ESM extension format (GNOME 45+, targets 45-50). Validated statically - `gnome-extensions pack` accepts the metadata/structure, and `gjs -m` confirms the JS parses cleanly (it only fails at the expected point, resolving `resource:///org/gnome/shell/...`, which only exists inside a running Shell process). Not yet loaded into a live Shell session: doing that requires a full Shell restart, which under Wayland means logging out, so live verification is deferred to whenever that's convenient rather than forced mid-session.
 
 **Phase 5 — Agentic Intelligence & Caching**
 Prefix caching for system prompts/codebase metadata; Query Planner tool for vector-search-vs-file-read decisions.
