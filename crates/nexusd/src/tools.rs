@@ -1,6 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use nexus_core::{project_hash, Paths};
-use nexus_index::{index_directory, Direction, GraphStore, NodeRecord};
+use nexus_index::{graph_db_path, index_project, Direction, GraphStore, NodeRecord};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -131,12 +130,6 @@ fn repo_path_arg(args: &Value) -> Result<PathBuf> {
     Ok(PathBuf::from(raw))
 }
 
-fn graph_db_path(repo_path: &Path) -> PathBuf {
-    let paths = Paths::resolve();
-    let hash = project_hash(repo_path);
-    paths.project_data_dir(&hash).join("graph.db")
-}
-
 fn open_store(repo_path: &Path) -> Result<GraphStore> {
     let db_path = graph_db_path(repo_path);
     if !db_path.exists() {
@@ -164,8 +157,7 @@ fn records_to_json(records: &[NodeRecord]) -> Value {
 
 fn index_repository(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
-    let store = GraphStore::open(&graph_db_path(&repo_path))?;
-    let stats = index_directory(&repo_path, &store)?;
+    let stats = index_project(&repo_path)?;
     Ok(serde_json::to_string_pretty(&json!({
         "status": "indexed",
         "files_indexed": stats.files_indexed,

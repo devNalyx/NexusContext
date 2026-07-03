@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+nexus-core.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

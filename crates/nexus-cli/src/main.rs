@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use nexus_core::{project_hash, Config, Paths};
-use nexus_index::{index_directory, Direction, GraphStore};
+use nexus_core::{Config, Paths};
+use nexus_index::{graph_db_path, index_project, Direction, GraphStore};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -55,11 +55,6 @@ impl From<DirectionArg> for Direction {
     }
 }
 
-fn graph_db_path(paths: &Paths, project: &std::path::Path) -> PathBuf {
-    let hash = project_hash(project);
-    paths.project_data_dir(&hash).join("graph.db")
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let paths = Paths::resolve();
@@ -79,19 +74,17 @@ fn main() -> Result<()> {
             );
         }
         Command::Reindex { path } => {
-            let db_path = graph_db_path(&paths, &path);
-            let store = GraphStore::open(&db_path)?;
-            let stats = index_directory(&path, &store)?;
+            let stats = index_project(&path)?;
             println!("indexed {} files", stats.files_indexed);
             println!("nodes: {}, edges: {}", stats.nodes, stats.edges);
-            println!("graph stored at {}", db_path.display());
+            println!("graph stored at {}", graph_db_path(&path).display());
         }
         Command::SearchGraph {
             pattern,
             project,
             limit,
         } => {
-            let db_path = graph_db_path(&paths, &project);
+            let db_path = graph_db_path(&project);
             if !db_path.exists() {
                 anyhow::bail!(
                     "no index found for {} - run `nexus reindex {}` first",
@@ -121,7 +114,7 @@ fn main() -> Result<()> {
             direction,
             depth,
         } => {
-            let db_path = graph_db_path(&paths, &project);
+            let db_path = graph_db_path(&project);
             if !db_path.exists() {
                 anyhow::bail!(
                     "no index found for {} - run `nexus reindex {}` first",

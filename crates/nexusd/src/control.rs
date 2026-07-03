@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
-use nexus_core::{project_hash, Config, Paths, ProjectEntry, Registry};
-use nexus_index::{index_directory, GraphStore};
+use nexus_core::{Config, Paths, Registry};
+use nexus_index::{graph_db_path, index_project, GraphStore};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -114,23 +114,7 @@ fn projects_reindex(params: Value) -> Result<Value> {
         .ok_or_else(|| anyhow!("missing 'repo_path' argument"))?;
     let repo_path = PathBuf::from(repo_path);
 
-    let paths = Paths::resolve();
-    let hash = project_hash(&repo_path);
-    let db_path = paths.project_data_dir(&hash).join("graph.db");
-    let store = GraphStore::open(&db_path)?;
-    let stats = index_directory(&repo_path, &store)?;
-
-    let mut registry = Registry::load(&paths.registry_file());
-    registry.upsert(ProjectEntry {
-        root_path: repo_path.display().to_string(),
-        hash,
-        last_indexed_unix: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs(),
-        nodes: stats.nodes,
-        edges: stats.edges,
-    });
-    registry.save(&paths.registry_file())?;
+    let stats = index_project(&repo_path)?;
 
     Ok(json!({
         "status": "indexed",
@@ -180,9 +164,7 @@ fn search_adhoc(params: Value) -> Result<Value> {
         .ok_or_else(|| anyhow!("missing 'pattern' argument"))?;
     let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as u32;
 
-    let paths = Paths::resolve();
-    let hash = project_hash(std::path::Path::new(repo_path));
-    let db_path = paths.project_data_dir(&hash).join("graph.db");
+    let db_path = graph_db_path(std::path::Path::new(repo_path));
     if !db_path.exists() {
         bail!("no index found for {repo_path} - call projects.reindex first");
     }

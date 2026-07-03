@@ -400,6 +400,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ignore",
+ "nexus-core",
  "rusqlite",
  "streaming-iterator",
  "thiserror 2.0.18",
