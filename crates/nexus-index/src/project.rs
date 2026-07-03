@@ -97,6 +97,25 @@ pub fn import_project(repo_path: &Path) -> Result<IndexStats> {
     })
 }
 
+/// Removes a project's indexed data (graph.db + WAL/SHM sidecar files) and
+/// its registry entry. Does not touch the source directory or the
+/// `.nexuscontext/` export artifacts next to it - only what's under the
+/// shared data dir.
+pub fn delete_project(repo_path: &Path) -> Result<()> {
+    let paths = Paths::resolve();
+    let hash = project_hash(repo_path);
+    let project_dir = paths.project_data_dir(&hash);
+
+    if project_dir.exists() {
+        std::fs::remove_dir_all(&project_dir)?;
+    }
+
+    let mut registry = Registry::load(&paths.registry_file());
+    registry.projects.retain(|p| p.hash != hash);
+    registry.save(&paths.registry_file())?;
+    Ok(())
+}
+
 fn require_path_allowed(paths: &Paths, repo_path: &Path) -> Result<()> {
     let config = Config::load(&paths.config_file())?;
     if !config.is_path_allowed(repo_path) {

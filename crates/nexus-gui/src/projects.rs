@@ -80,26 +80,52 @@ fn refresh_list(list: &ListBox) {
                 let root_path = project
                     .get("root_path")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("?");
+                    .unwrap_or("?")
+                    .to_string();
                 let nodes = project.get("nodes").and_then(|v| v.as_i64()).unwrap_or(0);
                 let edges = project.get("edges").and_then(|v| v.as_i64()).unwrap_or(0);
 
-                let row = GtkBox::builder()
+                let labels = GtkBox::builder()
                     .orientation(Orientation::Vertical)
                     .spacing(4)
-                    .margin_top(8)
-                    .margin_bottom(8)
-                    .margin_start(8)
-                    .margin_end(8)
+                    .hexpand(true)
                     .build();
-                row.append(&Label::builder().label(root_path).halign(Align::Start).build());
-                row.append(
+                labels.append(&Label::builder().label(&root_path).halign(Align::Start).build());
+                labels.append(
                     &Label::builder()
                         .label(format!("{nodes} nodes, {edges} edges"))
                         .halign(Align::Start)
                         .css_classes(["dim-label", "caption"])
                         .build(),
                 );
+
+                let delete_button = Button::with_label("Delete");
+                delete_button.add_css_class("destructive-action");
+                {
+                    let list = list.clone();
+                    let root_path = root_path.clone();
+                    delete_button.connect_clicked(move |_| {
+                        let result = crate::client::call(
+                            "projects.delete",
+                            serde_json::json!({ "repo_path": root_path }),
+                        );
+                        match result {
+                            Ok(_) => refresh_list(&list),
+                            Err(err) => show_error(&list, &err.to_string()),
+                        }
+                    });
+                }
+
+                let row = GtkBox::builder()
+                    .orientation(Orientation::Horizontal)
+                    .spacing(12)
+                    .margin_top(8)
+                    .margin_bottom(8)
+                    .margin_start(8)
+                    .margin_end(8)
+                    .build();
+                row.append(&labels);
+                row.append(&delete_button);
                 list.append(&row);
             }
         }

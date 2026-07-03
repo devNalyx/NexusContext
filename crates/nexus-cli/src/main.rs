@@ -2,8 +2,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use nexus_core::{Config, Paths};
 use nexus_index::{
-    self as index, export_obsidian, export_project, graph_db_path, import_project, index_project,
-    Direction, NodeRecord,
+    self as index, delete_project, export_obsidian, export_project, graph_db_path, import_project,
+    index_project, Direction, NodeRecord,
 };
 use std::path::PathBuf;
 
@@ -77,6 +77,11 @@ enum Command {
     },
     /// Load a teammate's exported index instead of reindexing from scratch.
     Import {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Remove a project's indexed data (does not touch the source directory).
+    Delete {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
@@ -219,6 +224,10 @@ fn main() -> Result<()> {
                 "imported index: nodes: {}, edges: {}",
                 stats.nodes, stats.edges
             );
+        }
+        Command::Delete { path } => {
+            delete_project(&path)?;
+            println!("deleted index for {}", path.display());
         }
     }
 

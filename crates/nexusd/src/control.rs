@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use nexus_core::{Config, Paths, Registry};
-use nexus_index::{graph_db_path, index_project, GraphStore};
+use nexus_index::{delete_project, graph_db_path, index_project, GraphStore};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -85,6 +85,7 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
         "status.get" => status_get(),
         "projects.list" => projects_list(),
         "projects.reindex" => projects_reindex(params),
+        "projects.delete" => projects_delete(params),
         "config.get" => config_get(),
         "config.set" => config_set(params),
         "search.adhoc" => search_adhoc(params),
@@ -124,6 +125,15 @@ fn projects_reindex(params: Value) -> Result<Value> {
         "nodes": stats.nodes,
         "edges": stats.edges
     }))
+}
+
+fn projects_delete(params: Value) -> Result<Value> {
+    let repo_path = params
+        .get("repo_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing 'repo_path' argument"))?;
+    delete_project(std::path::Path::new(repo_path))?;
+    Ok(json!({ "status": "deleted" }))
 }
 
 fn config_get() -> Result<Value> {

@@ -75,6 +75,15 @@ pub fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "delete_project",
+            "description": "Remove a project's indexed data (graph + registry entry). Does not touch the source directory.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "repo_path": { "type": "string" } },
+                "required": ["repo_path"]
+            }
+        },
+        {
             "name": "detect_dead_code",
             "description": "Functions with no inbound CALLS edge (excluding main). Caveat: call resolution is same-file only, so a function only ever called from a different file will show up as a false positive - treat results as worth a second look, not a guarantee.",
             "inputSchema": {
@@ -128,6 +137,7 @@ pub fn call(params: Value) -> Result<Value> {
 
     let result = match name {
         "index_repository" => index_repository(args),
+        "delete_project" => delete_project(args),
         "search_graph" => search_graph(args),
         "trace_call_path" => trace_call_path(args),
         "get_file_context" => get_file_context(args),
@@ -200,6 +210,12 @@ fn index_repository(args: Value) -> Result<String> {
         "nodes": stats.nodes,
         "edges": stats.edges
     }))?)
+}
+
+fn delete_project(args: Value) -> Result<String> {
+    let repo_path = repo_path_arg(&args)?;
+    index::delete_project(&repo_path)?;
+    Ok(serde_json::to_string_pretty(&json!({ "status": "deleted" }))?)
 }
 
 fn search_graph(args: Value) -> Result<String> {
