@@ -80,6 +80,7 @@ fn handle_connection(stream: UnixStream) -> Result<()> {
 }
 
 fn dispatch(method: &str, params: Value) -> Result<Value> {
+    tracing::debug!(method, "control request received");
     match method {
         "status.get" => status_get(),
         "projects.list" => projects_list(),
@@ -97,6 +98,7 @@ fn status_get() -> Result<Value> {
     Ok(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "data_dir": paths.data_dir.display().to_string(),
+        "log_file": paths.log_file().display().to_string(),
         "projects_indexed": registry.projects.len()
     }))
 }

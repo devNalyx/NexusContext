@@ -1,0 +1,16 @@
+[package]
+name = "nexus-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nexuscontext-gui"
+path = "src/main.rs"
+
+[dependencies]
+nexus-core.workspace = true
+gtk4.workspace = true
+libadwaita.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true

@@ -51,6 +51,10 @@ impl Paths {
     pub fn control_socket(&self) -> PathBuf {
         self.runtime_dir.join("nexuscontext.sock")
     }
+
+    pub fn log_file(&self) -> PathBuf {
+        self.data_dir.join("nexusd.log")
+    }
 }
 
 /// Stable, dependency-free identifier for a project root, used to namespace
