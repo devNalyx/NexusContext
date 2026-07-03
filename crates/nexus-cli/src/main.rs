@@ -2,8 +2,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use nexus_core::{Config, Paths};
 use nexus_index::{
-    export_obsidian, export_project, graph_db_path, import_project, index_project, Direction,
-    GraphStore,
+    self as index, export_obsidian, export_project, graph_db_path, import_project, index_project,
+    Direction, NodeRecord,
 };
 use std::path::PathBuf;
 
@@ -41,6 +41,33 @@ enum Command {
         #[arg(long, default_value_t = 3)]
         depth: u32,
     },
+    /// Summarize a project: node/edge counts and busiest files by definition count.
+    Architecture {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+    },
+    /// Map uncommitted git changes to affected graph symbols.
+    DetectChanges {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+    },
+    /// Functions with no inbound CALLS edge (same-file resolution only - see README).
+    DeadCode {
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+    },
+    /// Pick the cheapest retrieval strategy for a query (file read, graph search, or keyword fallback).
+    QueryPlanner {
+        query: String,
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long)]
+        start_line: Option<usize>,
+        #[arg(long)]
+        end_line: Option<usize>,
+    },
     /// Export the local index for teammates (zstd) or for browsing in Obsidian (markdown vault).
     Export {
         #[arg(default_value = ".")]
@@ -76,6 +103,22 @@ impl From<DirectionArg> for Direction {
     }
 }
 
+fn print_records(records: &[NodeRecord]) {
+    if records.is_empty() {
+        println!("(no results)");
+    }
+    for node in records {
+        println!(
+            "{:<9} {:<30} {}:{}-{}",
+            format!("{:?}", node.kind),
+            node.name,
+            node.file_path,
+            node.start_line,
+            node.end_line
+        );
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let paths = Paths::resolve();
@@ -105,29 +148,9 @@ fn main() -> Result<()> {
             project,
             limit,
         } => {
-            let db_path = graph_db_path(&project);
-            if !db_path.exists() {
-                anyhow::bail!(
-                    "no index found for {} - run `nexus reindex {}` first",
-                    project.display(),
-                    project.display()
-                );
-            }
-            let store = GraphStore::open(&db_path)?;
+            let store = index::open_store(&project)?;
             let results = store.search_by_name(&pattern, limit)?;
-            if results.is_empty() {
-                println!("no matches for '{pattern}'");
-            }
-            for node in results {
-                println!(
-                    "{:<9} {:<30} {}:{}-{}",
-                    format!("{:?}", node.kind),
-                    node.name,
-                    node.file_path,
-                    node.start_line,
-                    node.end_line
-                );
-            }
+            print_records(&results);
         }
         Command::Trace {
             name,
@@ -135,15 +158,7 @@ fn main() -> Result<()> {
             direction,
             depth,
         } => {
-            let db_path = graph_db_path(&project);
-            if !db_path.exists() {
-                anyhow::bail!(
-                    "no index found for {} - run `nexus reindex {}` first",
-                    project.display(),
-                    project.display()
-                );
-            }
-            let store = GraphStore::open(&db_path)?;
+            let store = index::open_store(&project)?;
             let results = store.trace_calls(&name, direction.into(), depth)?;
             if results.is_empty() {
                 println!(
@@ -151,15 +166,41 @@ fn main() -> Result<()> {
                      (same-file resolution only, see proposal)"
                 );
             }
-            for node in results {
-                println!(
-                    "{:<9} {:<30} {}:{}-{}",
-                    format!("{:?}", node.kind),
-                    node.name,
-                    node.file_path,
-                    node.start_line,
-                    node.end_line
-                );
+            print_records(&results);
+        }
+        Command::Architecture { project } => {
+            let summary = index::get_architecture(&project)?;
+            println!("total nodes: {}", summary.total_nodes);
+            println!("total edges: {}", summary.total_edges);
+            println!("busiest files:");
+            for (file, count) in summary.busiest_files {
+                println!("  {count:>4}  {file}");
+            }
+        }
+        Command::DetectChanges { project } => {
+            let affected = index::detect_changes(&project)?;
+            print_records(&affected);
+        }
+        Command::DeadCode { project } => {
+            let dead = index::detect_dead_code(&project)?;
+            print_records(&dead);
+        }
+        Command::QueryPlanner {
+            query,
+            project,
+            file,
+            start_line,
+            end_line,
+        } => {
+            let plan = index::plan_query(&project, &query, file.as_deref(), start_line, end_line)?;
+            println!("strategy: {}", plan.strategy);
+            if let Some(note) = plan.note {
+                println!("note: {note}");
+            }
+            if let Some(content) = plan.file_content {
+                println!("{content}");
+            } else {
+                print_records(&plan.records);
             }
         }
         Command::Export { path, format } => match format {

@@ -218,6 +218,34 @@ impl GraphStore {
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
 
+    /// Functions with no inbound `CALLS` edge, excluding `main` as the
+    /// obvious entry-point heuristic. Caveat inherited from same-file-only
+    /// call resolution (see `ingest.rs`): a function only ever called from
+    /// a *different* file will show up here as a false positive, since that
+    /// call site never produced an edge to begin with. Treat results as
+    /// "worth a second look", not a guarantee.
+    pub fn dead_functions(&self) -> Result<Vec<NodeRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, name, qualified_name, file_path, start_line, end_line
+             FROM nodes
+             WHERE kind = 'Function' AND name != 'main'
+             AND id NOT IN (SELECT dst_id FROM edges WHERE kind = 'CALLS')
+             ORDER BY file_path, start_line",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(NodeRecord {
+                id: row.get(0)?,
+                kind: NodeKind::from_str(&row.get::<_, String>(1)?),
+                name: row.get(2)?,
+                qualified_name: row.get(3)?,
+                file_path: row.get(4)?,
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
     /// `detect_changes`-equivalent: definitions whose line range overlaps a
     /// given span in a file (e.g. a git diff hunk).
     pub fn nodes_overlapping(
