@@ -52,11 +52,28 @@ fn env_filter() -> tracing_subscriber::EnvFilter {
         .unwrap_or_else(|_| EnvFilter::new("info"))
 }
 
+/// `NEXUS_LOG_FORMAT=json` gives structured, machine-parseable logs for
+/// support bundles/log aggregation; plain text (the default) is easier to
+/// read live.
+fn wants_json_logs() -> bool {
+    std::env::var("NEXUS_LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false)
+}
+
 fn init_tracing_stderr() {
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter())
-        .with_writer(std::io::stderr)
-        .init();
+    if wants_json_logs() {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter())
+            .with_writer(std::io::stderr)
+            .json()
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter())
+            .with_writer(std::io::stderr)
+            .init();
+    }
 }
 
 fn init_tracing_file(log_path: &std::path::Path) -> Result<()> {
@@ -64,10 +81,20 @@ fn init_tracing_file(log_path: &std::path::Path) -> Result<()> {
         .create(true)
         .append(true)
         .open(log_path)?;
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter())
-        .with_ansi(false)
-        .with_writer(move || file.try_clone().expect("failed to clone log file handle"))
-        .init();
+
+    if wants_json_logs() {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter())
+            .with_ansi(false)
+            .with_writer(move || file.try_clone().expect("failed to clone log file handle"))
+            .json()
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter())
+            .with_ansi(false)
+            .with_writer(move || file.try_clone().expect("failed to clone log file handle"))
+            .init();
+    }
     Ok(())
 }

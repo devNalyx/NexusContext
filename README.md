@@ -134,8 +134,8 @@ Tree-sitter watcher, knowledge graph construction (nodes/edges in SQLite), CLI f
 - `packaging/flatpak/org.nexuscontext.Manager.json`: manifest only, not built - the GNOME Platform+SDK runtimes are a ~1.5-2GB download, so building was deliberately deferred rather than pulling that into this environment. Needs a generated Cargo vendor file (`flatpak-cargo-generator.py`) and an actual app icon before it would build/pass Flathub review - both noted in `packaging/flatpak/README.md`.
 - GNOME extension submission to extensions.gnome.org: a manual, account-based review process on a third-party site - not something to automate. The extension itself is packaged and ready (see Phase 4); submitting it is a step for whoever owns that decision.
 
-**Phase 7 — Hardening & Docs**
-No-network-by-default enforcement (embedding endpoint defaults to loopback, explicit opt-in for LAN/remote), directory allowlisting, structured logs for support, install/usage docs.
+**Phase 7 — Hardening & Docs** ✅ *(vertical slice done)*
+`Config::embeddings_policy()` refuses to use a non-loopback/non-private embeddings endpoint unless `allow_remote = true` is set explicitly - verified blocking a remote endpoint, then unblocking it with the opt-in. `Config::allowed_roots` (opt-in, empty by default) restricts `index_repository`/reindex to specific directories, enforced once in `nexus_index::index_project` so it applies regardless of caller (CLI/MCP/control API) - verified both the allow and refuse paths. `NEXUS_LOG_FORMAT=json` gives structured logs in both `mcp` and `serve` modes. `INSTALL.md` documents the real, working install/usage flow end-to-end (build, `.deb` install, systemd unit, MCP client config, CLI, GUI, GNOME extension, config options) rather than the aspirational version.
 
 **Phase 8 — Team-Shared Index Artifact** *(optional, nice-to-have)*
 A compressed graph+vector snapshot (e.g. `.nexuscontext/index.db.zst`) written next to source, so a teammate cloning the repo can bootstrap from the artifact and only run an incremental diff instead of a full reindex. Never committed unless the user opts in.

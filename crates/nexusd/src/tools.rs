@@ -126,17 +126,37 @@ pub fn call(params: Value) -> Result<Value> {
         "get_architecture" => get_architecture(args),
         "detect_changes" => detect_changes(args),
         "query_planner" => query_planner(args),
-        "search_codebase" | "query_memory" => Err(anyhow!(
-            "embeddings backend not configured - this tool needs an [embeddings] endpoint \
-             in config.toml. Structural tools (search_graph, trace_call_path, get_architecture, \
-             detect_changes) work without one."
-        )),
+        "search_codebase" | "query_memory" => Err(embeddings_unavailable_error()),
         _ => bail!("unknown tool: {name}"),
     };
 
     match result {
         Ok(text) => Ok(json!({ "content": [ { "type": "text", "text": text } ], "isError": false })),
         Err(err) => Ok(json!({ "content": [ { "type": "text", "text": err.to_string() } ], "isError": true })),
+    }
+}
+
+fn embeddings_unavailable_error() -> anyhow::Error {
+    let config = match Config::load(&Paths::resolve().config_file()) {
+        Ok(c) => c,
+        Err(_) => return anyhow!("embeddings backend not configured"),
+    };
+    match config.embeddings_policy() {
+        nexus_core::EmbeddingsPolicy::RemoteBlocked => anyhow!(
+            "embeddings endpoint {} is not loopback/private, and allow_remote isn't set - \
+             refusing to send code to it. Set embeddings.allow_remote = true in config.toml \
+             if this is intentional.",
+            config.embeddings.endpoint.as_deref().unwrap_or("?")
+        ),
+        nexus_core::EmbeddingsPolicy::Allowed => anyhow!(
+            "embeddings endpoint is configured and allowed, but the embedding HTTP client isn't \
+             implemented yet - structural tools (search_graph, trace_call_path, get_architecture, \
+             detect_changes) work without one."
+        ),
+        nexus_core::EmbeddingsPolicy::NotConfigured => anyhow!(
+            "embeddings backend not configured - structural tools (search_graph, trace_call_path, \
+             get_architecture, detect_changes) work without one."
+        ),
     }
 }
 
@@ -339,16 +359,23 @@ fn query_planner(args: Value) -> Result<String> {
         }
     }
 
-    let note = if config.embeddings.endpoint.is_some() {
-        "an embeddings endpoint is configured, but semantic search isn't implemented yet - \
-         falling back to keyword search over the graph"
-    } else {
-        "no embeddings endpoint configured - falling back to keyword search over the graph"
+    let note = match config.embeddings_policy() {
+        nexus_core::EmbeddingsPolicy::NotConfigured => {
+            "no embeddings endpoint configured - falling back to keyword search over the graph"
+        }
+        nexus_core::EmbeddingsPolicy::RemoteBlocked => {
+            "an embeddings endpoint is configured but blocked (remote host, allow_remote not \
+             set) - falling back to keyword search over the graph"
+        }
+        nexus_core::EmbeddingsPolicy::Allowed => {
+            "an embeddings endpoint is configured and allowed, but semantic search isn't \
+             implemented yet - falling back to keyword search over the graph"
+        }
     };
 
     Ok(serde_json::to_string_pretty(&json!({
         "strategy": "keyword_fallback_graph_search",
-        "embeddings_configured": config.embeddings.endpoint.is_some(),
+        "embeddings_policy": format!("{:?}", config.embeddings_policy()),
         "note": note,
         "result": records_to_json(&merged)
     }))?)
