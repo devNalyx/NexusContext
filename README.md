@@ -137,6 +137,9 @@ No-network-by-default enforcement (embedding endpoint defaults to loopback, expl
 **Phase 8 — Team-Shared Index Artifact** *(optional, nice-to-have)*
 A compressed graph+vector snapshot (e.g. `.nexuscontext/index.db.zst`) written next to source, so a teammate cloning the repo can bootstrap from the artifact and only run an incremental diff instead of a full reindex. Never committed unless the user opts in.
 
+**Phase 9 — Obsidian-Compatible Markdown Export** *(optional, nice-to-have)*
+`nexus export --format obsidian` writes the knowledge graph (nodes/edges) and ADRs as a folder of plain `.md` files with `[[wikilinks]]` between related symbols/decisions — a valid Obsidian vault with zero integration code, since vaults are just markdown folders. Gives a free, polished graph-visualization UI for anyone who already uses Obsidian/Logseq. Static/point-in-time by design — the GTK4 GUI still owns anything needing live daemon state.
+
 ## 5. Why This Counts as "Full-Fledged"
 
 A daemon alone is a backend, not a tool. What makes this complete for a Linux desktop user:
