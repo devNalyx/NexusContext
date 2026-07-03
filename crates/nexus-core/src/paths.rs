@@ -1,5 +1,6 @@
 use directories::ProjectDirs;
-use std::path::PathBuf;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 
 /// Resolved filesystem locations, honoring the `NEXUS_CACHE_DIR` env override
 /// documented in the proposal (config lives at ~/.config, data at ~/.local/share
@@ -32,4 +33,13 @@ impl Paths {
     pub fn project_data_dir(&self, project_hash: &str) -> PathBuf {
         self.data_dir.join(project_hash)
     }
+}
+
+/// Stable, dependency-free identifier for a project root, used to namespace
+/// its graph/vector store under the shared data dir.
+pub fn project_hash(root: &Path) -> String {
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    canonical.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
