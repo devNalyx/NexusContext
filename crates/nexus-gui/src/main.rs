@@ -82,10 +82,12 @@ fn build_ui(app: &adw::Application) {
     );
 
     // ViewSwitcherTitle is deprecated since libadwaita 1.4 in favor of
-    // composing AdwHeaderBar + AdwViewSwitcher directly - a real migration,
-    // not something to do blind without visually verifying the header bar
-    // still renders correctly (not available in this environment). Pre-
-    // existing, not introduced by any of this session's changes.
+    // composing AdwHeaderBar + AdwViewSwitcher directly. Visually verified
+    // live (GNOME Shell 50, libadwaita 1.9): renders correctly maximized,
+    // but collapses to a blank header (no dropdown fallback) at the
+    // default 900x640 size - a cosmetic quirk, not a functional bug, so
+    // the migration to explicit AdwViewSwitcher/AdwViewSwitcherBar is
+    // still deferred rather than forced.
     #[allow(deprecated)]
     let view_switcher = adw::ViewSwitcherTitle::builder().stack(&view_stack).build();
 
