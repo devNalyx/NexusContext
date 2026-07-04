@@ -490,25 +490,37 @@
   <section id="benchmark">
     <div class="section-head">
       <div class="kicker">Measured, not promised</div>
-      <h2>A real token comparison, on a real repo</h2>
-      <p>Same question, same file: "find callers of a function and show their bodies" - on an 873-line Go file in a real production-sized codebase.</p>
+      <h2>Four real questions, tokenized, not estimated</h2>
+      <p>Run live against v0.1.3 on a real 2,414-node production Go monorepo, counted with <code>tiktoken</code>. Two questions win big. Two don't - shown here anyway.</p>
     </div>
     <div class="grid">
       <div class="card">
         <div class="icon">◈</div>
-        <h3>NexusContext</h3>
-        <p><code>query_graph</code> returns 2 exact callers with line ranges, then two scoped <code>get_file_context</code> calls read just those ranges.</p>
-        <p style="margin-top:12px; color:var(--text); font-weight:600;">≈ 460 tokens · 3 tool calls · zero guesswork</p>
+        <h3>Find real callers, with code</h3>
+        <p><code>trace_call_path</code> + two scoped <code>get_file_context</code> calls return exactly 2 real callers with line ranges - and correctly skip a same-named test file that plain <code>grep</code> flagged as a false positive.</p>
+        <p style="margin-top:12px; color:var(--accent-2); font-weight:600;">8,096 → 551 tokens · −93%</p>
       </div>
       <div class="card">
-        <div class="icon">⌁</div>
-        <h3>Grep + read</h3>
-        <p><code>grep -rn</code> finds the call sites but not the function boundaries - without a second pass to find where each function ends, the safe fallback is reading the whole file.</p>
-        <p style="margin-top:12px; color:var(--text); font-weight:600;">≈ 6,500 tokens for the file alone</p>
+        <div class="icon">◐</div>
+        <h3>"How does this actually work?"</h3>
+        <p>One <code>query_memory</code> semantic call over the indexed docs beats reading the two most relevant files in full - and the specifics it surfaced (an env var, a cache field name) checked out against the real source.</p>
+        <p style="margin-top:12px; color:var(--accent-2); font-weight:600;">4,797 → 1,785 tokens · −63%</p>
+      </div>
+      <div class="card">
+        <div class="icon">◇</div>
+        <h3>Every symbol tied to a concept</h3>
+        <p><code>search_graph</code> found 37 real declarations against grep's 79 raw text hits (comments included) - fewer results, but each one is structured, so it costs slightly more, not less.</p>
+        <p style="margin-top:12px; color:var(--warn); font-weight:600;">2,338 → 2,647 tokens · +13%</p>
+      </div>
+      <div class="card">
+        <div class="icon">◱</div>
+        <h3>Cold-start architecture read</h3>
+        <p><code>get_architecture</code> ranks files by real definition density and adds a language breakdown - <code>wc -l</code> is cheaper, but only measures line count, and a naive version of it silently swept in <code>node_modules</code>.</p>
+        <p style="margin-top:12px; color:var(--warn); font-weight:600;">127 → 340 tokens · +168%</p>
       </div>
     </div>
     <p style="text-align:center; margin-top:28px; color:var(--text-dim); font-size:13.5px; max-width:640px; margin-left:auto; margin-right:auto;">
-      Roughly a <strong style="color:var(--text);">90%+ reduction</strong> for call-graph and navigation questions - the win comes from exact line boundaries replacing whole-file reads. The gap narrows for coarser questions like "which files are most complex," where <code>get_architecture</code> and a couple of shell one-liners land in a similar ballpark.
+      Combined across all four: <strong style="color:var(--text);">15,358 → 5,323 tokens (−65%)</strong> - but that average blends two clear wins with two honest losses, not four wins. Navigation and conceptual questions are where the graph pays for itself; a plain-text or line-count answer can still be cheaper when the question itself is shallow enough that a shallow answer is fine.
     </p>
   </section>
 
