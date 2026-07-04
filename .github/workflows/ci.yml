@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # nexus-gui (GTK4 + libadwaita) is part of the default workspace build,
+      # so clippy needs the real dev headers to link, not just fetch crates.
+      # build-essential is needed regardless - the tree-sitter-* grammar
+      # crates compile their C sources via the `cc` crate at build time.
+      # Pinned to 24.04 explicitly: libadwaita-1-dev isn't reliably available
+      # on 22.04, and `ubuntu-latest` can move under this without notice.
+      - name: Install GTK4/libadwaita dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config build-essential
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GTK4/libadwaita dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config build-essential
+      - run: cargo test --workspace --locked
+
+  test-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # nexus-gui is Linux/GNOME-first by design (no cfg gating exists for
+      # it, and libadwaita on macOS is rough-to-nonexistent) - excluded
+      # entirely here rather than attempted, matching the release
+      # pipeline's Tier 2 scope (CLI + daemon only on macOS).
+      - run: cargo test --workspace --exclude nexus-gui --locked
