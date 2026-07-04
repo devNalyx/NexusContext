@@ -89,6 +89,7 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
         "projects.architecture" => projects_architecture(params),
         "config.get" => config_get(),
         "config.set" => config_set(params),
+        "embeddings.test" => embeddings_test(),
         "search.adhoc" => search_adhoc(params),
         _ => bail!("unknown control method: {method}"),
     }
@@ -125,7 +126,8 @@ fn projects_reindex(params: Value) -> Result<Value> {
         "status": "indexed",
         "files_indexed": stats.files_indexed,
         "nodes": stats.nodes,
-        "edges": stats.edges
+        "edges": stats.edges,
+        "embeddings_status": stats.embeddings_status
     }))
 }
 
@@ -179,6 +181,9 @@ fn config_set(params: Value) -> Result<Value> {
     let mut config = Config::load(&paths.config_file())?;
 
     if let Some(embeddings) = params.get("embeddings") {
+        if let Some(enabled) = embeddings.get("enabled").and_then(|v| v.as_bool()) {
+            config.embeddings.enabled = enabled;
+        }
         if let Some(endpoint) = embeddings.get("endpoint").and_then(|v| v.as_str()) {
             config.embeddings.endpoint = Some(endpoint.to_string());
         }
@@ -198,6 +203,23 @@ fn config_set(params: Value) -> Result<Value> {
 
     config.save(&paths.config_file())?;
     Ok(serde_json::to_value(&config)?)
+}
+
+/// Checks the currently-saved endpoint/model are actually reachable, by
+/// embedding a short literal probe string and timing it - not a project-
+/// scoped operation, just "is what's in config.toml right now usable at
+/// all." Backs the GUI's "Test Connection" button. Errors already flow
+/// through `dispatch()`'s standard `Err` -> JSON-RPC error envelope, no
+/// extra plumbing needed here.
+fn embeddings_test() -> Result<Value> {
+    let paths = Paths::resolve();
+    let config = Config::load(&paths.config_file())?;
+    let result = nexus_index::embeddings::test_connection(&config.embeddings)?;
+    Ok(json!({
+        "model": result.model,
+        "dim": result.dim,
+        "latency_ms": result.latency_ms
+    }))
 }
 
 fn search_adhoc(params: Value) -> Result<Value> {

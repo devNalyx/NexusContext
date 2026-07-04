@@ -19,6 +19,12 @@ pub struct Config {
 /// queries with no endpoint configured at all, per the proposal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingsConfig {
+    /// Explicit feature on/off switch, independent of whether endpoint/model
+    /// are filled in - so pasting in an endpoint to try it out doesn't
+    /// silently start sending code to it, and it can be turned off again
+    /// without clearing those fields. Defaults to false.
+    #[serde(default)]
+    pub enabled: bool,
     pub endpoint: Option<String>,
     pub model: Option<String>,
     pub api_key: Option<String>,
@@ -40,6 +46,7 @@ fn default_timeout_secs() -> u64 {
 impl Default for EmbeddingsConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             endpoint: None,
             model: None,
             api_key: None,
@@ -51,9 +58,12 @@ impl Default for EmbeddingsConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddingsPolicy {
+    /// Endpoint or model (or both) aren't filled in - nothing to turn on.
     NotConfigured,
+    /// Endpoint and model are filled in, but the feature switch is off.
+    Disabled,
     Allowed,
-    /// Configured, but points off-box and `allow_remote` isn't set.
+    /// Configured and enabled, but points off-box and `allow_remote` isn't set.
     RemoteBlocked,
 }
 
@@ -88,9 +98,16 @@ impl Config {
     }
 
     pub fn embeddings_policy(&self) -> EmbeddingsPolicy {
-        let Some(endpoint) = &self.embeddings.endpoint else {
+        let (Some(endpoint), Some(model)) = (&self.embeddings.endpoint, &self.embeddings.model)
+        else {
             return EmbeddingsPolicy::NotConfigured;
         };
+        if endpoint.trim().is_empty() || model.trim().is_empty() {
+            return EmbeddingsPolicy::NotConfigured;
+        }
+        if !self.embeddings.enabled {
+            return EmbeddingsPolicy::Disabled;
+        }
         if self.embeddings.allow_remote || is_loopback_or_private(endpoint) {
             EmbeddingsPolicy::Allowed
         } else {
@@ -144,5 +161,64 @@ mod tests {
     fn public_hosts_are_not_loopback_or_private() {
         assert!(!is_loopback_or_private("https://api.example.com/v1"));
         assert!(!is_loopback_or_private("http://8.8.8.8/v1"));
+    }
+
+    fn embeddings(endpoint: Option<&str>, model: Option<&str>, enabled: bool, allow_remote: bool) -> Config {
+        Config {
+            embeddings: EmbeddingsConfig {
+                enabled,
+                endpoint: endpoint.map(str::to_string),
+                model: model.map(str::to_string),
+                api_key: None,
+                timeout_secs: default_timeout_secs(),
+                allow_remote,
+            },
+            allowed_roots: vec![],
+        }
+    }
+
+    #[test]
+    fn policy_is_not_configured_without_endpoint_or_model() {
+        assert_eq!(embeddings(None, None, true, false).embeddings_policy(), EmbeddingsPolicy::NotConfigured);
+        assert_eq!(
+            embeddings(Some("http://localhost:11434/v1"), None, true, false).embeddings_policy(),
+            EmbeddingsPolicy::NotConfigured
+        );
+        assert_eq!(
+            embeddings(Some(""), Some("nomic-embed-text"), true, false).embeddings_policy(),
+            EmbeddingsPolicy::NotConfigured
+        );
+    }
+
+    #[test]
+    fn policy_is_disabled_when_configured_but_not_enabled() {
+        assert_eq!(
+            embeddings(Some("http://localhost:11434/v1"), Some("nomic-embed-text"), false, false)
+                .embeddings_policy(),
+            EmbeddingsPolicy::Disabled
+        );
+    }
+
+    #[test]
+    fn policy_is_allowed_for_enabled_loopback_endpoint() {
+        assert_eq!(
+            embeddings(Some("http://localhost:11434/v1"), Some("nomic-embed-text"), true, false)
+                .embeddings_policy(),
+            EmbeddingsPolicy::Allowed
+        );
+    }
+
+    #[test]
+    fn policy_is_remote_blocked_without_allow_remote() {
+        assert_eq!(
+            embeddings(Some("http://100.120.200.220:11434/v1"), Some("nomic-embed-text"), true, false)
+                .embeddings_policy(),
+            EmbeddingsPolicy::RemoteBlocked
+        );
+        assert_eq!(
+            embeddings(Some("http://100.120.200.220:11434/v1"), Some("nomic-embed-text"), true, true)
+                .embeddings_policy(),
+            EmbeddingsPolicy::Allowed
+        );
     }
 }

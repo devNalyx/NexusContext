@@ -112,6 +112,16 @@ impl GraphStore {
             CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id, kind);
             CREATE VIRTUAL TABLE IF NOT EXISTS file_contents_fts
                 USING fts5(file_path UNINDEXED, content);
+            CREATE TABLE IF NOT EXISTS embeddings (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id     INTEGER NOT NULL REFERENCES nodes(id),
+                model       TEXT NOT NULL,
+                dim         INTEGER NOT NULL,
+                chunk_text  TEXT NOT NULL,
+                embedding   BLOB NOT NULL,
+                UNIQUE(node_id, model)
+            );
+            CREATE INDEX IF NOT EXISTS idx_embeddings_node ON embeddings(node_id);
             ",
         )?;
         Ok(Self { conn })
@@ -121,6 +131,7 @@ impl GraphStore {
     /// incremental edge correctness is flagged as an open risk in the
     /// proposal and deferred past this vertical slice.
     pub fn clear(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM embeddings", [])?;
         self.conn.execute("DELETE FROM file_contents_fts", [])?;
         self.conn.execute("DELETE FROM edges", [])?;
         self.conn.execute("DELETE FROM nodes", [])?;
@@ -304,6 +315,69 @@ impl GraphStore {
                 file_path: row.get(0)?,
                 snippet: row.get(1)?,
             })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    pub fn node_by_id(&self, id: i64) -> Result<Option<NodeRecord>> {
+        self.conn
+            .query_row(
+                "SELECT id, kind, name, qualified_name, file_path, start_line, end_line
+                 FROM nodes WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(NodeRecord {
+                        id: row.get(0)?,
+                        kind: NodeKind::from_str(&row.get::<_, String>(1)?),
+                        name: row.get(2)?,
+                        qualified_name: row.get(3)?,
+                        file_path: row.get(4)?,
+                        start_line: row.get(5)?,
+                        end_line: row.get(6)?,
+                    })
+                },
+            )
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.into()),
+            })
+    }
+
+    /// One row per embedded chunk (currently: one per `Function`/`Type`
+    /// node - see `ingest.rs`'s embedding pass). `ON CONFLICT` lets a
+    /// reindex refresh an existing node's vector in place rather than
+    /// accumulating stale duplicates, matching `insert_node`'s own pattern.
+    pub fn insert_embedding(
+        &self,
+        node_id: i64,
+        model: &str,
+        dim: usize,
+        chunk_text: &str,
+        embedding: &[u8],
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO embeddings (node_id, model, dim, chunk_text, embedding)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(node_id, model) DO UPDATE SET
+                dim = excluded.dim,
+                chunk_text = excluded.chunk_text,
+                embedding = excluded.embedding",
+            rusqlite::params![node_id, model, dim as i64, chunk_text, embedding],
+        )?;
+        Ok(())
+    }
+
+    /// Every embedded chunk for one model - callers must always scope by
+    /// model (mixing vectors from two different embedding models in one
+    /// ranking is meaningless, not just suboptimal - dimensions and vector
+    /// spaces aren't comparable across models).
+    pub fn embeddings_for_model(&self, model: &str) -> Result<Vec<(i64, String, Vec<u8>)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT node_id, chunk_text, embedding FROM embeddings WHERE model = ?1")?;
+        let rows = stmt.query_map([model], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }

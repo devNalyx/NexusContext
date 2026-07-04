@@ -94,6 +94,7 @@ pub fn import_project(repo_path: &Path) -> Result<IndexStats> {
         files_indexed: 0,
         nodes,
         edges,
+        embeddings_status: "skipped: imported from artifact, not a fresh index".to_string(),
     })
 }
 

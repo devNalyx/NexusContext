@@ -1,4 +1,5 @@
 pub mod cypher;
+pub mod embeddings;
 pub mod graph;
 pub mod ingest;
 pub mod language;
@@ -16,5 +17,5 @@ pub use project::{
 };
 pub use queries::{
     detect_changes, detect_dead_code, get_architecture, get_file_context, open_store, plan_query,
-    search_code, ArchitectureSummary, QueryPlanResult,
+    search_code, semantic_search, ArchitectureSummary, QueryPlanResult, SemanticHit,
 };

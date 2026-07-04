@@ -1,13 +1,23 @@
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::new_debouncer;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DEBOUNCE: Duration = Duration::from_secs(2);
 const REGISTRY_RESYNC_INTERVAL: Duration = Duration::from_secs(30);
+/// Minimum gap between the *start* of consecutive auto-reindex attempts for
+/// the same project, separate from the 2s debounce (which only coalesces
+/// events within one burst, not across separate bursts). Without this, a
+/// reindex that takes longer than a burst-to-burst gap - which embeddings
+/// makes routine, since each project-wide reindex now makes real network
+/// calls per batch of nodes instead of finishing in well under a second -
+/// can lose the write lock race against its own next attempt: it fails with
+/// "database is locked" after the 30s busy_timeout, and immediately
+/// re-triggers, indefinitely, without ever getting a clear run at finishing.
+const MIN_REINDEX_GAP: Duration = Duration::from_secs(45);
 
 static WATCHED_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -37,7 +47,8 @@ fn run() -> anyhow::Result<()> {
 
     let mut watched: HashSet<PathBuf> = HashSet::new();
     sync_watches(&mut debouncer, &mut watched);
-    let mut last_sync = std::time::Instant::now();
+    let mut last_sync = Instant::now();
+    let mut last_attempt: HashMap<PathBuf, Instant> = HashMap::new();
 
     loop {
         match rx.recv_timeout(REGISTRY_RESYNC_INTERVAL) {
@@ -52,7 +63,17 @@ fn run() -> anyhow::Result<()> {
                     }
                 }
                 for root in to_reindex {
+                    if let Some(attempted_at) = last_attempt.get(&root) {
+                        if attempted_at.elapsed() < MIN_REINDEX_GAP {
+                            tracing::debug!(
+                                project = %root.display(),
+                                "file change detected, skipping - too soon after the last auto-reindex attempt"
+                            );
+                            continue;
+                        }
+                    }
                     tracing::info!(project = %root.display(), "file change detected, reindexing");
+                    last_attempt.insert(root.clone(), Instant::now());
                     if let Err(err) = nexus_index::index_project(&root) {
                         tracing::warn!(project = %root.display(), error = %err, "auto-reindex failed");
                     }

@@ -135,19 +135,19 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "search_codebase",
-            "description": "Semantic search over code. Requires an [embeddings] endpoint configured in config.toml; returns an error otherwise.",
+            "description": "Semantic search over code via cosine similarity against embedded Function/Type nodes. Requires embeddings.enabled = true and a reachable endpoint/model in config.toml (see the GUI's Config tab), and that this project was reindexed after enabling it. Errors with a specific, actionable reason otherwise - structural tools (search_graph, search_code, query_planner) work regardless.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" } },
+                "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer" } },
                 "required": ["repo_path", "query"]
             }
         },
         {
             "name": "query_memory",
-            "description": "RAG-style retrieval over indexed content. Requires an [embeddings] endpoint configured in config.toml; returns an error otherwise.",
+            "description": "RAG-style retrieval over indexed content - currently the same ranked semantic search as search_codebase (richer retrieval, e.g. pulling full surrounding context per hit, is a future enhancement). Same requirements and fallback guidance as search_codebase.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" } },
+                "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer" } },
                 "required": ["repo_path", "query"]
             }
         }
@@ -173,7 +173,7 @@ pub fn call(params: Value) -> Result<Value> {
         "search_code" => search_code(args),
         "query_graph" => query_graph(args),
         "query_planner" => query_planner(args),
-        "search_codebase" | "query_memory" => Err(embeddings_unavailable_error()),
+        "search_codebase" | "query_memory" => semantic_search_tool(args),
         _ => bail!("unknown tool: {name}"),
     };
 
@@ -183,28 +183,65 @@ pub fn call(params: Value) -> Result<Value> {
     }
 }
 
-fn embeddings_unavailable_error() -> anyhow::Error {
-    let config = match Config::load(&Paths::resolve().config_file()) {
-        Ok(c) => c,
-        Err(_) => return anyhow!("embeddings backend not configured"),
-    };
+/// `search_codebase`/`query_memory` share this: check the policy, and
+/// either return a specific, actionable reason it can't run right now, or
+/// actually attempt the semantic search and translate a live failure into
+/// an equally actionable message. Every message points back at the
+/// structural tools that work regardless, so the calling agent has
+/// somewhere to go rather than just hitting a dead end.
+fn semantic_search_tool(args: Value) -> Result<String> {
+    let repo_path = repo_path_arg(&args)?;
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing 'query' argument"))?;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as u32;
+
+    let config = Config::load(&Paths::resolve().config_file())?;
     match config.embeddings_policy() {
-        nexus_core::EmbeddingsPolicy::RemoteBlocked => anyhow!(
+        nexus_core::EmbeddingsPolicy::NotConfigured => bail!(
+            "embeddings backend not configured - structural tools (search_graph, trace_call_path, \
+             get_architecture, search_code, query_planner) work without one."
+        ),
+        nexus_core::EmbeddingsPolicy::Disabled => bail!(
+            "an embeddings endpoint and model are configured but embeddings.enabled = false - set \
+             it to true in config.toml (or via the GUI's Config tab) to turn semantic search on. \
+             Structural tools (search_graph, trace_call_path, get_architecture, search_code, \
+             query_planner) work without it."
+        ),
+        nexus_core::EmbeddingsPolicy::RemoteBlocked => bail!(
             "embeddings endpoint {} is not loopback/private, and allow_remote isn't set - \
              refusing to send code to it. Set embeddings.allow_remote = true in config.toml \
              if this is intentional.",
             config.embeddings.endpoint.as_deref().unwrap_or("?")
         ),
-        nexus_core::EmbeddingsPolicy::Allowed => anyhow!(
-            "embeddings endpoint is configured and allowed, but the embedding HTTP client isn't \
-             implemented yet - structural tools (search_graph, trace_call_path, get_architecture, \
-             detect_changes) work without one."
-        ),
-        nexus_core::EmbeddingsPolicy::NotConfigured => anyhow!(
-            "embeddings backend not configured - structural tools (search_graph, trace_call_path, \
-             get_architecture, detect_changes) work without one."
-        ),
+        nexus_core::EmbeddingsPolicy::Allowed => {}
     }
+
+    match index::semantic_search(&repo_path, &config.embeddings, query, limit) {
+        Ok(hits) => Ok(serde_json::to_string_pretty(&semantic_hits_to_json(&hits))?),
+        Err(err) => Err(anyhow!(
+            "embeddings endpoint is configured and enabled, but this request just failed: {err}. \
+             This isn't retried automatically - try search_graph, search_code, or query_planner \
+             instead while the endpoint is unavailable."
+        )),
+    }
+}
+
+fn semantic_hits_to_json(hits: &[index::SemanticHit]) -> Value {
+    json!(hits
+        .iter()
+        .map(|hit| json!({
+            "kind": format!("{:?}", hit.node.kind),
+            "name": hit.node.name,
+            "qualified_name": hit.node.qualified_name,
+            "file": hit.node.file_path,
+            "start_line": hit.node.start_line,
+            "end_line": hit.node.end_line,
+            "score": hit.score,
+            "chunk_text": hit.chunk_text,
+        }))
+        .collect::<Vec<_>>())
 }
 
 fn repo_path_arg(args: &Value) -> Result<PathBuf> {
@@ -236,7 +273,8 @@ fn index_repository(args: Value) -> Result<String> {
         "status": "indexed",
         "files_indexed": stats.files_indexed,
         "nodes": stats.nodes,
-        "edges": stats.edges
+        "edges": stats.edges,
+        "embeddings_status": stats.embeddings_status
     }))?)
 }
 

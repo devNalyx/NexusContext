@@ -2,15 +2,22 @@ use crate::graph::{EdgeKind, GraphStore, NodeKind};
 use crate::language::{self, Language};
 use anyhow::Result;
 use ignore::WalkBuilder;
+use nexus_core::{Config, EmbeddingsPolicy, Paths};
 use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct IndexStats {
     pub files_indexed: usize,
     pub nodes: i64,
     pub edges: i64,
+    /// What happened with the embeddings pass on this run - e.g. "skipped:
+    /// not configured", "skipped: disabled", "ok: 342 chunks embedded",
+    /// "partial: endpoint became unreachable after 96 chunks". Always
+    /// present so a caller never has to guess why semantic search may or
+    /// may not work after this reindex.
+    pub embeddings_status: String,
 }
 
 /// An unresolved call site, carried past the per-file pass so it can be
@@ -61,6 +68,7 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
     let mut files_indexed = 0;
     let mut global_fn_registry: HashMap<String, Vec<i64>> = HashMap::new();
     let mut pending_calls: Vec<PendingCall> = Vec::new();
+    let mut pending_embeddings: Vec<(i64, String)> = Vec::new();
 
     // Building a TagsConfiguration recompiles that language's query, so it's
     // cached per-language rather than rebuilt for every single file; the
@@ -103,6 +111,7 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
                 for (name, id) in &result.fn_nodes {
                     global_fn_registry.entry(name.clone()).or_default().push(*id);
                 }
+                pending_embeddings.extend(result.pending_embeddings);
                 let same_file_names: HashMap<String, i64> =
                     result.fn_nodes.into_iter().collect();
                 for (caller_id, callee_name) in result.pending_calls {
@@ -138,12 +147,75 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
         }
     }
 
+    let embeddings_status = embed_pending_nodes(store, pending_embeddings);
+
     let (nodes, edges) = store.stats()?;
     Ok(IndexStats {
         files_indexed,
         nodes,
         edges,
+        embeddings_status,
     })
+}
+
+/// Third pass, after every file and every cross-file call edge is already
+/// resolved - embeds each Function/Type node's source text, entirely
+/// best-effort: skipped up front (zero cost) unless embeddings are
+/// configured, enabled, and allowed, and if the endpoint fails partway
+/// through, whatever succeeded before that stays persisted rather than
+/// being thrown away (see `embed_in_batches`).
+fn embed_pending_nodes(store: &GraphStore, pending: Vec<(i64, String)>) -> String {
+    let config = match Config::load(&Paths::resolve().config_file()) {
+        Ok(c) => c,
+        Err(err) => return format!("skipped: failed to load config: {err}"),
+    };
+    match config.embeddings_policy() {
+        EmbeddingsPolicy::NotConfigured => return "skipped: not configured".to_string(),
+        EmbeddingsPolicy::Disabled => return "skipped: disabled".to_string(),
+        EmbeddingsPolicy::RemoteBlocked => {
+            return "skipped: embeddings endpoint is remote and allow_remote isn't set".to_string()
+        }
+        EmbeddingsPolicy::Allowed => {}
+    }
+    if pending.is_empty() {
+        return "ok: 0 chunks embedded (no functions/types found)".to_string();
+    }
+
+    let model = config.embeddings.model.clone().unwrap_or_default();
+    let ids: Vec<i64> = pending.iter().map(|(id, _)| *id).collect();
+    let texts: Vec<String> = pending.iter().map(|(_, text)| text.clone()).collect();
+    let mut embedded = 0usize;
+    let mut insert_err: Option<anyhow::Error> = None;
+
+    let result = crate::embeddings::embed_in_batches(&config.embeddings, &texts, |offset, vectors| {
+        for (i, vector) in vectors.into_iter().enumerate() {
+            if insert_err.is_some() {
+                break;
+            }
+            let idx = offset + i;
+            let dim = vector.len();
+            let bytes = crate::embeddings::vector_to_bytes(&vector);
+            match store.insert_embedding(ids[idx], &model, dim, &texts[idx], &bytes) {
+                Ok(()) => embedded += 1,
+                Err(err) => insert_err = Some(err),
+            }
+        }
+    });
+
+    match (result, insert_err, embedded) {
+        (Ok(()), None, _) => format!("ok: {embedded} chunks embedded"),
+        (Ok(()), Some(err), _) => {
+            format!("partial: {embedded} chunks embedded, then a storage error: {err}")
+        }
+        (Err(err), _, 0) => {
+            tracing::warn!(error = %err, "embeddings endpoint unreachable, skipping embeddings for this index run");
+            format!("skipped: embeddings endpoint unreachable: {err}")
+        }
+        (Err(err), _, embedded) => {
+            tracing::warn!(error = %err, embedded, "embeddings endpoint failed partway through indexing");
+            format!("partial: endpoint became unreachable after {embedded} chunks: {err}")
+        }
+    }
 }
 
 struct FileIndexResult {
@@ -152,6 +224,11 @@ struct FileIndexResult {
     /// (caller_id, callee_name) for every call site, left unresolved until
     /// the project-wide pass in `index_directory`.
     pending_calls: Vec<(i64, String)>,
+    /// (node_id, chunk_text) for every Function/Type node defined in this
+    /// file - left unembedded until the project-wide embeddings pass in
+    /// `index_directory`, which only actually calls the endpoint if
+    /// embeddings are configured/enabled/allowed at all.
+    pending_embeddings: Vec<(i64, String)>,
 }
 
 fn index_file(
@@ -169,14 +246,24 @@ fn index_file(
         .to_string();
 
     let file_id = store.insert_node(NodeKind::File, &rel_path, &rel_path, &rel_path, 0, 0)?;
+    // Decoded once, reused both for full-text search and for slicing each
+    // node's chunk text below - the file is already in memory either way.
+    let text = String::from_utf8_lossy(&source).into_owned();
     // Full-text search only covers files tree-sitter already parses (i.e.
     // the languages in `Language::from_path`) - it doesn't walk every file
     // in the repo independently, so config/doc files outside that set
     // aren't searchable yet.
-    store.insert_file_content(&rel_path, &String::from_utf8_lossy(&source))?;
+    store.insert_file_content(&rel_path, &text)?;
+    let lines: Vec<&str> = text.lines().collect();
+    let chunk_text_for = |range: &tree_sitter::Range| -> String {
+        let start = range.start_point.row.min(lines.len().saturating_sub(1));
+        let end = range.end_point.row.min(lines.len().saturating_sub(1));
+        lines[start..=end].join("\n")
+    };
 
     let extracted = language::extract(config, tags_context, &source)?;
 
+    let mut pending_embeddings: Vec<(i64, String)> = Vec::new();
     let mut fn_nodes: Vec<(String, tree_sitter::Range, i64)> = Vec::new();
     for (name, range) in extracted.functions {
         let qualified_name = format!("{rel_path}::{name}#{}", range.start_point.row);
@@ -189,6 +276,7 @@ fn index_file(
             range.end_point.row as u32 + 1,
         )?;
         store.insert_edge(file_id, id, EdgeKind::Defines)?;
+        pending_embeddings.push((id, chunk_text_for(&range)));
         fn_nodes.push((name, range, id));
     }
 
@@ -203,6 +291,7 @@ fn index_file(
             range.end_point.row as u32 + 1,
         )?;
         store.insert_edge(file_id, id, EdgeKind::Defines)?;
+        pending_embeddings.push((id, chunk_text_for(&range)));
     }
 
     // Find which function contains each call site, by nearest-preceding-
@@ -237,5 +326,6 @@ fn index_file(
     Ok(FileIndexResult {
         fn_nodes: fn_nodes.into_iter().map(|(n, _, id)| (n, id)).collect(),
         pending_calls,
+        pending_embeddings,
     })
 }

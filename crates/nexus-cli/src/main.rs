@@ -105,6 +105,17 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: u32,
     },
+    /// Semantic search over an already-indexed project (requires embeddings.enabled = true).
+    SearchCodebase {
+        query: String,
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        #[arg(long, default_value_t = 10)]
+        limit: u32,
+    },
+    /// Check whether the configured embeddings endpoint/model is reachable right now.
+    /// Global config check, not project-scoped - unlike every other subcommand's --project.
+    TestEmbeddings,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -166,6 +177,7 @@ fn main() -> Result<()> {
             let stats = index_project(&path)?;
             println!("indexed {} files", stats.files_indexed);
             println!("nodes: {}, edges: {}", stats.nodes, stats.edges);
+            println!("embeddings: {}", stats.embeddings_status);
             println!("graph stored at {}", graph_db_path(&path).display());
         }
         Command::SearchGraph {
@@ -275,6 +287,36 @@ fn main() -> Result<()> {
         } => {
             let results = index::run_cypher_query(&project, &query, limit)?;
             print_records(&results);
+        }
+        Command::SearchCodebase {
+            query,
+            project,
+            limit,
+        } => {
+            let config = Config::load(&paths.config_file())?;
+            let hits = index::semantic_search(&project, &config.embeddings, &query, limit)?;
+            if hits.is_empty() {
+                println!("no matches for '{query}'");
+            }
+            for hit in hits {
+                println!(
+                    "{:<9} {:<30} {}:{}-{}  score={:.4}",
+                    format!("{:?}", hit.node.kind),
+                    hit.node.name,
+                    hit.node.file_path,
+                    hit.node.start_line,
+                    hit.node.end_line,
+                    hit.score
+                );
+            }
+        }
+        Command::TestEmbeddings => {
+            let config = Config::load(&paths.config_file())?;
+            let result = index::embeddings::test_connection(&config.embeddings)?;
+            println!(
+                "OK: model={} dim={} latency_ms={}",
+                result.model, result.dim, result.latency_ms
+            );
         }
     }
 
