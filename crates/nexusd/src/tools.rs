@@ -94,7 +94,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "search_code",
-            "description": "Grep-like full-text search over indexed file content (not symbol names) via SQLite FTS5. Only covers files tree-sitter already parsed (Rust/Python currently), not every file in the repo. Query is matched as a literal phrase.",
+            "description": "Grep-like full-text search over indexed file content (not symbol names) via SQLite FTS5. Only covers files tree-sitter already parsed (one of the 11 supported languages), not every file in the repo. Query is matched as a literal phrase.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
