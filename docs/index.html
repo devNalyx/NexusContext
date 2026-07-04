@@ -222,7 +222,7 @@
   }
   .section-head p { color: var(--text-dim); max-width: 580px; margin: 12px auto 0; }
 
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
   .card {
     background: var(--bg-card);
     border: 1px solid var(--border);
@@ -246,7 +246,7 @@
   /* MCP tool reference */
   .tool-groups {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    grid-template-columns: repeat(4, 1fr);
     gap: 18px;
   }
   .tool-group {
@@ -396,10 +396,15 @@
   footer a:hover { color: var(--text); }
   .footer-links { display: flex; gap: 20px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
 
+  @media (max-width: 1000px) {
+    .grid, .tool-groups { grid-template-columns: repeat(2, 1fr); }
+  }
+
   @media (max-width: 640px) {
     .nav-links { display: none; }
     .stat-row { padding-top: 24px; }
     .stat { border-right: none; padding: 8px 20px; }
+    .grid, .tool-groups { grid-template-columns: 1fr; }
   }
 </style>
 </head>
