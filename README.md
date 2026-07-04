@@ -98,7 +98,7 @@ The daemon runs as a `systemd --user` service, independent of any GUI. The GUI i
 | Daemon language | Rust |
 | Knowledge graph | SQLite, WAL mode (nodes/edges, FTS5 for content search, Cypher-lite traversal) |
 | Vector engine | **Not implemented** — `search_codebase`/`query_memory` are stubs pending an embeddings HTTP client (see Phase 5); the original proposal's "LanceDB" pick was aspirational and never actually built, corrected here rather than left stale |
-| Parsing | tree-sitter (Rust, Python) |
+| Parsing | tree-sitter via community `TAGS_QUERY` conventions (11 languages - see Phase 11) |
 | Embeddings | OpenAI-compatible `/v1/embeddings` over configurable HTTP endpoint (Ollama, LM Studio, vLLM, llama.cpp server, local or LAN) — optional, daemon is useful without it; policy-gated (loopback/private by default, `allow_remote` opt-in for anything else) |
 | MCP transport | JSON-RPC 2.0 over stdio |
 | GUI/control transport | JSON-RPC 2.0 over Unix domain socket |
@@ -159,6 +159,22 @@ Tree-sitter watcher, knowledge graph construction (nodes/edges in SQLite), CLI f
 - **A real concurrency bug, found and fixed** — the two-pass cross-file resolution widened the window where two full-rebuilds of the same project (e.g. the watcher firing during a manual reindex) could interleave and produce a dangling foreign key. `index_directory` now runs inside `BEGIN IMMEDIATE`/`COMMIT` with a 30s busy timeout, so a second rebuild blocks until the first commits instead of corrupting it. Verified by intentionally reproducing the race.
 - **GUI window-stacking bug, found and fixed** — `connect_activate` was rebuilding an entire new window every time GNOME Shell re-launched the already-running app (app grid, search); it now checks for an existing window and presents that instead.
 - **`allow_remote` gap, found and fixed** — the Phase 7 policy field existed in `Config` but the control API's `config_set` never read it, and the GUI's Config tab had no checkbox for it - anyone with a legitimate non-loopback endpoint (e.g. a Tailscale-hosted Ollama) would hit `RemoteBlocked` with no way to opt in short of hand-editing `config.toml`. Both fixed.
+- A GUI papercut, found and fixed while dogfooding: a long project path in the Projects view pushed the Delete button off-screen behind a horizontal scrollbar. Fixed with middle-ellipsis truncation (keeps both the project name and enough of the parent path visible) plus a tooltip with the full path.
+
+**Phase 11 — Multi-Language Support via Generic Tag Extraction** ✅ *(11 languages, up from 2)*
+The honest ceiling on hand-written per-language tree-sitter queries (see Phase 1) was about 2 languages before it stopped being worth the effort per addition. Migrated to `tree-sitter-tags`, consuming the `TAGS_QUERY` that nearly every actively-maintained tree-sitter grammar crate already bundles - a community-maintained query using conventional capture names (`@definition.function`, `@reference.call`, ...), the same mechanism GitHub's code navigation and Neovim's nvim-treesitter rely on. Adding a language now costs "add the grammar crate + map its extensions," not "write and debug a new query language." Now supports Rust, Python, JavaScript, TypeScript/TSX, Go, Java, C, C++, C#, Ruby, PHP.
+
+Two real bugs found while building this, both fixed:
+- `tree-sitter-tags`'s `Tag::span` is deliberately just the *name token's* position (built for "jump to definition" UIs), not the full definition's range - using it directly collapsed every multi-line function down to a single line and broke same-file call resolution entirely. Fixed by deriving line numbers from `Tag::range` (the correct byte range) via a small line-offset index instead.
+- Some languages' bundled tags.scm only tag the function *signature* as the definition's range (C/C++ tag `function_declarator`, not the whole `function_definition` body) - a call inside the body then falls outside the definition's range entirely under a containment check. Replaced "does this call fall within a function's start/end range" with "which function's *start* most recently precedes this call" - doesn't depend on the range's end being accurate at all, and works uniformly regardless of how wide a given grammar's tags.scm makes a definition.
+
+Also hit and worked around one upstream data bug: `tree-sitter-c-sharp` 0.23.5's bundled tags.scm has a malformed bare `@module` capture (alongside a correct `@definition.module` for the same node) that `tree-sitter-tags` rejects outright - stripped that one line before compiling the query rather than dropping C# entirely, since everything else in that file is valid.
+
+**Honest per-language tiering** (definitions/architecture/dead-code-detection are solid for all 11 - this is specifically about call-graph edges):
+- **Full**: Rust, Python, JavaScript, TypeScript/TSX, Go, Java, Ruby.
+- **Structural only, no call edges**: C, C++ (their bundled tags.scm has no call-reference pattern at all), C# (only captures member-access calls like `obj.Method()`, not bare calls), PHP (similarly only captures qualified/variable calls). This mirrors the same tiering the project this technique was learned from has to contend with too ("Excellent/Good/Functional") - not every language gets equally good results from tree-sitter-only analysis, and that's stated plainly rather than smoothed over.
+
+Verified against purpose-built fixtures for all 11 languages, a regression pass on the original Rust/Python fixtures (identical results to before the migration), and a real 115-file/1067-node/2631-edge Go+JS project - including confirming genuine cross-file `CALLS` edges between different Go packages at that scale, and cross-checking the file/language counts against `git ls-files` to confirm `.gitignore`-respecting indexing was accurate (the project's apparent "11,000+ JS/TS files" were almost entirely `node_modules`, correctly excluded).
 
 ## 5. Why This Counts as "Full-Fledged"
 

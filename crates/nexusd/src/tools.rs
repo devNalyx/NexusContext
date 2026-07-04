@@ -30,7 +30,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "trace_call_path",
-            "description": "BFS over the CALLS graph to find callers/callees of a function. Resolution is name-based, not import-aware: same-file matches win, and a cross-file call resolves only if the callee name is unique project-wide - ambiguous same-named functions across files are left unresolved.",
+            "description": "BFS over the CALLS graph to find callers/callees of a function. Resolution is name-based, not import-aware: same-file matches win, and a cross-file call resolves only if the callee name is unique project-wide - ambiguous same-named functions across files are left unresolved. Call-graph quality varies by language: solid for Rust/Python/JS/TS/Go/Java/Ruby; structural-only (no call edges) for C/C++/C#/PHP - see language.rs for why.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

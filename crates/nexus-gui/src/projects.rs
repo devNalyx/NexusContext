@@ -1,3 +1,4 @@
+use gtk4::pango::EllipsizeMode;
 use gtk4::prelude::*;
 use gtk4::{
     Align, Box as GtkBox, Button, Entry, Label, ListBox, Orientation, ScrolledWindow,
@@ -90,7 +91,21 @@ fn refresh_list(list: &ListBox) {
                     .spacing(4)
                     .hexpand(true)
                     .build();
-                labels.append(&Label::builder().label(&root_path).halign(Align::Start).build());
+                // A long path used to force the row wider than the viewport,
+                // pushing the Delete button off-screen behind a horizontal
+                // scrollbar instead of staying visible on the right. Middle
+                // ellipsis keeps both the project name (end) and enough of
+                // the parent path (start) visible; the tooltip has the rest.
+                labels.append(
+                    &Label::builder()
+                        .label(&root_path)
+                        .halign(Align::Start)
+                        .hexpand(true)
+                        .ellipsize(EllipsizeMode::Middle)
+                        .max_width_chars(30)
+                        .tooltip_text(&root_path)
+                        .build(),
+                );
                 labels.append(
                     &Label::builder()
                         .label(format!("{nodes} nodes, {edges} edges"))
