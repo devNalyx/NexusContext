@@ -69,26 +69,16 @@ jobs:
 
   # Tier 2: CLI + daemon only - no GTK/libadwaita attempt at all (nexus-gui
   # is Linux/GNOME-first by design, with no cfg gating to make it portable).
+  # Apple Silicon only (macos-14) - no separate Intel (macos-13) build: that
+  # runner class hit an extended GitHub-side queue with no runner ever
+  # assigned (~20min, confirmed via the API showing no runner_name at all),
+  # consistent with GitHub's own reduced Intel-macOS-runner capacity. Intel
+  # Mac users run the arm64 binary under Rosetta 2 instead - a real,
+  # supported path, not a workaround - rather than depend on a runner class
+  # that may not reliably become available.
   # Unsigned/unnotarized binaries will hit Gatekeeper's quarantine flag on
   # download - real code-signing needs an Apple Developer ID and is its own
   # follow-up, not attempted here; documented in the release notes instead.
-  macos-x86_64:
-    needs: check-version
-    runs-on: macos-13
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --exclude nexus-gui --release --locked
-      - name: Build tarball
-        run: |
-          mkdir -p dist
-          tar -czf dist/nexuscontext-macos-x86_64.tar.gz -C target/release nexusd nexus
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-x86_64
-          path: dist/*.tar.gz
-
   macos-aarch64:
     needs: check-version
     runs-on: macos-14
@@ -111,7 +101,7 @@ jobs:
   # each calling `gh release create` against the same tag would race each
   # other creating/updating the same release.
   publish:
-    needs: [linux-x86_64, macos-x86_64, macos-aarch64]
+    needs: [linux-x86_64, macos-aarch64]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -125,6 +115,6 @@ jobs:
           body: |
             **Linux (x86_64)**: full parity - daemon, CLI, GUI, GNOME extension support, systemd packaging. Choose `.deb`, `.rpm`, or the plain tarball depending on your distro.
 
-            **macOS (x86_64/aarch64)**: CLI + daemon only (`nexus`, `nexusd`) - MCP mode and the control API work, but there's no native GUI build for macOS. Unsigned binaries will need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since these aren't notarized.
+            **macOS (Apple Silicon)**: CLI + daemon only (`nexus`, `nexusd`) - MCP mode and the control API work, but there's no native GUI build for macOS. On an Intel Mac, this arm64 binary runs fine under Rosetta 2. Unsigned binaries will need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since these aren't notarized.
 
             **Windows**: not yet published - tracked as a follow-up (`nexusd`'s control API needs a platform split first; MCP mode itself has no Windows-specific blocker).
