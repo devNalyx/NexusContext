@@ -121,6 +121,19 @@ pub fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "query_graph",
+            "description": "Minimal ad-hoc graph query - not full Cypher, exactly one pattern shape: MATCH (a:Kind)-[:EDGE_KIND]->(b:Kind) [WHERE a.name = 'value' or b.name = 'value'] RETURN a|b. Kind is Function, Type, or File. Fails with a clear error for anything outside that shape rather than guessing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo_path": { "type": "string" },
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "default": 20 }
+                },
+                "required": ["repo_path", "query"]
+            }
+        },
+        {
             "name": "search_codebase",
             "description": "Semantic search over code. Requires an [embeddings] endpoint configured in config.toml; returns an error otherwise.",
             "inputSchema": {
@@ -158,6 +171,7 @@ pub fn call(params: Value) -> Result<Value> {
         "detect_changes" => detect_changes(args),
         "detect_dead_code" => detect_dead_code(args),
         "search_code" => search_code(args),
+        "query_graph" => query_graph(args),
         "query_planner" => query_planner(args),
         "search_codebase" | "query_memory" => Err(embeddings_unavailable_error()),
         _ => bail!("unknown tool: {name}"),
@@ -350,6 +364,18 @@ fn search_code(args: Value) -> Result<String> {
         .iter()
         .map(|h| json!({ "file": h.file_path, "snippet": h.snippet }))
         .collect::<Vec<_>>()))?)
+}
+
+fn query_graph(args: Value) -> Result<String> {
+    let repo_path = repo_path_arg(&args)?;
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing 'query' argument"))?;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as u32;
+
+    let results = nexus_index::run_cypher_query(&repo_path, query, limit)?;
+    Ok(serde_json::to_string_pretty(&records_to_json(&results))?)
 }
 
 fn detect_changes(args: Value) -> Result<String> {

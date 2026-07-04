@@ -16,3 +16,4 @@ tree-sitter-rust.workspace = true
 tree-sitter-python.workspace = true
 streaming-iterator.workspace = true
 zstd.workspace = true
+regex.workspace = true

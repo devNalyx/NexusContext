@@ -1,3 +1,4 @@
+pub mod cypher;
 pub mod graph;
 pub mod ingest;
 pub mod language;
@@ -5,6 +6,7 @@ pub mod obsidian;
 pub mod project;
 pub mod queries;
 
+pub use cypher::run_query as run_cypher_query;
 pub use graph::{CodeSearchHit, Direction, EdgeKind, GraphStore, NodeKind, NodeRecord};
 pub use ingest::{index_directory, IndexStats};
 pub use language::Language;

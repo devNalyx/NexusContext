@@ -41,6 +41,20 @@ struct PendingCall {
 /// own file doesn't also define one, the call is left unresolved rather
 /// than guessing which one - wrong edges would be worse than missing ones.
 pub fn index_directory(root: &Path, store: &GraphStore) -> Result<IndexStats> {
+    store.begin_immediate()?;
+    match index_directory_inner(root, store) {
+        Ok(stats) => {
+            store.commit()?;
+            Ok(stats)
+        }
+        Err(err) => {
+            let _ = store.rollback();
+            Err(err)
+        }
+    }
+}
+
+fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> {
     store.clear()?;
 
     let mut files_indexed = 0;

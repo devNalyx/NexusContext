@@ -85,6 +85,11 @@ impl GraphStore {
         // default rollback journal uses - relevant now that the daemon and
         // an MCP session can both hold a connection to the same graph.db.
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Two full-rebuild writers (e.g. the auto-sync watcher and a manual
+        // reindex) can legitimately target the same project at once -
+        // without a busy timeout, the second one to reach BEGIN IMMEDIATE
+        // fails immediately instead of waiting for the first to finish.
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS nodes (
@@ -119,6 +124,29 @@ impl GraphStore {
         self.conn.execute("DELETE FROM file_contents_fts", [])?;
         self.conn.execute("DELETE FROM edges", [])?;
         self.conn.execute("DELETE FROM nodes", [])?;
+        Ok(())
+    }
+
+    /// `BEGIN IMMEDIATE` acquires the write lock up front rather than on
+    /// first write, so a second full-rebuild (e.g. the auto-sync watcher
+    /// firing while a manual reindex is already running) blocks here -
+    /// via the busy timeout set in `open` - until the first one commits,
+    /// instead of interleaving with it. Two-pass indexing (nodes now,
+    /// cross-file edges at the very end) widened the window where that
+    /// interleaving could produce a dangling foreign key, which is what
+    /// surfaced this in practice.
+    pub fn begin_immediate(&self) -> Result<()> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(())
+    }
+
+    pub fn commit(&self) -> Result<()> {
+        self.conn.execute_batch("COMMIT")?;
+        Ok(())
+    }
+
+    pub fn rollback(&self) -> Result<()> {
+        self.conn.execute_batch("ROLLBACK")?;
         Ok(())
     }
 
@@ -176,6 +204,57 @@ impl GraphStore {
     }
 
     /// `search_graph`-equivalent: substring match over node names.
+    /// Backs the Cypher-lite query engine's single supported pattern shape:
+    /// `(a:kind_a)-[:edge_kind]->(b:kind_b)`, with an optional `WHERE var.name
+    /// = value` filter on either side and a choice of which side to return.
+    pub fn match_pattern(
+        &self,
+        kind_a: &str,
+        edge_kind: &str,
+        kind_b: &str,
+        where_clause: Option<(bool, &str)>,
+        return_a: bool,
+        limit: u32,
+    ) -> Result<Vec<NodeRecord>> {
+        let select_alias = if return_a { "a" } else { "b" };
+        let mut sql = format!(
+            "SELECT DISTINCT {select_alias}.id, {select_alias}.kind, {select_alias}.name, \
+             {select_alias}.qualified_name, {select_alias}.file_path, \
+             {select_alias}.start_line, {select_alias}.end_line
+             FROM nodes a JOIN edges e ON e.src_id = a.id JOIN nodes b ON e.dst_id = b.id
+             WHERE a.kind = ?1 AND e.kind = ?2 AND b.kind = ?3"
+        );
+
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(kind_a.to_string()),
+            Box::new(edge_kind.to_string()),
+            Box::new(kind_b.to_string()),
+        ];
+
+        if let Some((is_on_a, value)) = where_clause {
+            let target = if is_on_a { "a" } else { "b" };
+            sql.push_str(&format!(" AND {target}.name = ?{}", params.len() + 1));
+            params.push(Box::new(value.to_string()));
+        }
+        sql.push_str(&format!(" LIMIT ?{}", params.len() + 1));
+        params.push(Box::new(limit));
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            Ok(NodeRecord {
+                id: row.get(0)?,
+                kind: NodeKind::from_str(&row.get::<_, String>(1)?),
+                name: row.get(2)?,
+                qualified_name: row.get(3)?,
+                file_path: row.get(4)?,
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
     pub fn search_by_name(&self, pattern: &str, limit: u32) -> Result<Vec<NodeRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, kind, name, qualified_name, file_path, start_line, end_line

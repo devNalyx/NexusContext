@@ -916,6 +916,7 @@ dependencies = [
  "anyhow",
  "ignore",
  "nexus-core",
+ "regex",
  "rusqlite",
  "streaming-iterator",
  "thiserror 2.0.18",

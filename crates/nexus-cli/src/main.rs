@@ -97,6 +97,14 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: u32,
     },
+    /// Minimal ad-hoc graph query: MATCH (a:Kind)-[:EDGE]->(b:Kind) [WHERE a.name = 'x'] RETURN a|b
+    QueryGraph {
+        query: String,
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -259,6 +267,14 @@ fn main() -> Result<()> {
             for hit in hits {
                 println!("{}\n  {}\n", hit.file_path, hit.snippet);
             }
+        }
+        Command::QueryGraph {
+            query,
+            project,
+            limit,
+        } => {
+            let results = index::run_cypher_query(&project, &query, limit)?;
+            print_records(&results);
         }
     }
 
