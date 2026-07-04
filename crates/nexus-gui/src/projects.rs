@@ -83,7 +83,10 @@ fn refresh_list(list: &ListBox) {
                     .get("last_queried_unix")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
-                let disk_bytes = project.get("disk_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                let disk_bytes = project
+                    .get("disk_bytes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
 
                 let labels = GtkBox::builder()
                     .orientation(Orientation::Vertical)

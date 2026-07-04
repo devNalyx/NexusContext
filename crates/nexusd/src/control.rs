@@ -1,8 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use nexus_core::{Config, Paths, Registry};
 use nexus_index::{
-    delete_project, get_architecture, graph_db_path, index_project, project_disk_usage,
-    GraphStore,
+    delete_project, get_architecture, graph_db_path, index_project, project_disk_usage, GraphStore,
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -132,10 +131,7 @@ fn projects_list() -> Result<Value> {
         .map(|p| {
             let mut entry = serde_json::to_value(p).unwrap_or(json!({}));
             if let Some(obj) = entry.as_object_mut() {
-                obj.insert(
-                    "disk_bytes".to_string(),
-                    json!(project_disk_usage(&p.hash)),
-                );
+                obj.insert("disk_bytes".to_string(), json!(project_disk_usage(&p.hash)));
             }
             entry
         })
