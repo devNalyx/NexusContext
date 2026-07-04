@@ -56,6 +56,23 @@ pub fn touch_queried(repo_path: &Path) {
     let _ = registry.save(&paths.registry_file());
 }
 
+/// Records one watcher-triggered auto-reindex attempt (success or failure)
+/// against the project's registry entry - the background-reindex frequency/
+/// cost signal, kept separate from a manual reindex since that's a
+/// different question (how expensive is auto-sync running on its own vs.
+/// someone asking for a reindex). Best-effort, same reasoning as
+/// `touch_queried`.
+pub fn record_auto_reindex(repo_path: &Path, duration_ms: u64, success: bool) {
+    let paths = Paths::resolve();
+    let hash = project_hash(repo_path);
+    let mut registry = Registry::load(&paths.registry_file());
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return;
+    };
+    registry.record_auto_reindex(&hash, duration_ms, now.as_secs(), success);
+    let _ = registry.save(&paths.registry_file());
+}
+
 /// Total bytes on disk for a project's indexed data (graph.db plus its WAL
 /// journal / shared-memory sidecar files) - lets the registry surface real
 /// disk usage per project instead of just node/edge counts, so someone who's
@@ -182,16 +199,28 @@ fn require_path_allowed(paths: &Paths, repo_path: &Path) -> Result<()> {
 fn record_indexed(paths: &Paths, repo_path: &Path, nodes: i64, edges: i64) -> Result<()> {
     let mut registry = Registry::load(&paths.registry_file());
     let hash = project_hash(repo_path);
-    // upsert() replaces the whole entry - carry the existing
-    // last_queried_unix forward rather than resetting "last used" back to
-    // never every time a reindex (including an auto-reindex from the
-    // watcher) happens to run.
-    let last_queried_unix = registry
-        .projects
-        .iter()
-        .find(|p| p.hash == hash)
-        .map(|p| p.last_queried_unix)
-        .unwrap_or(0);
+    // upsert() replaces the whole entry - carry the existing "last used"/
+    // auto-reindex history forward rather than resetting it every time a
+    // reindex happens to run.
+    let existing = registry.projects.iter().find(|p| p.hash == hash).cloned();
+    let last_queried_unix = existing.as_ref().map(|p| p.last_queried_unix).unwrap_or(0);
+    let (
+        auto_reindex_count,
+        auto_reindex_fail_count,
+        auto_reindex_total_ms,
+        last_auto_reindex_ms,
+        last_auto_reindex_unix,
+    ) = existing
+        .map(|p| {
+            (
+                p.auto_reindex_count,
+                p.auto_reindex_fail_count,
+                p.auto_reindex_total_ms,
+                p.last_auto_reindex_ms,
+                p.last_auto_reindex_unix,
+            )
+        })
+        .unwrap_or_default();
     registry.upsert(ProjectEntry {
         root_path: repo_path.display().to_string(),
         hash,
@@ -201,6 +230,11 @@ fn record_indexed(paths: &Paths, repo_path: &Path, nodes: i64, edges: i64) -> Re
         nodes,
         edges,
         last_queried_unix,
+        auto_reindex_count,
+        auto_reindex_fail_count,
+        auto_reindex_total_ms,
+        last_auto_reindex_ms,
+        last_auto_reindex_unix,
     });
     registry.save(&paths.registry_file())
 }

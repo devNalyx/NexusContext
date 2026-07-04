@@ -74,9 +74,19 @@ fn run() -> anyhow::Result<()> {
                     }
                     tracing::info!(project = %root.display(), "file change detected, reindexing");
                     last_attempt.insert(root.clone(), Instant::now());
-                    if let Err(err) = nexus_index::index_project(&root) {
-                        tracing::warn!(project = %root.display(), error = %err, "auto-reindex failed");
-                    }
+                    let reindex_start = Instant::now();
+                    let success = match nexus_index::index_project(&root) {
+                        Ok(_) => true,
+                        Err(err) => {
+                            tracing::warn!(project = %root.display(), error = %err, "auto-reindex failed");
+                            false
+                        }
+                    };
+                    nexus_index::record_auto_reindex(
+                        &root,
+                        reindex_start.elapsed().as_millis() as u64,
+                        success,
+                    );
                 }
             }
             Ok(Err(err)) => {

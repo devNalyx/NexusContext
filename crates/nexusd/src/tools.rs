@@ -175,6 +175,7 @@ pub fn call(params: Value) -> Result<Value> {
         }
     }
 
+    let call_start = std::time::Instant::now();
     let result = match name {
         "index_repository" => index_repository(args),
         "delete_project" => delete_project(args),
@@ -190,6 +191,24 @@ pub fn call(params: Value) -> Result<Value> {
         "search_codebase" | "query_memory" => semantic_search_tool(args),
         _ => bail!("unknown tool: {name}"),
     };
+
+    // Phase 1 usage observability: lifetime aggregate counters only (calls,
+    // errors, latency, output size), no per-call log - see
+    // nexus_core::stats for why. Best-effort, never fails the call itself.
+    {
+        let latency_ms = call_start.elapsed().as_millis() as u64;
+        let (is_error, output_bytes) = match &result {
+            Ok(text) => (false, text.len() as u64),
+            Err(err) => (true, err.to_string().len() as u64),
+        };
+        nexus_core::stats::record_mcp_call(
+            &Paths::resolve().usage_stats_file(),
+            name,
+            latency_ms,
+            output_bytes,
+            is_error,
+        );
+    }
 
     match result {
         Ok(text) => {

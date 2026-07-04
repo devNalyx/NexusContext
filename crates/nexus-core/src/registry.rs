@@ -16,6 +16,20 @@ pub struct ProjectEntry {
     /// entries written before this field existed, hence the default.
     #[serde(default)]
     pub last_queried_unix: u64,
+    /// Background-watcher reindex activity, distinct from a manual reindex
+    /// via CLI/MCP/`projects.reindex` - lets the GUI answer "how often, and
+    /// how expensively, is the auto-sync watcher rebuilding this project on
+    /// its own" without conflating it with reindexes someone asked for.
+    #[serde(default)]
+    pub auto_reindex_count: u64,
+    #[serde(default)]
+    pub auto_reindex_fail_count: u64,
+    #[serde(default)]
+    pub auto_reindex_total_ms: u64,
+    #[serde(default)]
+    pub last_auto_reindex_ms: u64,
+    #[serde(default)]
+    pub last_auto_reindex_unix: u64,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -65,6 +79,27 @@ impl Registry {
     pub fn touch_queried(&mut self, hash: &str, unix_time: u64) {
         if let Some(entry) = self.projects.iter_mut().find(|p| p.hash == hash) {
             entry.last_queried_unix = unix_time;
+        }
+    }
+
+    /// Records one watcher-triggered auto-reindex attempt. A no-op if the
+    /// project isn't registered yet, same reasoning as `touch_queried`.
+    pub fn record_auto_reindex(
+        &mut self,
+        hash: &str,
+        duration_ms: u64,
+        unix_time: u64,
+        success: bool,
+    ) {
+        if let Some(entry) = self.projects.iter_mut().find(|p| p.hash == hash) {
+            if success {
+                entry.auto_reindex_count += 1;
+                entry.auto_reindex_total_ms += duration_ms;
+            } else {
+                entry.auto_reindex_fail_count += 1;
+            }
+            entry.last_auto_reindex_ms = duration_ms;
+            entry.last_auto_reindex_unix = unix_time;
         }
     }
 }

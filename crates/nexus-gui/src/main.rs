@@ -6,6 +6,7 @@ mod logs;
 mod project_picker;
 mod projects;
 mod search;
+mod usage;
 mod visualize;
 
 use adw::prelude::*;
@@ -60,6 +61,12 @@ fn build_ui(app: &adw::Application) {
         Some("visualize"),
         "Visualize",
         "network-workgroup-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &usage::build(),
+        Some("usage"),
+        "Usage",
+        "utilities-system-monitor-symbolic",
     );
     view_stack.add_titled_with_icon(
         &config::build(),

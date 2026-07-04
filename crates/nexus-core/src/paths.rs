@@ -48,6 +48,10 @@ impl Paths {
         self.data_dir.join("projects.json")
     }
 
+    pub fn usage_stats_file(&self) -> PathBuf {
+        self.data_dir.join("usage_stats.json")
+    }
+
     pub fn control_socket(&self) -> PathBuf {
         self.runtime_dir.join("nexuscontext.sock")
     }

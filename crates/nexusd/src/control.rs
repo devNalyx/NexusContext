@@ -92,7 +92,8 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
             nexus_index::touch_queried(std::path::Path::new(repo_path));
         }
     }
-    match method {
+    let call_start = std::time::Instant::now();
+    let result = match method {
         "status.get" => status_get(),
         "projects.list" => projects_list(),
         "projects.reindex" => projects_reindex(params),
@@ -103,7 +104,99 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
         "embeddings.test" => embeddings_test(),
         "search.adhoc" => search_adhoc(params),
         "viz.call_graph" => viz_call_graph(params),
+        "stats.get" => stats_get(),
         _ => bail!("unknown control method: {method}"),
+    };
+
+    // Same Phase 1 observability as the MCP tool-call path in tools.rs, kept
+    // in a separate `control_methods` bucket so GUI-originated usage never
+    // gets mixed into "how are MCP agents using this" signal.
+    {
+        let latency_ms = call_start.elapsed().as_millis() as u64;
+        let (is_error, output_bytes) = match &result {
+            Ok(v) => (
+                false,
+                serde_json::to_string(v).map(|s| s.len()).unwrap_or(0) as u64,
+            ),
+            Err(err) => (true, err.to_string().len() as u64),
+        };
+        nexus_core::stats::record_control_call(
+            &Paths::resolve().usage_stats_file(),
+            method,
+            latency_ms,
+            output_bytes,
+            is_error,
+        );
+    }
+
+    result
+}
+
+/// Backs the GUI's Usage tab: lifetime aggregate call/latency/output-size
+/// counters per MCP tool and per control method, plus background-watcher
+/// auto-reindex frequency/cost per project. Phase 1 observability only - no
+/// enforcement, no per-call log, see nexus_core::stats.
+fn stats_get() -> Result<Value> {
+    let paths = Paths::resolve();
+    let usage = nexus_core::UsageStats::load(&paths.usage_stats_file());
+    let registry = Registry::load(&paths.registry_file());
+
+    let total_auto_reindex_count: u64 =
+        registry.projects.iter().map(|p| p.auto_reindex_count).sum();
+    let total_auto_reindex_fail_count: u64 = registry
+        .projects
+        .iter()
+        .map(|p| p.auto_reindex_fail_count)
+        .sum();
+    let total_auto_reindex_ms: u64 = registry
+        .projects
+        .iter()
+        .map(|p| p.auto_reindex_total_ms)
+        .sum();
+
+    Ok(json!({
+        "mcp_tools": tool_stats_json(&usage.mcp_tools),
+        "control_methods": tool_stats_json(&usage.control_methods),
+        "reindex": {
+            "total_auto_reindex_count": total_auto_reindex_count,
+            "total_auto_reindex_fail_count": total_auto_reindex_fail_count,
+            "avg_auto_reindex_ms": avg(total_auto_reindex_ms, total_auto_reindex_count),
+            "projects": registry.projects.iter()
+                .filter(|p| p.auto_reindex_count + p.auto_reindex_fail_count > 0)
+                .map(|p| json!({
+                    "root_path": p.root_path,
+                    "auto_reindex_count": p.auto_reindex_count,
+                    "auto_reindex_fail_count": p.auto_reindex_fail_count,
+                    "avg_auto_reindex_ms": avg(p.auto_reindex_total_ms, p.auto_reindex_count),
+                    "last_auto_reindex_ms": p.last_auto_reindex_ms,
+                    "last_auto_reindex_unix": p.last_auto_reindex_unix,
+                }))
+                .collect::<Vec<_>>()
+        },
+        "collecting_since_unix": usage.collecting_since_unix
+    }))
+}
+
+fn tool_stats_json(map: &std::collections::HashMap<String, nexus_core::ToolCallStats>) -> Value {
+    json!(map
+        .iter()
+        .map(|(name, s)| json!({
+            "name": name,
+            "call_count": s.call_count,
+            "error_count": s.error_count,
+            "avg_latency_ms": avg(s.total_latency_ms, s.call_count),
+            "max_latency_ms": s.max_latency_ms,
+            "total_output_bytes": s.total_output_bytes,
+            "last_called_unix": s.last_called_unix,
+        }))
+        .collect::<Vec<_>>())
+}
+
+fn avg(total: u64, count: u64) -> f64 {
+    if count == 0 {
+        0.0
+    } else {
+        total as f64 / count as f64
     }
 }
 
