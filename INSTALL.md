@@ -145,6 +145,6 @@ All four `[embeddings]` fields can also be set from the GUI's Config tab, not ju
 - Call resolution is name-based, not import-aware: same-file matches win, and a cross-file call resolves only when the callee name is unique project-wide. Two files defining the same-named function, with no local match in the caller's file, stays unresolved rather than guessing wrong.
 - 11 languages supported (Rust, Python, JavaScript, TypeScript/TSX, Go, Java, C, C++, C#, Ruby, PHP), but call-graph quality varies: solid for Rust/Python/JS/TS/Go/Java/Ruby; structural-only (functions/types work, but no call edges) for C/C++/C#/PHP, since those languages' community-maintained tag queries don't capture calls the same way - see `language.rs` for specifics.
 - Reindexing is a full rebuild, not an incremental diff (though concurrent rebuilds of the same project are now safe - see above).
-- `query_graph`'s Cypher-lite supports exactly one pattern shape (`MATCH (a:Kind)-[:EDGE]->(b:Kind) [WHERE ...] RETURN a|b`) - not a real query language.
-- `search_code`'s full-text index only covers files tree-sitter already parses (any of the 11 supported languages), not every file in the repo.
+- `query_graph`'s Cypher-lite supports exactly one pattern shape (`MATCH (a:Kind)-[:EDGE]->(b:Kind) [WHERE ...] RETURN a|b`) - not a real query language. `Kind` can also be `Section` (a markdown heading) alongside `Function`/`Type`/`File`.
+- `search_code`'s full-text index covers files tree-sitter parses (any of the 11 supported languages) plus markdown docs (`.md`/`.markdown`, headings extracted into `Section` nodes with `CONTAINS` edges for nesting) - other file types aren't indexed yet.
 - The Flatpak manifest (`packaging/flatpak/`) hasn't been built - see its README for the remaining steps.
