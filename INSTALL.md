@@ -1,6 +1,12 @@
 # Installing and Using NexusContext
 
-This covers what's actually built and working today (all 10 phases in `README.md`, including the Phase 10 feature-gap-closure round). It assumes Ubuntu/GNOME.
+This covers what's actually built and working today (all 13 phases in `README.md`). It assumes Ubuntu/GNOME.
+
+## 0. Download a release (Linux/macOS)
+
+Tagged releases publish real binaries via GitHub Actions - no toolchain needed. Grab the latest from the [Releases page](https://github.com/devNalyx/NexusContext/releases): a `.deb` or `.rpm` for Linux (full daemon/CLI/GUI), a plain `nexuscontext-linux-x86_64.tar.gz` for other distros, or `nexuscontext-macos-aarch64.tar.gz` for macOS (Apple Silicon; Intel Macs run this fine under Rosetta 2, and this is CLI + daemon only - no native GUI build for macOS). Unsigned macOS binaries need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since they aren't notarized. Windows isn't published yet - see `README.md`'s Phase 13 for why.
+
+Otherwise, build from source:
 
 ## 1. Build from source
 
@@ -89,7 +95,7 @@ Detects Claude Code (via its own `claude mcp add` CLI) and Claude Desktop (merge
 
 ## 5. MCP tools available to agents
 
-Once `nexusd mcp` is wired into an agent, these tools are exposed (no embeddings/network required for any of them except the last two, which are stubbed pending an embedding pipeline):
+Once `nexusd mcp` is wired into an agent, these tools are exposed (no embeddings/network required for any of them except the last two, which need `embeddings.enabled = true` and a reachable endpoint/model configured - see Section 8):
 
 `index_repository`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes`, `detect_dead_code`, `search_code`, `query_graph`, `query_planner`, `delete_project`, `search_codebase`, `query_memory`.
 
@@ -121,6 +127,7 @@ Shows a top-bar icon with daemon status and a launcher for the GUI.
 
 ```toml
 [embeddings]
+enabled = false   # explicit feature switch - filling in endpoint/model below doesn't turn it on
 endpoint = "http://localhost:11434/v1"   # OpenAI-compatible; Ollama, LM Studio, vLLM, etc.
 model = "nomic-embed-text"
 allow_remote = false   # must be true to use a non-loopback/private endpoint
@@ -130,11 +137,11 @@ allowed_roots = []   # if non-empty, index_repository/reindex refuses paths outs
 
 Env var overrides: `NEXUS_CACHE_DIR` (data dir), `NEXUS_LOG_LEVEL` (`trace`/`debug`/`info`/`warn`/`error`), `NEXUS_LOG_FORMAT=json` (structured logs, `serve`/`mcp` modes both support it).
 
-`allow_remote` can also be set from the GUI's Config tab (a checkbox), not just by hand-editing `config.toml`.
+All four `[embeddings]` fields can also be set from the GUI's Config tab, not just by hand-editing `config.toml` - including a "Test Connection" button that embeds a short probe string and reports back the model/dimension/latency, so you can verify an endpoint works before enabling it. From the CLI: `nexus test-embeddings` (no `--project` - it's a global config check) and `nexus search-codebase <query> --project <path>`. After enabling and reindexing, `index_repository`'s response includes `embeddings_status` (e.g. `"ok: 342 chunks embedded"`, `"skipped: disabled"`, `"partial: endpoint became unreachable after 96 chunks"`) so you don't need a second round-trip to know whether semantic search will actually work.
 
 ## Known limitations (see `README.md` for full detail)
 
-- Semantic search (`search_codebase`, `query_memory`) is not implemented yet - structural tools work fully without it. There's no vector store either (the original proposal's LanceDB pick was never actually built).
+- Semantic search (`search_codebase`, `query_memory`) works, but is off by default and needs a reachable embedding endpoint (`embeddings.enabled = true` plus a real `endpoint`/`model`) - structural tools work fully without any of this. There's no dedicated vector store either (the original proposal's LanceDB pick was never built); embeddings are plain BLOBs in the same SQLite graph.db, ranked by brute-force cosine similarity - fine at this project's actual scale.
 - Call resolution is name-based, not import-aware: same-file matches win, and a cross-file call resolves only when the callee name is unique project-wide. Two files defining the same-named function, with no local match in the caller's file, stays unresolved rather than guessing wrong.
 - 11 languages supported (Rust, Python, JavaScript, TypeScript/TSX, Go, Java, C, C++, C#, Ruby, PHP), but call-graph quality varies: solid for Rust/Python/JS/TS/Go/Java/Ruby; structural-only (functions/types work, but no call edges) for C/C++/C#/PHP, since those languages' community-maintained tag queries don't capture calls the same way - see `language.rs` for specifics.
 - Reindexing is a full rebuild, not an incremental diff (though concurrent rebuilds of the same project are now safe - see above).
