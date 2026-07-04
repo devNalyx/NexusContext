@@ -310,11 +310,12 @@
 
 <main>
   <section class="hero">
-    <div class="badge">● all 10 phases shipped &amp; verified</div>
+    <div class="badge">● 10 phases + a feature-gap-closure round, all shipped &amp; verified</div>
     <h1>Give your AI agent a <span class="grad">knowledge graph</span> of your codebase</h1>
     <p class="lede">
       A self-hosted MCP daemon that indexes your code into a structural graph —
-      <code>search_graph</code>, <code>trace_call_path</code>, <code>get_architecture</code> —
+      <code>search_graph</code>, <code>trace_call_path</code>, <code>get_architecture</code>,
+      full-text search, dead-code detection, cross-file call resolution —
       so agents like Claude Code stop grepping and start reasoning. No embeddings required.
     </p>
     <div class="cta-row">
@@ -333,12 +334,12 @@
       <div class="card">
         <div class="icon">◈</div>
         <h3>Knowledge graph, not just vectors</h3>
-        <p>Tree-sitter parses Rust &amp; Python into a SQLite graph of functions, types, and call edges — structural queries that need zero embeddings.</p>
+        <p>Tree-sitter parses Rust &amp; Python into a SQLite graph of functions, types, and call edges, resolved across file boundaries — plus full-text search and dead-code detection on the same graph, all with zero embeddings.</p>
       </div>
       <div class="card">
         <div class="icon">⌁</div>
         <h3>MCP-native</h3>
-        <p>A real JSON-RPC 2.0 stdio server with 9 tools, verified against real IDE-style sessions — drop it into any MCP-compatible agent.</p>
+        <p>A real JSON-RPC 2.0 stdio server with 13 tools, verified against real IDE-style sessions — drop it into any MCP-compatible agent, or auto-configure Claude Code/Desktop with one command.</p>
       </div>
       <div class="card">
         <div class="icon">▣</div>
@@ -406,8 +407,8 @@ systemctl --user enable --now nexuscontext.service
 nexus reindex /path/to/your/project
 nexus search-graph SomeFunction --project /path/to/your/project
 
-<span class="cmt"># register with Claude Code</span>
-claude mcp add -s user nexuscontext -- nexusd mcp</pre>
+<span class="cmt"># auto-configure Claude Code / Claude Desktop</span>
+nexus install</pre>
     </div>
     <p style="text-align:center; margin-top:20px; color:var(--text-dim); font-size:13.5px;">
       Full walkthrough — GUI, GNOME extension, config, packaging — in
@@ -432,6 +433,12 @@ claude mcp add -s user nexuscontext -- nexusd mcp</pre>
       <div class="phase-chip"><span class="check">✓</span> Network policy</div>
       <div class="phase-chip"><span class="check">✓</span> Shared index export</div>
       <div class="phase-chip"><span class="check">✓</span> Obsidian export</div>
+      <div class="phase-chip"><span class="check">✓</span> Cross-file resolution</div>
+      <div class="phase-chip"><span class="check">✓</span> Full-text search</div>
+      <div class="phase-chip"><span class="check">✓</span> Dead-code detection</div>
+      <div class="phase-chip"><span class="check">✓</span> Live auto-sync</div>
+      <div class="phase-chip"><span class="check">✓</span> Cypher-lite queries</div>
+      <div class="phase-chip"><span class="check">✓</span> Multi-agent install</div>
     </div>
   </section>
 </main>

@@ -1,6 +1,6 @@
 # Installing and Using NexusContext
 
-This covers what's actually built and working today (Phases 0-7 of the roadmap in `README.md`). It assumes Ubuntu/GNOME.
+This covers what's actually built and working today (all 10 phases in `README.md`, including the Phase 10 feature-gap-closure round). It assumes Ubuntu/GNOME.
 
 ## 1. Build from source
 
@@ -51,8 +51,17 @@ systemctl --user status nexuscontext.service
 nexus reindex /path/to/your/project
 nexus search-graph SomeFunctionName --project /path/to/your/project
 nexus trace SomeFunctionName --project /path/to/your/project --direction inbound
+nexus architecture --project /path/to/your/project      # node/edge counts, busiest files, languages
+nexus dead-code --project /path/to/your/project          # functions with no inbound calls
+nexus search-code "some literal text" --project /path/to/your/project   # full-text, not just symbol names
+nexus detect-changes --project /path/to/your/project      # uncommitted git diff -> affected symbols
+nexus query-planner "some question" --project /path/to/your/project     # picks file-read vs graph-search vs keyword-fallback
+nexus query-graph "MATCH (f:File)-[:DEFINES]->(fn:Function) WHERE f.name = 'main.rs' RETURN fn" --project /path/to/your/project
+nexus delete /path/to/your/project                        # remove a project's index (not its source)
 nexus status
 ```
+
+Reindexing is safe to run concurrently (e.g. while the auto-sync watcher is also active) - `index_directory` runs inside a transaction with a busy timeout, so a second rebuild waits for the first instead of corrupting the graph.
 
 **Sharing an index with teammates** (skips the first reindex on their end):
 
@@ -70,11 +79,19 @@ nexus export /path/to/your/project --format obsidian   # writes .nexuscontext/va
 
 Open `.nexuscontext/vault/` as an Obsidian vault to browse functions/types and their call relationships via the graph view.
 
+**Auto-configuring an MCP agent instead of hand-editing `.mcp.json`:**
+
+```bash
+nexus install
+```
+
+Detects Claude Code (via its own `claude mcp add` CLI) and Claude Desktop (merges into `claude_desktop_config.json` without touching anything else already in it). Prints a generic `mcpServers` snippet for anything else, rather than guessing at a config format it can't verify.
+
 ## 5. MCP tools available to agents
 
 Once `nexusd mcp` is wired into an agent, these tools are exposed (no embeddings/network required for any of them except the last two, which are stubbed pending an embedding pipeline):
 
-`index_repository`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes`, `query_planner`, `search_codebase`, `query_memory`.
+`index_repository`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes`, `detect_dead_code`, `search_code`, `query_graph`, `query_planner`, `delete_project`, `search_codebase`, `query_memory`.
 
 ## 6. Desktop GUI
 
@@ -82,7 +99,7 @@ Once `nexusd mcp` is wired into an agent, these tools are exposed (no embeddings
 nexuscontext-gui
 ```
 
-Requires `nexusd serve` (the systemd unit above) to be running - the GUI is a client of the control socket, not a standalone tool. Five tabs: Dashboard, Projects, Search, Config, Logs.
+Requires `nexusd serve` (the systemd unit above) to be running - the GUI is a client of the control socket, not a standalone tool. Six tabs: Dashboard (status + auto-sync watcher count), Projects (index/reindex/delete), Search, Architecture (node/edge counts, busiest files, language breakdown), Config, Logs.
 
 ## 7. GNOME Shell extension (optional)
 
@@ -113,9 +130,13 @@ allowed_roots = []   # if non-empty, index_repository/reindex refuses paths outs
 
 Env var overrides: `NEXUS_CACHE_DIR` (data dir), `NEXUS_LOG_LEVEL` (`trace`/`debug`/`info`/`warn`/`error`), `NEXUS_LOG_FORMAT=json` (structured logs, `serve`/`mcp` modes both support it).
 
+`allow_remote` can also be set from the GUI's Config tab (a checkbox), not just by hand-editing `config.toml`.
+
 ## Known limitations (see `README.md` for full detail)
 
-- Semantic search (`search_codebase`, `query_memory`) is not implemented yet - structural tools work fully without it.
-- `trace_call_path` only resolves calls within the same file.
-- Reindexing is a full rebuild, not an incremental diff.
+- Semantic search (`search_codebase`, `query_memory`) is not implemented yet - structural tools work fully without it. There's no vector store either (the original proposal's LanceDB pick was never actually built).
+- Call resolution is name-based, not import-aware: same-file matches win, and a cross-file call resolves only when the callee name is unique project-wide. Two files defining the same-named function, with no local match in the caller's file, stays unresolved rather than guessing wrong.
+- Reindexing is a full rebuild, not an incremental diff (though concurrent rebuilds of the same project are now safe - see above).
+- `query_graph`'s Cypher-lite supports exactly one pattern shape (`MATCH (a:Kind)-[:EDGE]->(b:Kind) [WHERE ...] RETURN a|b`) - not a real query language.
+- `search_code`'s full-text index only covers files tree-sitter already parses (Rust/Python), not every file in the repo.
 - The Flatpak manifest (`packaging/flatpak/`) hasn't been built - see its README for the remaining steps.

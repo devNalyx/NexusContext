@@ -23,7 +23,7 @@
    Embedding ────────┤  Embedding Pipeline           │
    endpoint (net)    │   - optional, off by default  │
                      │                              │
-                     │  Vector Store (LanceDB)       │
+                     │  Vector Store (not built yet)  │
                      │                              │
                      │  RAG / Query Planner          │
                      │                              │
@@ -65,7 +65,7 @@ The daemon runs as a `systemd --user` service, independent of any GUI. The GUI i
 
 **MCP Server**
 - `listTools` / `callTool` per spec, newline-delimited JSON-RPC 2.0 over stdio. Logging goes to stderr exclusively - stdout is reserved for the protocol stream.
-- Structural tools (graph-backed, no embeddings required): `index_repository` (build/rebuild the graph for a path - the prerequisite for everything else), `search_graph`, `trace_call_path`, `get_architecture`, `detect_changes`, `get_file_context` (plain file/line-range read, no embeddings involved either).
+- Structural tools (graph-backed, no embeddings required): `index_repository` (build/rebuild the graph for a path - the prerequisite for everything else), `search_graph`, `trace_call_path`, `get_architecture`, `detect_changes`, `get_file_context` (plain file/line-range read, no embeddings involved either), `detect_dead_code`, `search_code` (FTS5 over file content), `query_graph` (Cypher-lite), `delete_project`.
 - Retrieval tools (embedding-backed, degrade gracefully with a clear error if no endpoint configured): `search_codebase` (semantic), `query_memory`.
 - `query_planner` tool decides file-read vs. graph search vs. keyword-fallback-graph-search (semantic search once the embeddings pipeline exists) to cut token spend - see Phase 5 for the honest version of what it does today.
 
@@ -76,10 +76,11 @@ The daemon runs as a `systemd --user` service, independent of any GUI. The GUI i
 **Desktop GUI — "NexusContext Manager"**
 - GTK4 + `libadwaita` via `gtk-rs`, native Ubuntu/GNOME look, no Electron overhead.
 - Views:
-  - **Dashboard** — daemon status, watched projects, index size, last reindex time.
-  - **Search** — ad-hoc semantic query box with code-preview results (this is the main reason a GUI is worth building at all — trying queries without an agent in the loop).
-  - **Projects** — add/remove watched directories, per-project ignore patterns.
-  - **Config** — embedding model choice, Ollama endpoint, cache limits.
+  - **Dashboard** — daemon status, projects indexed, auto-sync watcher count, last reindex time.
+  - **Projects** — index/reindex/delete a project, see node/edge counts per project.
+  - **Search** — ad-hoc structural query box with code-preview results (this is the main reason a GUI is worth building at all — trying queries without an agent in the loop).
+  - **Architecture** — node/edge counts, index freshness, busiest files, language breakdown by file extension.
+  - **Config** — embeddings endpoint/model, and the `allow_remote` opt-in for non-loopback endpoints.
   - **Logs** — tail of daemon logs for troubleshooting.
 - Talks to the daemon exclusively over the control socket. Never touches stdio.
 - Not required to be running for the daemon or MCP integrations to work — it's a management/inspection tool.
@@ -95,18 +96,19 @@ The daemon runs as a `systemd --user` service, independent of any GUI. The GUI i
 | Concern | Choice |
 |---|---|
 | Daemon language | Rust |
-| Knowledge graph | SQLite (nodes/edges, recursive-CTE or Cypher-lite traversal) |
-| Vector engine | LanceDB (embedded) |
-| Parsing | tree-sitter |
-| Embeddings | OpenAI-compatible `/v1/embeddings` over configurable HTTP endpoint (Ollama, LM Studio, vLLM, llama.cpp server, local or LAN) — optional, daemon is useful without it |
+| Knowledge graph | SQLite, WAL mode (nodes/edges, FTS5 for content search, Cypher-lite traversal) |
+| Vector engine | **Not implemented** — `search_codebase`/`query_memory` are stubs pending an embeddings HTTP client (see Phase 5); the original proposal's "LanceDB" pick was aspirational and never actually built, corrected here rather than left stale |
+| Parsing | tree-sitter (Rust, Python) |
+| Embeddings | OpenAI-compatible `/v1/embeddings` over configurable HTTP endpoint (Ollama, LM Studio, vLLM, llama.cpp server, local or LAN) — optional, daemon is useful without it; policy-gated (loopback/private by default, `allow_remote` opt-in for anything else) |
 | MCP transport | JSON-RPC 2.0 over stdio |
 | GUI/control transport | JSON-RPC 2.0 over Unix domain socket |
 | GUI toolkit | GTK4 + libadwaita (`gtk-rs`) |
 | Shell integration | GNOME Shell extension (GJS), status-only |
-| Config | TOML, `~/.config/nexuscontext/config.toml` + env var overrides (`NEXUS_CACHE_DIR`, `NEXUS_LOG_LEVEL`, `NEXUS_WORKERS`) |
+| Auto-sync | `notify-debouncer-mini`, 2s debounce, `serve`-mode only |
+| Config | TOML, `~/.config/nexuscontext/config.toml` + env var overrides (`NEXUS_CACHE_DIR`, `NEXUS_LOG_LEVEL`, `NEXUS_LOG_FORMAT=json`) |
 | Data dir | `~/.local/share/nexuscontext/` |
 | Service management | `systemd --user` unit, autostart |
-| Logging | `tracing` crate, structured, tailable by GUI; opt-in `NEXUS_DIAGNOSTICS=1` writes a periodic resource-trajectory log to temp dir for leak/perf reports without breaking the no-telemetry guarantee |
+| Logging | `tracing` crate; `NEXUS_LOG_FORMAT=json` for structured/machine-parseable logs, plain text by default |
 
 ## 4. Full Roadmap
 
@@ -143,6 +145,21 @@ Tree-sitter watcher, knowledge graph construction (nodes/edges in SQLite), CLI f
 **Phase 9 — Obsidian-Compatible Markdown Export** ✅ *(vertical slice done; corrected scope below)*
 `nexus export <path> --format obsidian` writes one `.md` file per function/type into `.nexuscontext/vault/`, each with a `## Calls` / `## Called by` section of `[[wikilinks]]` derived from the real `CALLS` edges - a valid Obsidian vault with zero integration code, since a vault is just markdown files. (Correction from the original wording here: this covers the graph only, not "ADRs" - there's no ADR management tool in this project, so there was nothing to export there; that line overclaimed scope that was never built.) Verified: exported the fixture project, confirmed every `[[wikilink]]` in the vault resolves to an actual file, and fixed a real duplicate-link bug along the way (a caller invoking the same callee twice produced the link twice, now deduped). Static/point-in-time by design - the GTK4 GUI still owns anything needing live daemon state.
 
+**Phase 10 — Feature Gap Closure** ✅ *(done - a round of work closing gaps found by comparing against [DeusData/codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp), in priority order)*
+- **Dead-code detection** — `detect_dead_code` (MCP tool + `nexus dead-code`): functions with no inbound `CALLS` edge, excluding `main`. Inherits the same-name-resolution caveats below.
+- **CLI/MCP parity** — `get_architecture`, `detect_changes`, `query_planner` were MCP-only; extracted the actual logic into `crates/nexus-index/src/queries.rs` so `nexus architecture`/`detect-changes`/`query-planner` reach it too, instead of duplicating it.
+- **`delete_project`** — removes a project's graph + registry entry (not the source) via MCP tool, `nexus delete`, the control API, and a Delete button in the GUI's Projects view.
+- **GUI Architecture tab** — the GUI had no view onto `get_architecture` at all. New tab: node/edge counts, index freshness, busiest files, and a new language breakdown (file counts per extension).
+- **Live file-watching auto-sync** — a `notify-debouncer-mini` watcher in `serve` mode, 2s debounce, syncs against the registry every 30s to pick up newly-indexed projects, filters obvious noise directories (`.git`, `target`, `node_modules`, `.nexuscontext`). `serve`-mode only - `mcp` sessions don't own background threads. Watched-project count surfaced through `status.get` and the GUI Dashboard.
+- **Multi-agent auto-install** — `nexus install` shells out to `claude mcp add` for Claude Code (the exact mechanism already proven in this project's own setup) and does a merge-safe write to Claude Desktop's `claude_desktop_config.json`. Anything else gets a generic `mcpServers` snippet printed rather than a guessed config format.
+- **Full-text code search** — `search_code` (MCP tool + `nexus search-code`): SQLite FTS5 over indexed file content, not just symbol names. Query is matched as a literal phrase. Only covers files tree-sitter already parses (Rust/Python), not every file in the repo.
+- **Cross-file call resolution** — the biggest one. `index_directory` now runs in two passes: nodes first, then a project-wide name registry resolves call sites across file boundaries once every file is known. Same-file matches still win; a cross-file match resolves only when the callee name is unique project-wide, so ambiguous same-named functions across files stay unresolved rather than guessing wrong. Not import-aware (no `use`/`import` parsing) - name-based only.
+- **Cypher-lite ad-hoc query** — `query_graph` (MCP tool + `nexus query-graph`): deliberately minimal, one pattern shape (`MATCH (a:Kind)-[:EDGE]->(b:Kind) [WHERE a.name = 'x'] RETURN a|b`), not a real Cypher implementation. Anything else fails with a clear "unsupported" error.
+- **WAL mode** — `journal_mode=WAL` on every graph.db, so `nexusd serve` and `nexusd mcp` can hold concurrent connections to the same graph without one locking out the other.
+- **A real concurrency bug, found and fixed** — the two-pass cross-file resolution widened the window where two full-rebuilds of the same project (e.g. the watcher firing during a manual reindex) could interleave and produce a dangling foreign key. `index_directory` now runs inside `BEGIN IMMEDIATE`/`COMMIT` with a 30s busy timeout, so a second rebuild blocks until the first commits instead of corrupting it. Verified by intentionally reproducing the race.
+- **GUI window-stacking bug, found and fixed** — `connect_activate` was rebuilding an entire new window every time GNOME Shell re-launched the already-running app (app grid, search); it now checks for an existing window and presents that instead.
+- **`allow_remote` gap, found and fixed** — the Phase 7 policy field existed in `Config` but the control API's `config_set` never read it, and the GUI's Config tab had no checkbox for it - anyone with a legitimate non-loopback endpoint (e.g. a Tailscale-hosted Ollama) would hit `RemoteBlocked` with no way to opt in short of hand-editing `config.toml`. Both fixed.
+
 ## 5. Why This Counts as "Full-Fledged"
 
 A daemon alone is a backend, not a tool. What makes this complete for a Linux desktop user:
@@ -153,10 +170,10 @@ A daemon alone is a backend, not a tool. What makes this complete for a Linux de
 
 ## 6. Open Risks / Decisions to Revisit
 
-- **LanceDB Rust binding maturity** — verify current crate stability before committing; fallback candidate is embedded Qdrant.
+- ~~**LanceDB Rust binding maturity**~~ — moot: the vector-store pick was never revisited once the knowledge graph proved sufficient for every structural tool built so far (full-text search also landed on SQLite FTS5 rather than a separate vector engine). Revisit only once the embeddings pipeline actually gets built.
 - **Tree-sitter grammar coverage** — decide initial supported-language list; unsupported files fall back to naive chunking.
 - **Embedding endpoint availability** — daemon must degrade gracefully (clear error, not crash) if the configured embedding endpoint is unreachable, whether that's localhost Ollama or a remote box.
-- **Remote embedding endpoint = network exposure of code** — if `endpoint` points off-box, code chunks leave the machine over HTTP. Worth defaulting to a loopback/private-network check with an explicit opt-in (or a TLS reminder) before sending to anything non-local, so the "self-contained, no cloud calls" claim doesn't get quietly broken by a config change.
+- ~~**Remote embedding endpoint = network exposure of code**~~ — resolved in Phase 7: `Config::embeddings_policy()` refuses a non-loopback/non-private endpoint unless `allow_remote = true` is set explicitly, both in `config.toml` directly and via the GUI's Config tab checkbox.
 - ~~**File watcher cost on large repos**~~ — resolved: the live auto-sync watcher (added after the original 10 phases, see below) debounces at 2s and filters obvious noise directories (`.git`, `target`, `node_modules`, `.nexuscontext`) before triggering a reindex.
 - **GNOME extension version churn** — GNOME Shell extensions frequently break across major GNOME releases; treat Phase 4 as low-priority/optional and keep it thin enough to be cheap to fix.
 - **Graph incremental-update correctness** — on file change, edges referencing the changed file (e.g. `CALLS` into a renamed function) must be retracted and rebuilt, not just the file's own nodes appended. Worth a full-reindex fallback if incremental graph diffing gets too complex early on.
