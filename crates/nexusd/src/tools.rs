@@ -17,7 +17,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "search_graph",
-            "description": "Structural search over indexed symbols by name substring. No embeddings required.",
+            "description": "Structural search over indexed symbols by name substring - functions/types and, for markdown docs, heading sections. No embeddings required.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -58,7 +58,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "get_architecture",
-            "description": "Summarize an indexed project: total node/edge counts and the busiest files by definition count.",
+            "description": "Summarize an indexed project: total node/edge counts and the busiest files by definition count (code functions/types and markdown heading sections counted together).",
             "inputSchema": {
                 "type": "object",
                 "properties": { "repo_path": { "type": "string" } },
@@ -94,7 +94,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "search_code",
-            "description": "Grep-like full-text search over indexed file content (not symbol names) via SQLite FTS5. Only covers files tree-sitter already parsed (one of the 11 supported languages), not every file in the repo. Query is matched as a literal phrase.",
+            "description": "Grep-like full-text search over indexed file content (not symbol names) via SQLite FTS5. Covers files tree-sitter parses (one of the 11 supported languages) plus markdown docs (.md/.markdown) - other file types aren't indexed yet. Query is matched as a literal phrase.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -122,7 +122,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "query_graph",
-            "description": "Minimal ad-hoc graph query - not full Cypher, exactly one pattern shape: MATCH (a:Kind)-[:EDGE_KIND]->(b:Kind) [WHERE a.name = 'value' or b.name = 'value'] RETURN a|b. Kind is Function, Type, or File. Fails with a clear error for anything outside that shape rather than guessing.",
+            "description": "Minimal ad-hoc graph query - not full Cypher, exactly one pattern shape: MATCH (a:Kind)-[:EDGE_KIND]->(b:Kind) [WHERE a.name = 'value' or b.name = 'value'] RETURN a|b. Kind is Function, Type, File, or Section (a markdown heading; CONTAINS edges link a heading to its nested sub-headings). Fails with a clear error for anything outside that shape rather than guessing.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -135,7 +135,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "search_codebase",
-            "description": "Semantic search over code via cosine similarity against embedded Function/Type nodes. Requires embeddings.enabled = true and a reachable endpoint/model in config.toml (see the GUI's Config tab), and that this project was reindexed after enabling it. Errors with a specific, actionable reason otherwise - structural tools (search_graph, search_code, query_planner) work regardless.",
+            "description": "Semantic search via cosine similarity against embedded Function/Type nodes and markdown heading sections alike. Requires embeddings.enabled = true and a reachable endpoint/model in config.toml (see the GUI's Config tab), and that this project was reindexed after enabling it. Errors with a specific, actionable reason otherwise - structural tools (search_graph, search_code, query_planner) work regardless.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer" } },

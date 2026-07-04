@@ -89,22 +89,28 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
             continue;
         }
         let path = entry.path();
-        let Some(language) = Language::from_path(path) else {
+
+        let result = if let Some(language) = Language::from_path(path) {
+            let config = match tags_configs.entry(language) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    match language.build_tags_config() {
+                        Ok(config) => e.insert(config),
+                        Err(err) => {
+                            tracing::warn!(?language, error = %err, "failed to build tags query for language, skipping its files");
+                            continue;
+                        }
+                    }
+                }
+            };
+            index_file(path, config, &mut tags_context, root, store)
+        } else if is_markdown(path) {
+            index_markdown_file(path, root, store)
+        } else {
             continue;
         };
 
-        let config = match tags_configs.entry(language) {
-            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-            std::collections::hash_map::Entry::Vacant(e) => match language.build_tags_config() {
-                Ok(config) => e.insert(config),
-                Err(err) => {
-                    tracing::warn!(?language, error = %err, "failed to build tags query for language, skipping its files");
-                    continue;
-                }
-            },
-        };
-
-        match index_file(path, config, &mut tags_context, root, store) {
+        match result {
             Ok(result) => {
                 for (name, id) in &result.fn_nodes {
                     global_fn_registry
@@ -250,10 +256,9 @@ fn index_file(
     // Decoded once, reused both for full-text search and for slicing each
     // node's chunk text below - the file is already in memory either way.
     let text = String::from_utf8_lossy(&source).into_owned();
-    // Full-text search only covers files tree-sitter already parses (i.e.
-    // the languages in `Language::from_path`) - it doesn't walk every file
-    // in the repo independently, so config/doc files outside that set
-    // aren't searchable yet.
+    // Full-text search also covers markdown docs via `index_markdown_file`
+    // below, independent of this tree-sitter path - but nothing else (plain
+    // .txt, config files, etc.) is walked for full-text search yet.
     store.insert_file_content(&rel_path, &text)?;
     let lines: Vec<&str> = text.lines().collect();
     let chunk_text_for = |range: &tree_sitter::Range| -> String {
@@ -326,6 +331,74 @@ fn index_file(
     Ok(FileIndexResult {
         fn_nodes: fn_nodes.into_iter().map(|(n, _, id)| (n, id)).collect(),
         pending_calls,
+        pending_embeddings,
+    })
+}
+
+fn is_markdown(path: &Path) -> bool {
+    // Case-sensitive, matching `Language::from_path`'s own existing
+    // convention - not special-cased to be more lenient than code files are.
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("md") | Some("markdown")
+    )
+}
+
+/// Markdown's structural model is headings, not functions/calls - there's
+/// no call graph to build here, so this returns the same `FileIndexResult`
+/// shape `index_file` does with empty `fn_nodes`/`pending_calls`, populated
+/// `pending_embeddings`. Because of that shape match, the project-wide
+/// aggregation and embeddings pass in `index_directory_inner` need zero
+/// changes - they already just consume `(node_id, chunk_text)` pairs
+/// regardless of what produced them.
+fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<FileIndexResult> {
+    let source = std::fs::read(path)?;
+    let rel_path = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string();
+
+    let file_id = store.insert_node(NodeKind::File, &rel_path, &rel_path, &rel_path, 0, 0)?;
+    let text = String::from_utf8_lossy(&source).into_owned();
+    store.insert_file_content(&rel_path, &text)?;
+
+    let lines: Vec<&str> = text.lines().collect();
+    let sections = crate::docs::extract_sections(&text);
+
+    // One node id per section, at the same index as `sections` itself - a
+    // parent always appears earlier in the flat list than its children (the
+    // extraction algorithm only ever references already-pushed stack
+    // entries), so `node_ids[parent_idx]` is always already populated by
+    // the time a child section needs it.
+    let mut node_ids: Vec<i64> = Vec::with_capacity(sections.len());
+    let mut pending_embeddings = Vec::with_capacity(sections.len());
+
+    for section in &sections {
+        let qualified_name = format!("{rel_path}::{}#{}", section.name, section.start_line);
+        let id = store.insert_node(
+            NodeKind::Section,
+            &section.name,
+            &qualified_name,
+            &rel_path,
+            section.start_line,
+            section.end_line,
+        )?;
+        match section.parent {
+            Some(parent_idx) => store.insert_edge(node_ids[parent_idx], id, EdgeKind::Contains)?,
+            None => store.insert_edge(file_id, id, EdgeKind::Defines)?,
+        }
+
+        let start = (section.start_line as usize - 1).min(lines.len().saturating_sub(1));
+        let end = (section.end_line as usize - 1).min(lines.len().saturating_sub(1));
+        pending_embeddings.push((id, lines[start..=end].join("\n")));
+
+        node_ids.push(id);
+    }
+
+    Ok(FileIndexResult {
+        fn_nodes: Vec::new(),
+        pending_calls: Vec::new(),
         pending_embeddings,
     })
 }

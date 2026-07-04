@@ -72,6 +72,7 @@ fn normalize_kind(raw: &str) -> Result<String> {
         "function" => Ok("Function".to_string()),
         "type" => Ok("Type".to_string()),
         "file" => Ok("File".to_string()),
-        other => bail!("unknown node kind '{other}' - expected Function, Type, or File"),
+        "section" => Ok("Section".to_string()),
+        other => bail!("unknown node kind '{other}' - expected Function, Type, File, or Section"),
     }
 }

@@ -1,4 +1,5 @@
 pub mod cypher;
+pub mod docs;
 pub mod embeddings;
 pub mod graph;
 pub mod ingest;

@@ -16,6 +16,9 @@ pub enum NodeKind {
     /// Covers struct/class/interface alike - we don't do full type semantics
     /// in Phase 1, just "this is a named type definition".
     Type,
+    /// A markdown heading and its body, down to (not including) the next
+    /// heading of equal-or-shallower level - see `docs::extract_sections`.
+    Section,
 }
 
 impl NodeKind {
@@ -24,6 +27,7 @@ impl NodeKind {
             NodeKind::File => "File",
             NodeKind::Function => "Function",
             NodeKind::Type => "Type",
+            NodeKind::Section => "Section",
         }
     }
 
@@ -31,6 +35,7 @@ impl NodeKind {
         match s {
             "File" => NodeKind::File,
             "Function" => NodeKind::Function,
+            "Section" => NodeKind::Section,
             _ => NodeKind::Type,
         }
     }
@@ -40,6 +45,10 @@ impl NodeKind {
 pub enum EdgeKind {
     Defines,
     Calls,
+    /// Parent heading -> child heading (nesting). `Defines` stays as
+    /// File -> top-level heading (no parent in its own file's nesting -
+    /// not necessarily an H1), matching the File -> Function/Type pattern.
+    Contains,
 }
 
 impl EdgeKind {
@@ -47,6 +56,7 @@ impl EdgeKind {
         match self {
             EdgeKind::Defines => "DEFINES",
             EdgeKind::Calls => "CALLS",
+            EdgeKind::Contains => "CONTAINS",
         }
     }
 }
