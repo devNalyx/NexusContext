@@ -216,6 +216,8 @@ New control API method `stats.get` surfaces all of it (per-tool/method breakdown
 
 Verified: `cargo build`/`test`/`clippy -D warnings`/`fmt --check` all clean across the workspace. Functional smoke test drove the real `nexusd mcp` stdio binary against a scratch project - `index_repository` plus two `search_graph` calls (one a deliberate error against a nonexistent path) - and confirmed `usage_stats.json` recorded exactly 1 call/0 errors/1799ms for the former and 2 calls/1 error/1ms total for the latter, with output-byte counts matching the actual response sizes. The control-API `stats.get` path and GUI tab are implemented and code-reviewed but not yet exercised against a live `nexusd serve` instance - doing so means installing over the actual running systemd-managed daemon, which isn't something to do to a live service without saying so first.
 
+**Dogfooding follow-up (no new functionality):** the deferred live-verification of the GTK4 Manager's `AdwViewSwitcherTitle` header bar (open since Phase 3/4) finally happened on a real desktop - GNOME Shell 50, GTK4 4.22, libadwaita 1.9, Wayland. It renders correctly maximized (all tabs visible with icons+labels); at the default 900x640 window size it collapses to a blank header instead of falling back to a dropdown - cosmetic, not a functional bug, so the migration to explicit `AdwHeaderBar` + `AdwViewSwitcher`/`AdwViewSwitcherBar` stays deferred rather than being rushed through blind. The GNOME Shell extension was also confirmed `ACTIVE` end-to-end via `gnome-extensions info` after a real logout/login.
+
 ## 5. Why This Counts as "Full-Fledged"
 
 A daemon alone is a backend, not a tool. What makes this complete for a Linux desktop user:
