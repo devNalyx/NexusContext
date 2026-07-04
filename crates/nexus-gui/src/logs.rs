@@ -20,7 +20,10 @@ pub fn build() -> GtkBox {
         .monospace(true)
         .wrap_mode(WrapMode::WordChar)
         .build();
-    let scroller = ScrolledWindow::builder().child(&text_view).vexpand(true).build();
+    let scroller = ScrolledWindow::builder()
+        .child(&text_view)
+        .vexpand(true)
+        .build();
 
     {
         let text_view = text_view.clone();

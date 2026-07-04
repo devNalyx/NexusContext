@@ -16,7 +16,7 @@ pub fn open_store(repo_path: &Path) -> Result<GraphStore> {
             repo_path.display()
         );
     }
-    Ok(GraphStore::open(&db_path)?)
+    GraphStore::open(&db_path)
 }
 
 pub struct ArchitectureSummary {

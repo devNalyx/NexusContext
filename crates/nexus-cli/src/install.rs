@@ -58,7 +58,16 @@ fn claude_code_available() -> bool {
 
 fn configure_claude_code() -> Result<()> {
     let status = std::process::Command::new("claude")
-        .args(["mcp", "add", "-s", "user", "nexuscontext", "--", "nexusd", "mcp"])
+        .args([
+            "mcp",
+            "add",
+            "-s",
+            "user",
+            "nexuscontext",
+            "--",
+            "nexusd",
+            "mcp",
+        ])
         .status()?;
     if !status.success() {
         anyhow::bail!("exit code {status} - it may already be registered");
@@ -74,7 +83,11 @@ fn claude_desktop_config_path() -> Option<PathBuf> {
     } else {
         PathBuf::from(std::env::var("HOME").ok()?).join(".config")
     };
-    Some(config_home.join("Claude").join("claude_desktop_config.json"))
+    Some(
+        config_home
+            .join("Claude")
+            .join("claude_desktop_config.json"),
+    )
 }
 
 fn configure_claude_desktop(path: &PathBuf) -> Result<()> {

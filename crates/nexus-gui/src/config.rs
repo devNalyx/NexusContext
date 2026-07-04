@@ -32,8 +32,12 @@ pub fn build() -> GtkBox {
         )
         .build();
 
-    let endpoint_entry = Entry::builder().placeholder_text("http://localhost:11434/v1").build();
-    let model_entry = Entry::builder().placeholder_text("nomic-embed-text").build();
+    let endpoint_entry = Entry::builder()
+        .placeholder_text("http://localhost:11434/v1")
+        .build();
+    let model_entry = Entry::builder()
+        .placeholder_text("nomic-embed-text")
+        .build();
     let allow_remote_check = CheckButton::builder()
         .label(
             "Allow remote endpoint (not loopback/private - e.g. a Tailscale/VPN node). \
@@ -41,8 +45,15 @@ pub fn build() -> GtkBox {
         )
         .build();
 
-    let status_label = Label::builder().label("").halign(Align::Start).wrap(true).build();
-    let button_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(6).build();
+    let status_label = Label::builder()
+        .label("")
+        .halign(Align::Start)
+        .wrap(true)
+        .build();
+    let button_row = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(6)
+        .build();
     let save_button = Button::with_label("Save");
     let test_button = Button::with_label("Test Connection");
     button_row.append(&save_button);
@@ -81,8 +92,12 @@ pub fn build() -> GtkBox {
                 Ok(result) => {
                     let model = result.get("model").and_then(|v| v.as_str()).unwrap_or("?");
                     let dim = result.get("dim").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let latency_ms = result.get("latency_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-                    status_label.set_label(&format!("Connected: {model}, {dim}-dim, {latency_ms}ms"));
+                    let latency_ms = result
+                        .get("latency_ms")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    status_label
+                        .set_label(&format!("Connected: {model}, {dim}-dim, {latency_ms}ms"));
                 }
                 Err(err) => status_label.set_label(&format!("Error: {err}")),
             }
@@ -91,7 +106,12 @@ pub fn build() -> GtkBox {
 
     container.append(&hint);
     container.append(&enabled_check);
-    container.append(&Label::builder().label("Embeddings endpoint").halign(Align::Start).build());
+    container.append(
+        &Label::builder()
+            .label("Embeddings endpoint")
+            .halign(Align::Start)
+            .build(),
+    );
     container.append(&endpoint_entry);
     container.append(&Label::builder().label("Model").halign(Align::Start).build());
     container.append(&model_entry);
@@ -99,7 +119,13 @@ pub fn build() -> GtkBox {
     container.append(&button_row);
     container.append(&status_label);
 
-    load_current(&enabled_check, &endpoint_entry, &model_entry, &allow_remote_check, &status_label);
+    load_current(
+        &enabled_check,
+        &endpoint_entry,
+        &model_entry,
+        &allow_remote_check,
+        &status_label,
+    );
     container
 }
 
@@ -112,7 +138,10 @@ fn load_current(
 ) {
     match crate::client::call("config.get", serde_json::json!({})) {
         Ok(config) => {
-            if let Some(enabled) = config.pointer("/embeddings/enabled").and_then(|v| v.as_bool()) {
+            if let Some(enabled) = config
+                .pointer("/embeddings/enabled")
+                .and_then(|v| v.as_bool())
+            {
                 enabled_check.set_active(enabled);
             }
             if let Some(endpoint) = config

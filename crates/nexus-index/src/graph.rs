@@ -263,7 +263,8 @@ impl GraphStore {
                 end_line: row.get(6)?,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn search_by_name(&self, pattern: &str, limit: u32) -> Result<Vec<NodeRecord>> {
@@ -316,7 +317,8 @@ impl GraphStore {
                 snippet: row.get(1)?,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn node_by_id(&self, id: i64) -> Result<Option<NodeRecord>> {
@@ -376,10 +378,9 @@ impl GraphStore {
         let mut stmt = self
             .conn
             .prepare("SELECT node_id, chunk_text, embedding FROM embeddings WHERE model = ?1")?;
-        let rows = stmt.query_map([model], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        let rows = stmt.query_map([model], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// All nodes in the graph - used by the Obsidian export, which needs
@@ -399,7 +400,8 @@ impl GraphStore {
                 end_line: row.get(6)?,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// All `CALLS` edges as (caller_id, callee_id) pairs - same rationale as
@@ -409,7 +411,8 @@ impl GraphStore {
             .conn
             .prepare("SELECT src_id, dst_id FROM edges WHERE kind = 'CALLS'")?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// Functions with no inbound `CALLS` edge, excluding `main` as the
@@ -437,7 +440,8 @@ impl GraphStore {
                 end_line: row.get(6)?,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// File extension counts (a rough proxy for "language breakdown") -
@@ -480,21 +484,19 @@ impl GraphStore {
              FROM nodes
              WHERE file_path = ?1 AND kind != 'File' AND start_line <= ?3 AND end_line >= ?2",
         )?;
-        let rows = stmt.query_map(
-            rusqlite::params![file_path, start_line, end_line],
-            |row| {
-                Ok(NodeRecord {
-                    id: row.get(0)?,
-                    kind: NodeKind::from_str(&row.get::<_, String>(1)?),
-                    name: row.get(2)?,
-                    qualified_name: row.get(3)?,
-                    file_path: row.get(4)?,
-                    start_line: row.get(5)?,
-                    end_line: row.get(6)?,
-                })
-            },
-        )?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        let rows = stmt.query_map(rusqlite::params![file_path, start_line, end_line], |row| {
+            Ok(NodeRecord {
+                id: row.get(0)?,
+                kind: NodeKind::from_str(&row.get::<_, String>(1)?),
+                name: row.get(2)?,
+                qualified_name: row.get(3)?,
+                file_path: row.get(4)?,
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// `get_architecture`-equivalent building block: files ranked by how
@@ -507,7 +509,8 @@ impl GraphStore {
         let rows = stmt.query_map([limit], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// `trace_call_path`-equivalent: BFS over CALLS edges up to `max_depth`.
@@ -560,18 +563,16 @@ impl GraphStore {
             return Ok(Vec::new());
         }
 
-        let placeholders = result_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = result_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path, start_line, end_line
              FROM nodes WHERE id IN ({placeholders})"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::ToSql> =
-            result_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let params: Vec<&dyn rusqlite::ToSql> = result_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
         let rows = stmt.query_map(params.as_slice(), |row| {
             Ok(NodeRecord {
                 id: row.get(0)?,
@@ -583,6 +584,7 @@ impl GraphStore {
                 end_line: row.get(6)?,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 }

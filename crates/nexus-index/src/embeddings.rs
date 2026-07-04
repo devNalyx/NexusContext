@@ -69,7 +69,11 @@ fn endpoint_url(cfg: &EmbeddingsConfig) -> Result<String> {
 /// format). Any transport failure, non-2xx status, or malformed response is
 /// treated identically as "endpoint unreachable or misconfigured" - the
 /// caller doesn't need to distinguish those to decide what to do next.
-fn embed_one_batch(cfg: &EmbeddingsConfig, agent: &ureq::Agent, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+fn embed_one_batch(
+    cfg: &EmbeddingsConfig,
+    agent: &ureq::Agent,
+    texts: &[String],
+) -> Result<Vec<Vec<f32>>> {
     let model = cfg
         .model
         .as_deref()
@@ -82,7 +86,10 @@ fn embed_one_batch(cfg: &EmbeddingsConfig, agent: &ureq::Agent, texts: &[String]
     }
 
     let response = request
-        .send_json(EmbeddingsRequest { model, input: texts })
+        .send_json(EmbeddingsRequest {
+            model,
+            input: texts,
+        })
         .map_err(|err| match err {
             ureq::Error::Status(code, resp) => {
                 let body = resp.into_string().unwrap_or_default();
@@ -91,9 +98,9 @@ fn embed_one_batch(cfg: &EmbeddingsConfig, agent: &ureq::Agent, texts: &[String]
             ureq::Error::Transport(t) => anyhow!("embeddings endpoint unreachable: {t}"),
         })?;
 
-    let parsed: EmbeddingsResponse = response
-        .into_json()
-        .map_err(|err| anyhow!("embeddings endpoint returned an unexpected response shape: {err}"))?;
+    let parsed: EmbeddingsResponse = response.into_json().map_err(|err| {
+        anyhow!("embeddings endpoint returned an unexpected response shape: {err}")
+    })?;
 
     if parsed.data.len() != texts.len() {
         bail!(

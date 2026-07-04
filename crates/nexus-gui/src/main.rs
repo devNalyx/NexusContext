@@ -67,9 +67,17 @@ fn build_ui(app: &adw::Application) {
         "text-x-generic-symbolic",
     );
 
+    // ViewSwitcherTitle is deprecated since libadwaita 1.4 in favor of
+    // composing AdwHeaderBar + AdwViewSwitcher directly - a real migration,
+    // not something to do blind without visually verifying the header bar
+    // still renders correctly (not available in this environment). Pre-
+    // existing, not introduced by any of this session's changes.
+    #[allow(deprecated)]
     let view_switcher = adw::ViewSwitcherTitle::builder().stack(&view_stack).build();
 
-    let header_bar = adw::HeaderBar::builder().title_widget(&view_switcher).build();
+    let header_bar = adw::HeaderBar::builder()
+        .title_widget(&view_switcher)
+        .build();
 
     let toolbar_view = adw::ToolbarView::new();
     toolbar_view.add_top_bar(&header_bar);

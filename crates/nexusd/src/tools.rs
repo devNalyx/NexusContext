@@ -178,8 +178,12 @@ pub fn call(params: Value) -> Result<Value> {
     };
 
     match result {
-        Ok(text) => Ok(json!({ "content": [ { "type": "text", "text": text } ], "isError": false })),
-        Err(err) => Ok(json!({ "content": [ { "type": "text", "text": err.to_string() } ], "isError": true })),
+        Ok(text) => {
+            Ok(json!({ "content": [ { "type": "text", "text": text } ], "isError": false }))
+        }
+        Err(err) => Ok(
+            json!({ "content": [ { "type": "text", "text": err.to_string() } ], "isError": true }),
+        ),
     }
 }
 
@@ -281,7 +285,9 @@ fn index_repository(args: Value) -> Result<String> {
 fn delete_project(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
     index::delete_project(&repo_path)?;
-    Ok(serde_json::to_string_pretty(&json!({ "status": "deleted" }))?)
+    Ok(serde_json::to_string_pretty(
+        &json!({ "status": "deleted" }),
+    )?)
 }
 
 fn search_graph(args: Value) -> Result<String> {
@@ -320,8 +326,14 @@ fn get_file_context(args: Value) -> Result<String> {
         .get("file")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("missing 'file' argument"))?;
-    let start = args.get("start_line").and_then(|v| v.as_u64()).map(|n| n as usize);
-    let end = args.get("end_line").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let start = args
+        .get("start_line")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let end = args
+        .get("end_line")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
     index::get_file_context(&repo_path, file, start, end)
 }
 
@@ -364,8 +376,14 @@ fn query_planner(args: Value) -> Result<String> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("missing 'query' argument"))?;
     let file = args.get("file").and_then(|v| v.as_str());
-    let start = args.get("start_line").and_then(|v| v.as_u64()).map(|n| n as usize);
-    let end = args.get("end_line").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let start = args
+        .get("start_line")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    let end = args
+        .get("end_line")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
 
     let plan = index::plan_query(&repo_path, query, file, start, end)?;
 

@@ -1,8 +1,7 @@
 use gtk4::pango::EllipsizeMode;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, Entry, Label, ListBox, Orientation, ScrolledWindow,
-    SelectionMode,
+    Align, Box as GtkBox, Button, Entry, Label, ListBox, Orientation, ScrolledWindow, SelectionMode,
 };
 
 pub fn build() -> GtkBox {
@@ -31,10 +30,7 @@ pub fn build() -> GtkBox {
         .selection_mode(SelectionMode::None)
         .css_classes(["boxed-list"])
         .build();
-    let scroller = ScrolledWindow::builder()
-        .child(&list)
-        .vexpand(true)
-        .build();
+    let scroller = ScrolledWindow::builder().child(&list).vexpand(true).build();
 
     let refresh_button = Button::with_label("Refresh list");
 
@@ -50,10 +46,8 @@ pub fn build() -> GtkBox {
             if path.trim().is_empty() {
                 return;
             }
-            let result = crate::client::call(
-                "projects.reindex",
-                serde_json::json!({ "repo_path": path }),
-            );
+            let result =
+                crate::client::call("projects.reindex", serde_json::json!({ "repo_path": path }));
             if let Err(err) = result {
                 show_error(&list, &err.to_string());
             } else {

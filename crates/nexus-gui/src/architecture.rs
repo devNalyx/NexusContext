@@ -41,7 +41,10 @@ pub fn build() -> GtkBox {
         .orientation(Orientation::Vertical)
         .spacing(16)
         .build();
-    let scroller = ScrolledWindow::builder().child(&details).vexpand(true).build();
+    let scroller = ScrolledWindow::builder()
+        .child(&details)
+        .vexpand(true)
+        .build();
 
     {
         let details = details.clone();
@@ -79,9 +82,18 @@ fn load(repo_path: &str, summary_label: &Label, details: &GtkBox) {
         }
     };
 
-    let total_nodes = data.get("total_nodes").and_then(|v| v.as_i64()).unwrap_or(0);
-    let total_edges = data.get("total_edges").and_then(|v| v.as_i64()).unwrap_or(0);
-    let last_indexed_unix = data.get("last_indexed_unix").and_then(|v| v.as_u64()).unwrap_or(0);
+    let total_nodes = data
+        .get("total_nodes")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let total_edges = data
+        .get("total_edges")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let last_indexed_unix = data
+        .get("last_indexed_unix")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
     summary_label.set_label(&format!(
         "{total_nodes} nodes, {total_edges} edges — indexed {}",
@@ -91,11 +103,19 @@ fn load(repo_path: &str, summary_label: &Label, details: &GtkBox) {
     details.append(&section_heading("Busiest files"));
     if let Some(busiest) = data.get("busiest_files").and_then(|v| v.as_array()) {
         if busiest.is_empty() {
-            details.append(&Label::builder().label("(none)").halign(Align::Start).build());
+            details.append(
+                &Label::builder()
+                    .label("(none)")
+                    .halign(Align::Start)
+                    .build(),
+            );
         }
         for entry in busiest {
             let file = entry.get("file").and_then(|v| v.as_str()).unwrap_or("?");
-            let count = entry.get("definitions").and_then(|v| v.as_i64()).unwrap_or(0);
+            let count = entry
+                .get("definitions")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             details.append(&row_label(&format!("{count:>4}  {file}")));
         }
     }
@@ -103,10 +123,18 @@ fn load(repo_path: &str, summary_label: &Label, details: &GtkBox) {
     details.append(&section_heading("Language breakdown"));
     if let Some(langs) = data.get("language_breakdown").and_then(|v| v.as_array()) {
         if langs.is_empty() {
-            details.append(&Label::builder().label("(none)").halign(Align::Start).build());
+            details.append(
+                &Label::builder()
+                    .label("(none)")
+                    .halign(Align::Start)
+                    .build(),
+            );
         }
         for entry in langs {
-            let ext = entry.get("extension").and_then(|v| v.as_str()).unwrap_or("?");
+            let ext = entry
+                .get("extension")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let count = entry.get("files").and_then(|v| v.as_i64()).unwrap_or(0);
             details.append(&row_label(&format!("{count:>4}  .{ext}")));
         }

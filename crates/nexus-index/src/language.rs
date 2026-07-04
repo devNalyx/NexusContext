@@ -13,10 +13,10 @@ pub struct Extracted {
     pub calls: Vec<(String, Range)>,
 }
 
-/// Rather than hand-write a `fn_query`/`type_query`/`call_query` per
-/// language (which is what made 2 languages feel like the practical ceiling
-/// - see the project history), this consumes the `TAGS_QUERY` that nearly
-/// every actively-maintained tree-sitter grammar crate already bundles: a
+/// Hand-writing a `fn_query`/`type_query`/`call_query` per language made 2
+/// languages feel like the practical ceiling, per the project history.
+/// Instead, this consumes the `TAGS_QUERY` that nearly every
+/// actively-maintained tree-sitter grammar crate already bundles: a
 /// community-maintained query using conventional capture names
 /// (`@definition.function`, `@definition.class`, `@reference.call`, ...)
 /// that's the same mechanism GitHub's code navigation, Neovim's
@@ -210,7 +210,11 @@ impl LineIndex {
 /// hand-written per-language queries used to produce - so the rest of the
 /// ingestion pipeline (same-file/cross-file call resolution in `ingest.rs`)
 /// didn't need to change at all.
-pub fn extract(config: &TagsConfiguration, context: &mut TagsContext, source: &[u8]) -> Result<Extracted> {
+pub fn extract(
+    config: &TagsConfiguration,
+    context: &mut TagsContext,
+    source: &[u8],
+) -> Result<Extracted> {
     let (tags, _has_error) = context
         .generate_tags(config, source, None)
         .map_err(|err| anyhow!("tag generation failed: {err}"))?;

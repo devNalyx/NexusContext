@@ -117,10 +117,7 @@ impl Config {
 
     pub fn is_path_allowed(&self, path: &Path) -> bool {
         self.allowed_roots.is_empty()
-            || self
-                .allowed_roots
-                .iter()
-                .any(|root| path.starts_with(root))
+            || self.allowed_roots.iter().any(|root| path.starts_with(root))
     }
 }
 
@@ -163,7 +160,12 @@ mod tests {
         assert!(!is_loopback_or_private("http://8.8.8.8/v1"));
     }
 
-    fn embeddings(endpoint: Option<&str>, model: Option<&str>, enabled: bool, allow_remote: bool) -> Config {
+    fn embeddings(
+        endpoint: Option<&str>,
+        model: Option<&str>,
+        enabled: bool,
+        allow_remote: bool,
+    ) -> Config {
         Config {
             embeddings: EmbeddingsConfig {
                 enabled,
@@ -179,7 +181,10 @@ mod tests {
 
     #[test]
     fn policy_is_not_configured_without_endpoint_or_model() {
-        assert_eq!(embeddings(None, None, true, false).embeddings_policy(), EmbeddingsPolicy::NotConfigured);
+        assert_eq!(
+            embeddings(None, None, true, false).embeddings_policy(),
+            EmbeddingsPolicy::NotConfigured
+        );
         assert_eq!(
             embeddings(Some("http://localhost:11434/v1"), None, true, false).embeddings_policy(),
             EmbeddingsPolicy::NotConfigured
@@ -193,8 +198,13 @@ mod tests {
     #[test]
     fn policy_is_disabled_when_configured_but_not_enabled() {
         assert_eq!(
-            embeddings(Some("http://localhost:11434/v1"), Some("nomic-embed-text"), false, false)
-                .embeddings_policy(),
+            embeddings(
+                Some("http://localhost:11434/v1"),
+                Some("nomic-embed-text"),
+                false,
+                false
+            )
+            .embeddings_policy(),
             EmbeddingsPolicy::Disabled
         );
     }
@@ -202,8 +212,13 @@ mod tests {
     #[test]
     fn policy_is_allowed_for_enabled_loopback_endpoint() {
         assert_eq!(
-            embeddings(Some("http://localhost:11434/v1"), Some("nomic-embed-text"), true, false)
-                .embeddings_policy(),
+            embeddings(
+                Some("http://localhost:11434/v1"),
+                Some("nomic-embed-text"),
+                true,
+                false
+            )
+            .embeddings_policy(),
             EmbeddingsPolicy::Allowed
         );
     }
@@ -211,13 +226,23 @@ mod tests {
     #[test]
     fn policy_is_remote_blocked_without_allow_remote() {
         assert_eq!(
-            embeddings(Some("http://100.120.200.220:11434/v1"), Some("nomic-embed-text"), true, false)
-                .embeddings_policy(),
+            embeddings(
+                Some("http://100.120.200.220:11434/v1"),
+                Some("nomic-embed-text"),
+                true,
+                false
+            )
+            .embeddings_policy(),
             EmbeddingsPolicy::RemoteBlocked
         );
         assert_eq!(
-            embeddings(Some("http://100.120.200.220:11434/v1"), Some("nomic-embed-text"), true, true)
-                .embeddings_policy(),
+            embeddings(
+                Some("http://100.120.200.220:11434/v1"),
+                Some("nomic-embed-text"),
+                true,
+                true
+            )
+            .embeddings_policy(),
             EmbeddingsPolicy::Allowed
         );
     }

@@ -1,7 +1,6 @@
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, Entry, Label, ListBox, Orientation, ScrolledWindow,
-    SelectionMode,
+    Align, Box as GtkBox, Button, Entry, Label, ListBox, Orientation, ScrolledWindow, SelectionMode,
 };
 
 pub fn build() -> GtkBox {

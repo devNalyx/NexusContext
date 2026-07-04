@@ -1,5 +1,5 @@
-use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::new_debouncer;
+use notify_debouncer_mini::notify::RecursiveMode;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -101,7 +101,9 @@ fn run() -> anyhow::Result<()> {
 /// `REGISTRY_RESYNC_INTERVAL` of lag before a brand-new project starts
 /// being watched is an acceptable tradeoff for the simplicity.
 fn sync_watches(
-    debouncer: &mut notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>,
+    debouncer: &mut notify_debouncer_mini::Debouncer<
+        notify_debouncer_mini::notify::RecommendedWatcher,
+    >,
     watched: &mut HashSet<PathBuf>,
 ) {
     let paths = nexus_core::Paths::resolve();

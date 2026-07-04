@@ -10,7 +10,10 @@ use nexus_index::{
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "nexus", about = "NexusContext CLI - manual indexing and queries")]
+#[command(
+    name = "nexus",
+    about = "NexusContext CLI - manual indexing and queries"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

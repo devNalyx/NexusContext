@@ -95,25 +95,25 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
 
         let config = match tags_configs.entry(language) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-            std::collections::hash_map::Entry::Vacant(e) => {
-                match language.build_tags_config() {
-                    Ok(config) => e.insert(config),
-                    Err(err) => {
-                        tracing::warn!(?language, error = %err, "failed to build tags query for language, skipping its files");
-                        continue;
-                    }
+            std::collections::hash_map::Entry::Vacant(e) => match language.build_tags_config() {
+                Ok(config) => e.insert(config),
+                Err(err) => {
+                    tracing::warn!(?language, error = %err, "failed to build tags query for language, skipping its files");
+                    continue;
                 }
-            }
+            },
         };
 
         match index_file(path, config, &mut tags_context, root, store) {
             Ok(result) => {
                 for (name, id) in &result.fn_nodes {
-                    global_fn_registry.entry(name.clone()).or_default().push(*id);
+                    global_fn_registry
+                        .entry(name.clone())
+                        .or_default()
+                        .push(*id);
                 }
                 pending_embeddings.extend(result.pending_embeddings);
-                let same_file_names: HashMap<String, i64> =
-                    result.fn_nodes.into_iter().collect();
+                let same_file_names: HashMap<String, i64> = result.fn_nodes.into_iter().collect();
                 for (caller_id, callee_name) in result.pending_calls {
                     pending_calls.push(PendingCall {
                         caller_id,
@@ -187,20 +187,21 @@ fn embed_pending_nodes(store: &GraphStore, pending: Vec<(i64, String)>) -> Strin
     let mut embedded = 0usize;
     let mut insert_err: Option<anyhow::Error> = None;
 
-    let result = crate::embeddings::embed_in_batches(&config.embeddings, &texts, |offset, vectors| {
-        for (i, vector) in vectors.into_iter().enumerate() {
-            if insert_err.is_some() {
-                break;
+    let result =
+        crate::embeddings::embed_in_batches(&config.embeddings, &texts, |offset, vectors| {
+            for (i, vector) in vectors.into_iter().enumerate() {
+                if insert_err.is_some() {
+                    break;
+                }
+                let idx = offset + i;
+                let dim = vector.len();
+                let bytes = crate::embeddings::vector_to_bytes(&vector);
+                match store.insert_embedding(ids[idx], &model, dim, &texts[idx], &bytes) {
+                    Ok(()) => embedded += 1,
+                    Err(err) => insert_err = Some(err),
+                }
             }
-            let idx = offset + i;
-            let dim = vector.len();
-            let bytes = crate::embeddings::vector_to_bytes(&vector);
-            match store.insert_embedding(ids[idx], &model, dim, &texts[idx], &bytes) {
-                Ok(()) => embedded += 1,
-                Err(err) => insert_err = Some(err),
-            }
-        }
-    });
+        });
 
     match (result, insert_err, embedded) {
         (Ok(()), None, _) => format!("ok: {embedded} chunks embedded"),
@@ -315,8 +316,7 @@ fn index_file(
         let call_line = call_range.start_point.row;
         let caller = fn_nodes_by_start
             .iter()
-            .filter(|(_, r, _)| r.start_point.row <= call_line)
-            .next_back();
+            .rfind(|(_, r, _)| r.start_point.row <= call_line);
 
         if let Some((_, _, caller_id)) = caller {
             pending_calls.push((*caller_id, callee_name));
