@@ -79,6 +79,11 @@ fn refresh_list(list: &ListBox) {
                     .to_string();
                 let nodes = project.get("nodes").and_then(|v| v.as_i64()).unwrap_or(0);
                 let edges = project.get("edges").and_then(|v| v.as_i64()).unwrap_or(0);
+                let last_queried = project
+                    .get("last_queried_unix")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let disk_bytes = project.get("disk_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
 
                 let labels = GtkBox::builder()
                     .orientation(Orientation::Vertical)
@@ -103,6 +108,17 @@ fn refresh_list(list: &ListBox) {
                 labels.append(
                     &Label::builder()
                         .label(format!("{nodes} nodes, {edges} edges"))
+                        .halign(Align::Start)
+                        .css_classes(["dim-label", "caption"])
+                        .build(),
+                );
+                labels.append(
+                    &Label::builder()
+                        .label(format!(
+                            "{} on disk - last used {}",
+                            format_size(disk_bytes),
+                            format_last_used(last_queried)
+                        ))
                         .halign(Align::Start)
                         .css_classes(["dim-label", "caption"])
                         .build(),
@@ -140,6 +156,42 @@ fn refresh_list(list: &ListBox) {
         }
         Ok(_) => list.append(&Label::new(Some("No projects indexed yet."))),
         Err(err) => show_error(list, &err.to_string()),
+    }
+}
+
+fn format_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
+}
+
+/// `0` means "never queried" (either a pre-upgrade registry entry, or a
+/// project that's only ever been indexed, never actually searched/traced
+/// against) - worth spelling out rather than printing a misleading
+/// "56 years ago" from a 1970 epoch timestamp.
+fn format_last_used(last_queried_unix: u64) -> String {
+    if last_queried_unix == 0 {
+        return "never".to_string();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(last_queried_unix);
+    let elapsed = now.saturating_sub(last_queried_unix);
+    match elapsed {
+        s if s < 60 => "just now".to_string(),
+        s if s < 3600 => format!("{}m ago", s / 60),
+        s if s < 86400 => format!("{}h ago", s / 3600),
+        s => format!("{}d ago", s / 86400),
     }
 }
 

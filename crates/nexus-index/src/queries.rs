@@ -1,4 +1,4 @@
-use crate::graph::GraphStore;
+use crate::graph::{Direction, GraphStore};
 use crate::project::graph_db_path;
 use crate::{CodeSearchHit, NodeRecord};
 use anyhow::{bail, Result};
@@ -41,6 +41,87 @@ pub fn get_architecture(repo_path: &Path) -> Result<ArchitectureSummary> {
 
 pub fn detect_dead_code(repo_path: &Path) -> Result<Vec<NodeRecord>> {
     open_store(repo_path)?.dead_functions()
+}
+
+/// Renders a function's call neighborhood as a Graphviz DOT string - reuses
+/// `trace_calls` (the same BFS `trace_call_path` already runs) for the node
+/// set, so the visualization is bounded by the same `depth` limit rather
+/// than ever attempting a whole-project graph (which turns into an
+/// unreadable hairball past a few hundred nodes on any real project).
+pub fn call_graph_dot(
+    repo_path: &Path,
+    function_name: &str,
+    direction: Direction,
+    depth: u32,
+) -> Result<String> {
+    let store = open_store(repo_path)?;
+    // trace_calls only returns *discovered neighbors*, not the starting
+    // function itself (correct for its own established use backing
+    // trace_call_path, where the caller already knows the name they asked
+    // about) - but a graph render needs the anchor node drawn too, or the
+    // function the user actually searched for would be invisible in its
+    // own neighborhood diagram.
+    let start_nodes: Vec<NodeRecord> = store
+        .search_by_name(function_name, 50)?
+        .into_iter()
+        .filter(|n| n.name == function_name && n.kind == crate::graph::NodeKind::Function)
+        .collect();
+    if start_nodes.is_empty() {
+        // Without this check, "no such function" silently produced a valid
+        // but empty DOT graph - Graphviz renders that as an 11x11 all-white
+        // PNG (verified directly), which a GUI Picture widget then stretches
+        // to fill its container: a confusing blank image instead of a clear
+        // "not found" - exactly what surfaced when a user tried a function
+        // name that didn't actually exist in their project.
+        bail!(
+            "no function named '{function_name}' found in this project - check the exact name \
+             with search_graph first"
+        );
+    }
+    let neighbors = store.trace_calls(function_name, direction, depth)?;
+
+    let mut nodes = start_nodes;
+    nodes.extend(neighbors);
+    let ids: Vec<i64> = nodes.iter().map(|n| n.id).collect();
+    let edges = store.subgraph_edges(&ids, "CALLS")?;
+    let by_id: std::collections::HashMap<i64, &NodeRecord> =
+        nodes.iter().map(|n| (n.id, n)).collect();
+
+    let mut dot = String::from("digraph G {\n  rankdir=LR;\n  node [shape=box, style=\"rounded,filled\", fontname=\"sans-serif\", fillcolor=\"#eef1f8\"];\n");
+    for node in &nodes {
+        // Escape each piece before composing the label - escaping the
+        // already-composed string (with its literal `\n` line-break
+        // sequence already in place) would double-escape that backslash.
+        let label = format!(
+            "{}\\n{}:{}",
+            dot_escape(&node.name),
+            dot_escape(&node.file_path),
+            node.start_line
+        );
+        let is_root = node.name == function_name;
+        let fill = if is_root { "#ffd166" } else { "#eef1f8" };
+        dot.push_str(&format!(
+            "  \"{}\" [label=\"{}\", fillcolor=\"{}\"];\n",
+            dot_escape(&node.qualified_name),
+            label,
+            fill
+        ));
+    }
+    for (src, dst) in &edges {
+        if let (Some(a), Some(b)) = (by_id.get(src), by_id.get(dst)) {
+            dot.push_str(&format!(
+                "  \"{}\" -> \"{}\";\n",
+                dot_escape(&a.qualified_name),
+                dot_escape(&b.qualified_name)
+            ));
+        }
+    }
+    dot.push_str("}\n");
+    Ok(dot)
+}
+
+fn dot_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 pub fn search_code(repo_path: &Path, query: &str, limit: u32) -> Result<Vec<CodeSearchHit>> {

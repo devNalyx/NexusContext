@@ -105,7 +105,7 @@ Once `nexusd mcp` is wired into an agent, these tools are exposed (no embeddings
 nexuscontext-gui
 ```
 
-Requires `nexusd serve` (the systemd unit above) to be running - the GUI is a client of the control socket, not a standalone tool. Six tabs: Dashboard (status + auto-sync watcher count), Projects (index/reindex/delete), Search, Architecture (node/edge counts, busiest files, language breakdown), Config, Logs.
+Requires `nexusd serve` (the systemd unit above) to be running - the GUI is a client of the control socket, not a standalone tool. Seven tabs: Dashboard (status + auto-sync watcher count), Projects (index/reindex/delete), Search, Architecture (node/edge counts, busiest files, language breakdown), Visualize (renders a function's call neighborhood as an image via Graphviz - install `graphviz` for this one; everything else works without it), Config, Logs.
 
 ## 7. GNOME Shell extension (optional)
 

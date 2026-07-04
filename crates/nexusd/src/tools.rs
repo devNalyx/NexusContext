@@ -85,10 +85,13 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "detect_dead_code",
-            "description": "Functions with no inbound CALLS edge (excluding main). Caveat: call resolution is name-based (same-file, or cross-file only when the name is unique project-wide), so a function called only via an ambiguous same-named cross-file call may show up as a false positive - treat results as worth a second look, not a guarantee.",
+            "description": "Functions with no inbound CALLS edge (excluding main). Caveat: call resolution is name-based (same-file, or cross-file only when the name is unique project-wide), so a function called only via an ambiguous same-named cross-file call, or invoked via reflection/routing/dependency injection rather than a direct call, may show up as a false positive - treat results as worth a second look, not a guarantee. Response is capped at `limit` (default 50) with a `total_flagged` count, since an untargeted sweep on a large project can flag hundreds of mostly-false-positive results.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "repo_path": { "type": "string" } },
+                "properties": {
+                    "repo_path": { "type": "string" },
+                    "limit": { "type": "integer", "default": 50 }
+                },
                 "required": ["repo_path"]
             }
         },
@@ -160,6 +163,17 @@ pub fn call(params: Value) -> Result<Value> {
         .and_then(|n| n.as_str())
         .ok_or_else(|| anyhow!("missing tool name"))?;
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+
+    // Best-effort "this project is actually being used" signal, distinct
+    // from last_indexed_unix which only moves on a reindex - lets the
+    // registry answer "which of these have I actually touched lately" for
+    // someone who's indexed many projects over time. delete_project makes
+    // this moot (the entry is gone right after) so it's skipped there.
+    if name != "delete_project" {
+        if let Some(repo_path) = args.get("repo_path").and_then(|v| v.as_str()) {
+            index::touch_queried(std::path::Path::new(repo_path));
+        }
+    }
 
     let result = match name {
         "index_repository" => index_repository(args),
@@ -403,8 +417,22 @@ fn query_planner(args: Value) -> Result<String> {
 
 fn detect_dead_code(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
     let dead = index::detect_dead_code(&repo_path)?;
-    Ok(serde_json::to_string_pretty(&records_to_json(&dead))?)
+    // Unbounded on a real project this size flagged ~40% of all indexed
+    // symbols as "dead" (mostly false positives - see the tool description's
+    // name-resolution caveat) and blew past 99K chars in one response,
+    // costing more tokens than the caller would have spent just grepping.
+    // Truncating with an explicit total keeps the response honest about
+    // what's being hidden rather than silently dropping it.
+    let total = dead.len();
+    let shown: Vec<_> = dead.into_iter().take(limit).collect();
+    Ok(serde_json::to_string_pretty(&json!({
+        "total_flagged": total,
+        "shown": shown.len(),
+        "note": "high false-positive rate is expected here - see this tool's description",
+        "functions": records_to_json(&shown)
+    }))?)
 }
 
 fn search_code(args: Value) -> Result<String> {

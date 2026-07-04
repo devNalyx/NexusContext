@@ -28,6 +28,10 @@ assets = [
 # Depends declares the actual libs the linked GTK4/libadwaita binary needs;
 # $auto alone only inspects nexusd's own linkage, not nexus-gui's.
 depends = "$auto, libgtk-4-1, libadwaita-1-0"
+# The GUI's call-graph visualization shells out to `dot` - optional and
+# best-effort (the app works fully without it, reporting a clear error if
+# attempted), so this is a Recommends, not a hard Depends.
+recommends = "graphviz"
 
 # cargo-generate-rpm has no $auto equivalent to cargo-deb's dependency
 # auto-detection - these package names are Fedora/RHEL-family naming
@@ -46,6 +50,9 @@ assets = [
 [package.metadata.generate-rpm.requires]
 gtk4 = "*"
 libadwaita = "*"
+
+[package.metadata.generate-rpm.recommends]
+graphviz = "*"
 
 [dependencies]
 nexus-core.workspace = true

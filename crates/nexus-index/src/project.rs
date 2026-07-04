@@ -3,6 +3,19 @@ use crate::ingest::{index_directory, IndexStats};
 use anyhow::{bail, Result};
 use nexus_core::{project_hash, Config, Paths, ProjectEntry, Registry};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// Serializes full-rebuild reindexes process-wide. The background watcher
+/// (on file-change) and a manual reindex (CLI/MCP/control API) can both call
+/// `index_project` for the same project around the same time; SQLite's own
+/// write lock already keeps that from corrupting `graph.db`, but each side
+/// still runs a full clear-and-rebuild independently, which is wasted work
+/// at best and, combined with the unsynchronized registry.json
+/// read-modify-write below, a real source of lost/corrupted project-list
+/// updates. A single process-wide lock is enough here - indexing is already
+/// the rare, expensive operation, so serializing it across *all* projects
+/// (not just same-project) costs nothing that matters in practice.
+static REINDEX_LOCK: Mutex<()> = Mutex::new(());
 
 /// Single entry point for "index this directory" used by the CLI, the MCP
 /// `index_repository` tool, and the control API's `projects.reindex` -
@@ -11,6 +24,11 @@ use std::path::{Path, PathBuf};
 /// `allowed_roots` (if the user opted into that) regardless of which
 /// caller triggered it.
 pub fn index_project(repo_path: &Path) -> Result<IndexStats> {
+    // A panic mid-reindex on one project shouldn't wedge every future
+    // reindex forever - recover the lock rather than propagating the
+    // poison.
+    let _guard = REINDEX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let paths = Paths::resolve();
     require_path_allowed(&paths, repo_path)?;
 
@@ -20,6 +38,39 @@ pub fn index_project(repo_path: &Path) -> Result<IndexStats> {
 
     record_indexed(&paths, repo_path, stats.nodes, stats.edges)?;
     Ok(stats)
+}
+
+/// Records that `repo_path` was actually used (searched/queried/traced),
+/// distinct from `last_indexed_unix` which only moves on a reindex. A no-op
+/// if the project isn't registered yet. Best-effort: a registry write
+/// failing here shouldn't fail the tool call that triggered it, so this
+/// swallows its own error rather than returning one.
+pub fn touch_queried(repo_path: &Path) {
+    let paths = Paths::resolve();
+    let hash = project_hash(repo_path);
+    let mut registry = Registry::load(&paths.registry_file());
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return;
+    };
+    registry.touch_queried(&hash, now.as_secs());
+    let _ = registry.save(&paths.registry_file());
+}
+
+/// Total bytes on disk for a project's indexed data (graph.db plus its WAL
+/// journal / shared-memory sidecar files) - lets the registry surface real
+/// disk usage per project instead of just node/edge counts, so someone who's
+/// indexed many repos over time can see which ones are actually worth
+/// deleting.
+pub fn project_disk_usage(project_hash: &str) -> u64 {
+    let dir = Paths::resolve().project_data_dir(project_hash);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
 }
 
 pub fn graph_db_path(repo_path: &Path) -> PathBuf {
@@ -130,14 +181,26 @@ fn require_path_allowed(paths: &Paths, repo_path: &Path) -> Result<()> {
 
 fn record_indexed(paths: &Paths, repo_path: &Path, nodes: i64, edges: i64) -> Result<()> {
     let mut registry = Registry::load(&paths.registry_file());
+    let hash = project_hash(repo_path);
+    // upsert() replaces the whole entry - carry the existing
+    // last_queried_unix forward rather than resetting "last used" back to
+    // never every time a reindex (including an auto-reindex from the
+    // watcher) happens to run.
+    let last_queried_unix = registry
+        .projects
+        .iter()
+        .find(|p| p.hash == hash)
+        .map(|p| p.last_queried_unix)
+        .unwrap_or(0);
     registry.upsert(ProjectEntry {
         root_path: repo_path.display().to_string(),
-        hash: project_hash(repo_path),
+        hash,
         last_indexed_unix: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs(),
         nodes,
         edges,
+        last_queried_unix,
     });
     registry.save(&paths.registry_file())
 }

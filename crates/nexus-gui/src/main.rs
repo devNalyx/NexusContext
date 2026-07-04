@@ -6,6 +6,7 @@ mod logs;
 mod project_picker;
 mod projects;
 mod search;
+mod visualize;
 
 use adw::prelude::*;
 use gtk4::glib;
@@ -53,6 +54,12 @@ fn build_ui(app: &adw::Application) {
         Some("architecture"),
         "Architecture",
         "view-grid-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &visualize::build(),
+        Some("visualize"),
+        "Visualize",
+        "network-workgroup-symbolic",
     );
     view_stack.add_titled_with_icon(
         &config::build(),

@@ -1,6 +1,9 @@
 use anyhow::{anyhow, bail, Result};
 use nexus_core::{Config, Paths, Registry};
-use nexus_index::{delete_project, get_architecture, graph_db_path, index_project, GraphStore};
+use nexus_index::{
+    delete_project, get_architecture, graph_db_path, index_project, project_disk_usage,
+    GraphStore,
+};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -81,6 +84,15 @@ fn handle_connection(stream: UnixStream) -> Result<()> {
 
 fn dispatch(method: &str, params: Value) -> Result<Value> {
     tracing::debug!(method, "control request received");
+    // Same "actually used" signal as the MCP tool-call path in tools.rs -
+    // the GUI talks to this control API, not the MCP tool list, so without
+    // this the registry would only ever see last_queried_unix move for
+    // MCP-driven usage and never for someone just using the GUI directly.
+    if method != "projects.delete" {
+        if let Some(repo_path) = params.get("repo_path").and_then(|v| v.as_str()) {
+            nexus_index::touch_queried(std::path::Path::new(repo_path));
+        }
+    }
     match method {
         "status.get" => status_get(),
         "projects.list" => projects_list(),
@@ -91,6 +103,7 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
         "config.set" => config_set(params),
         "embeddings.test" => embeddings_test(),
         "search.adhoc" => search_adhoc(params),
+        "viz.call_graph" => viz_call_graph(params),
         _ => bail!("unknown control method: {method}"),
     }
 }
@@ -110,7 +123,24 @@ fn status_get() -> Result<Value> {
 fn projects_list() -> Result<Value> {
     let paths = Paths::resolve();
     let registry = Registry::load(&paths.registry_file());
-    Ok(json!(registry.projects))
+    // Disk usage is computed live rather than stored in the registry entry -
+    // it only costs a directory listing per project, and staying live means
+    // it can never drift out of sync with what's actually on disk.
+    let projects: Vec<Value> = registry
+        .projects
+        .iter()
+        .map(|p| {
+            let mut entry = serde_json::to_value(p).unwrap_or(json!({}));
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert(
+                    "disk_bytes".to_string(),
+                    json!(project_disk_usage(&p.hash)),
+                );
+            }
+            entry
+        })
+        .collect();
+    Ok(json!(projects))
 }
 
 fn projects_reindex(params: Value) -> Result<Value> {
@@ -251,4 +281,33 @@ fn search_adhoc(params: Value) -> Result<Value> {
             "end_line": n.end_line,
         }))
         .collect::<Vec<_>>()))
+}
+
+/// Renders a bounded call-graph neighborhood as Graphviz DOT source - the
+/// GUI shells out to `dot` to turn this into an image. Kept as a plain DOT
+/// string over the wire (not a rendered image) so the actual rendering
+/// dependency (whether `dot` is installed at all) stays entirely in the
+/// GUI, which is the only client that needs a picture rather than data.
+fn viz_call_graph(params: Value) -> Result<Value> {
+    let repo_path = params
+        .get("repo_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing 'repo_path' argument"))?;
+    let function_name = params
+        .get("function_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing 'function_name' argument"))?;
+    let direction = match params.get("direction").and_then(|v| v.as_str()) {
+        Some("inbound") => nexus_index::Direction::Inbound,
+        _ => nexus_index::Direction::Outbound,
+    };
+    let depth = params.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as u32;
+
+    let dot = nexus_index::call_graph_dot(
+        std::path::Path::new(repo_path),
+        function_name,
+        direction,
+        depth,
+    )?;
+    Ok(json!({ "dot": dot }))
 }

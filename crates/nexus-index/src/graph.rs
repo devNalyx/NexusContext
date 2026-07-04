@@ -425,6 +425,32 @@ impl GraphStore {
             .map_err(Into::into)
     }
 
+    /// Every edge of `edge_kind` where both endpoints are already in
+    /// `node_ids` - for rendering a bounded subgraph (e.g. a `trace_calls`
+    /// result) without a second full-graph traversal. Generic and reusable
+    /// beyond call graphs.
+    pub fn subgraph_edges(&self, node_ids: &[i64], edge_kind: &str) -> Result<Vec<(i64, i64)>> {
+        if node_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = node_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT DISTINCT src_id, dst_id FROM edges
+             WHERE kind = ? AND src_id IN ({placeholders}) AND dst_id IN ({placeholders})"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&edge_kind];
+        for id in node_ids {
+            params.push(id);
+        }
+        for id in node_ids {
+            params.push(id);
+        }
+        let rows = stmt.query_map(params.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
     /// Functions with no inbound `CALLS` edge, excluding `main` as the
     /// obvious entry-point heuristic. Caveat inherited from same-file-only
     /// call resolution (see `ingest.rs`): a function only ever called from
