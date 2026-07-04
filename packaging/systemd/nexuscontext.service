@@ -1,6 +1,6 @@
 [Unit]
 Description=NexusContext codebase indexing daemon
-Documentation=https://github.com/shayne/nexuscontext
+Documentation=https://github.com/devNalyx/NexusContext
 After=default.target
 
 [Service]
