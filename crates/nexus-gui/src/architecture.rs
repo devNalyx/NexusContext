@@ -1,5 +1,5 @@
 use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, Button, Entry, Label, Orientation, ScrolledWindow};
+use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, ScrolledWindow};
 
 pub fn build() -> GtkBox {
     let container = GtkBox::builder()
@@ -15,16 +15,24 @@ pub fn build() -> GtkBox {
         .orientation(Orientation::Horizontal)
         .spacing(6)
         .build();
-    let project_entry = Entry::builder()
-        .placeholder_text("project path")
-        .hexpand(true)
-        .build();
+    // A dropdown of already-indexed projects rather than free text - see
+    // the same reasoning in search.rs.
+    let project_picker = crate::project_picker::build();
+    let refresh_projects_button = Button::from_icon_name("view-refresh-symbolic");
+    refresh_projects_button.set_tooltip_text(Some("Refresh project list"));
+    {
+        let project_picker = project_picker.clone();
+        refresh_projects_button.connect_clicked(move |_| {
+            crate::project_picker::refresh(&project_picker);
+        });
+    }
     let load_button = Button::with_label("Load");
-    form.append(&project_entry);
+    form.append(&project_picker);
+    form.append(&refresh_projects_button);
     form.append(&load_button);
 
     let summary_label = Label::builder()
-        .label("Enter a project path and click Load.")
+        .label("Pick a project and click Load.")
         .halign(Align::Start)
         .wrap(true)
         .build();
@@ -38,12 +46,11 @@ pub fn build() -> GtkBox {
     {
         let details = details.clone();
         let summary_label = summary_label.clone();
-        let project_entry = project_entry.clone();
+        let project_picker = project_picker.clone();
         load_button.connect_clicked(move |_| {
-            let repo_path = project_entry.text().to_string();
-            if repo_path.trim().is_empty() {
+            let Some(repo_path) = crate::project_picker::selected_path(&project_picker) else {
                 return;
-            }
+            };
             load(&repo_path, &summary_label, &details);
         });
     }

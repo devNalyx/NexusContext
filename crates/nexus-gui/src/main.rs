@@ -3,6 +3,7 @@ mod client;
 mod config;
 mod dashboard;
 mod logs;
+mod project_picker;
 mod projects;
 mod search;
 

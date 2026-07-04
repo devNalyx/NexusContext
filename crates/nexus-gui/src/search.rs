@@ -18,16 +18,26 @@ pub fn build() -> GtkBox {
         .orientation(Orientation::Horizontal)
         .spacing(6)
         .build();
-    let repo_entry = Entry::builder()
-        .placeholder_text("project path")
-        .hexpand(true)
-        .build();
+    // A dropdown of already-indexed projects, not free text: typing a
+    // project's name instead of its exact indexed path (an easy mistake -
+    // the two look interchangeable but aren't) used to fail with "no index
+    // found for X" with no indication of what paths actually work.
+    let project_picker = crate::project_picker::build();
+    let refresh_projects_button = Button::from_icon_name("view-refresh-symbolic");
+    refresh_projects_button.set_tooltip_text(Some("Refresh project list"));
+    {
+        let project_picker = project_picker.clone();
+        refresh_projects_button.connect_clicked(move |_| {
+            crate::project_picker::refresh(&project_picker);
+        });
+    }
     let pattern_entry = Entry::builder()
         .placeholder_text("name pattern")
         .hexpand(true)
         .build();
     let search_button = Button::with_label("Search");
-    form.append(&repo_entry);
+    form.append(&project_picker);
+    form.append(&refresh_projects_button);
     form.append(&pattern_entry);
     form.append(&search_button);
 
@@ -41,7 +51,9 @@ pub fn build() -> GtkBox {
         .build();
 
     search_button.connect_clicked(move |_| {
-        let repo_path = repo_entry.text().to_string();
+        let Some(repo_path) = crate::project_picker::selected_path(&project_picker) else {
+            return;
+        };
         let pattern = pattern_entry.text().to_string();
         if repo_path.trim().is_empty() || pattern.trim().is_empty() {
             return;
