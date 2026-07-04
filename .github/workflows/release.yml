@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Cheap fail-fast guard before spending CI minutes on 3 platform builds:
+  # catches "tagged before bumping the version" - a tag that doesn't match
+  # workspace.package.version in Cargo.toml is almost always a mistake, not
+  # an intentional re-release of the same version under a new tag.
+  check-version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          cargo_version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "Tag v$tag_version does not match Cargo.toml version $cargo_version"
+            exit 1
+          fi
+
+  # Tier 1: full parity - daemon, CLI, GUI, .deb, .rpm, and a plain tarball
+  # for distros using neither package format.
+  linux-x86_64:
+    needs: check-version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GTK4/libadwaita dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config build-essential
+      - run: cargo build --workspace --release --locked
+
+      - name: Build .deb
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb -p nexusd --no-build
+
+      - name: Build .rpm
+        run: |
+          cargo install cargo-generate-rpm --locked
+          cargo generate-rpm -p crates/nexusd
+
+      - name: Build plain tarball
+        run: |
+          mkdir -p dist
+          tar -czf dist/nexuscontext-linux-x86_64.tar.gz -C target/release nexusd nexus nexuscontext-gui
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          cp target/debian/*.deb artifacts/
+          cp target/generate-rpm/*.rpm artifacts/
+          cp dist/*.tar.gz artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: artifacts/*
+
+  # Tier 2: CLI + daemon only - no GTK/libadwaita attempt at all (nexus-gui
+  # is Linux/GNOME-first by design, with no cfg gating to make it portable).
+  # Unsigned/unnotarized binaries will hit Gatekeeper's quarantine flag on
+  # download - real code-signing needs an Apple Developer ID and is its own
+  # follow-up, not attempted here; documented in the release notes instead.
+  macos-x86_64:
+    needs: check-version
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --exclude nexus-gui --release --locked
+      - name: Build tarball
+        run: |
+          mkdir -p dist
+          tar -czf dist/nexuscontext-macos-x86_64.tar.gz -C target/release nexusd nexus
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64
+          path: dist/*.tar.gz
+
+  macos-aarch64:
+    needs: check-version
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --exclude nexus-gui --release --locked
+      - name: Build tarball
+        run: |
+          mkdir -p dist
+          tar -czf dist/nexuscontext-macos-aarch64.tar.gz -C target/release nexusd nexus
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-aarch64
+          path: dist/*.tar.gz
+
+  # Fan-in: each platform job uploads its own artifacts independently, and
+  # only this one job actually talks to the GitHub Release - multiple jobs
+  # each calling `gh release create` against the same tag would race each
+  # other creating/updating the same release.
+  publish:
+    needs: [linux-x86_64, macos-x86_64, macos-aarch64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          body: |
+            **Linux (x86_64)**: full parity - daemon, CLI, GUI, GNOME extension support, systemd packaging. Choose `.deb`, `.rpm`, or the plain tarball depending on your distro.
+
+            **macOS (x86_64/aarch64)**: CLI + daemon only (`nexus`, `nexusd`) - MCP mode and the control API work, but there's no native GUI build for macOS. Unsigned binaries will need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since these aren't notarized.
+
+            **Windows**: not yet published - tracked as a follow-up (`nexusd`'s control API needs a platform split first; MCP mode itself has no Windows-specific blocker).

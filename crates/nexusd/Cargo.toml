@@ -29,6 +29,24 @@ assets = [
 # $auto alone only inspects nexusd's own linkage, not nexus-gui's.
 depends = "$auto, libgtk-4-1, libadwaita-1-0"
 
+# cargo-generate-rpm has no $auto equivalent to cargo-deb's dependency
+# auto-detection - these package names are Fedora/RHEL-family naming
+# (verified against Fedora's actual gtk4/libadwaita package names); a
+# distro using different naming (e.g. openSUSE) would need this adjusted.
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/nexusd", dest = "/usr/bin/nexusd", mode = "755" },
+    { source = "target/release/nexus", dest = "/usr/bin/nexus", mode = "755" },
+    { source = "target/release/nexuscontext-gui", dest = "/usr/bin/nexuscontext-gui", mode = "755" },
+    { source = "packaging/systemd/nexuscontext.service", dest = "/usr/lib/systemd/user/nexuscontext.service", mode = "644" },
+    { source = "packaging/nexuscontext-gui.desktop", dest = "/usr/share/applications/nexuscontext-gui.desktop", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/nexuscontext/README.md", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+gtk4 = "*"
+libadwaita = "*"
+
 [dependencies]
 nexus-core.workspace = true
 nexus-index.workspace = true
