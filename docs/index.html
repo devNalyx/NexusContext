@@ -415,6 +415,7 @@
     </a>
     <nav class="nav-links">
       <a href="#why">Why</a>
+      <a href="#benchmark">Benchmark</a>
       <a href="#capabilities">Capabilities</a>
       <a href="#architecture">Architecture</a>
       <a href="#languages">Languages</a>
@@ -484,6 +485,31 @@
         <p>Turn the call graph into a folder of markdown files with <code>[[wikilinks]]</code> — browse your codebase's structure in a vault, for free.</p>
       </div>
     </div>
+  </section>
+
+  <section id="benchmark">
+    <div class="section-head">
+      <div class="kicker">Measured, not promised</div>
+      <h2>A real token comparison, on a real repo</h2>
+      <p>Same question, same file: "find callers of a function and show their bodies" - on an 873-line Go file in a real production-sized codebase.</p>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <div class="icon">◈</div>
+        <h3>NexusContext</h3>
+        <p><code>query_graph</code> returns 2 exact callers with line ranges, then two scoped <code>get_file_context</code> calls read just those ranges.</p>
+        <p style="margin-top:12px; color:var(--text); font-weight:600;">≈ 460 tokens · 3 tool calls · zero guesswork</p>
+      </div>
+      <div class="card">
+        <div class="icon">⌁</div>
+        <h3>Grep + read</h3>
+        <p><code>grep -rn</code> finds the call sites but not the function boundaries - without a second pass to find where each function ends, the safe fallback is reading the whole file.</p>
+        <p style="margin-top:12px; color:var(--text); font-weight:600;">≈ 6,500 tokens for the file alone</p>
+      </div>
+    </div>
+    <p style="text-align:center; margin-top:28px; color:var(--text-dim); font-size:13.5px; max-width:640px; margin-left:auto; margin-right:auto;">
+      Roughly a <strong style="color:var(--text);">90%+ reduction</strong> for call-graph and navigation questions - the win comes from exact line boundaries replacing whole-file reads. The gap narrows for coarser questions like "which files are most complex," where <code>get_architecture</code> and a couple of shell one-liners land in a similar ballpark.
+    </p>
   </section>
 
   <section id="capabilities">
