@@ -66,6 +66,7 @@ fn run() -> anyhow::Result<()> {
     sync_watches(&mut debouncer, &mut watched);
     let mut last_sync = Instant::now();
     let mut last_attempt: HashMap<PathBuf, Instant> = HashMap::new();
+    let mut content_signatures: HashMap<PathBuf, u64> = HashMap::new();
 
     loop {
         match rx.recv_timeout(REGISTRY_RESYNC_INTERVAL) {
@@ -101,6 +102,25 @@ fn run() -> anyhow::Result<()> {
                             continue;
                         }
                     }
+                    // Cheap check before paying for an expensive reindex:
+                    // notify firing on opens (not just writes, see
+                    // MIN_REINDEX_GAP's doc comment) means any read-only
+                    // tool poking around the tree - git status, cargo
+                    // build, an editor, another diagnostic command - can
+                    // wake this loop up with nothing having actually
+                    // changed. Comparing a path+size+mtime signature over
+                    // exactly the files indexing would touch catches that
+                    // before it costs a real reindex; only a genuine
+                    // difference proceeds past this point.
+                    let signature = nexus_index::content_signature(&root);
+                    if content_signatures.get(&root) == Some(&signature) {
+                        tracing::debug!(
+                            project = %root.display(),
+                            "file change detected, but indexed content is unchanged - skipping"
+                        );
+                        continue;
+                    }
+
                     tracing::info!(project = %root.display(), "file change detected, reindexing");
 
                     // Indexing itself opens and reads every file in the tree
@@ -146,6 +166,10 @@ fn run() -> anyhow::Result<()> {
                     // of always passing because 11 minutes had already
                     // elapsed since a start-of-attempt timestamp.
                     last_attempt.insert(root.clone(), Instant::now());
+                    // The pre-reindex signature, not a freshly-recomputed
+                    // one - this is "what we just handled", so the next
+                    // wake-up only proceeds if something differs from it.
+                    content_signatures.insert(root.clone(), signature);
                     nexus_index::record_auto_reindex(
                         &root,
                         reindex_start.elapsed().as_millis() as u64,

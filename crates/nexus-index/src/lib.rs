@@ -10,7 +10,7 @@ pub mod queries;
 
 pub use cypher::run_query as run_cypher_query;
 pub use graph::{CodeSearchHit, Direction, EdgeKind, GraphStore, NodeKind, NodeRecord};
-pub use ingest::{index_directory, IndexStats};
+pub use ingest::{content_signature, index_directory, IndexStats};
 pub use language::Language;
 pub use obsidian::export_obsidian;
 pub use project::{

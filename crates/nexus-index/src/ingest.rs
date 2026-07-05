@@ -62,6 +62,56 @@ pub fn index_directory(root: &Path, store: &GraphStore) -> Result<IndexStats> {
     }
 }
 
+/// Cheap signature over exactly the files a real reindex would touch (same
+/// walk/ignore rules and file-type filter as `index_directory`, but no
+/// parsing - just a stat per file) - lets a caller tell "something was
+/// opened" apart from "something actually changed" before paying for a full
+/// reindex. This matters because the file watcher's underlying notify
+/// backend fires on opens, not just writes (see `nexusd::watcher`'s
+/// `MIN_REINDEX_GAP` doc comment) - any read-only tool poking around a
+/// watched project (`git status`, `cargo build`, an editor, even another
+/// diagnostic command) can otherwise wake a reindex with nothing having
+/// changed. Order-independent (entries are sorted before hashing), since a
+/// directory walk's yield order isn't guaranteed stable across runs.
+pub fn content_signature(root: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let walker = WalkBuilder::new(root)
+        .add_custom_ignore_filename(".nexusignore")
+        .build();
+
+    let mut entries: Vec<(std::path::PathBuf, u64, i64)> = Vec::new();
+    for entry in walker {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        if Language::from_path(path).is_none() && !is_markdown(path) {
+            continue;
+        }
+        let Ok(metadata) = std::fs::metadata(path) else {
+            continue;
+        };
+        let mtime_millis = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        entries.push((path.to_path_buf(), metadata.len(), mtime_millis));
+    }
+    entries.sort();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (path, size, mtime_millis) in &entries {
+        path.hash(&mut hasher);
+        size.hash(&mut hasher);
+        mtime_millis.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> {
     store.clear()?;
 
@@ -401,4 +451,66 @@ fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<F
         pending_calls: Vec::new(),
         pending_embeddings,
     })
+}
+
+#[cfg(test)]
+mod content_signature_tests {
+    use super::content_signature;
+    use std::fs;
+
+    fn temp_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_content_signature_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn signature_is_stable_for_unchanged_content() {
+        let dir = temp_project("stable");
+        fs::write(dir.join("main.rs"), "fn main() {}").unwrap();
+        assert_eq!(content_signature(&dir), content_signature(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn signature_changes_when_a_file_is_modified() {
+        let dir = temp_project("modified");
+        let file = dir.join("main.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+        let before = content_signature(&dir);
+        fs::write(&file, "fn main() { println!(\"hi\"); }").unwrap();
+        let after = content_signature(&dir);
+        assert_ne!(before, after);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn signature_changes_when_a_file_is_added() {
+        let dir = temp_project("added");
+        fs::write(dir.join("main.rs"), "fn main() {}").unwrap();
+        let before = content_signature(&dir);
+        fs::write(dir.join("lib.rs"), "pub fn helper() {}").unwrap();
+        let after = content_signature(&dir);
+        assert_ne!(before, after);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// This is the whole point of the signature: a file that isn't
+    /// indexable (no supported language, not markdown) changing shouldn't
+    /// count as "the project changed" - otherwise it wouldn't distinguish
+    /// "something was opened" from "something we'd actually reindex over".
+    #[test]
+    fn signature_ignores_files_indexing_would_skip() {
+        let dir = temp_project("ignored");
+        fs::write(dir.join("data.bin"), b"\x00\x01").unwrap();
+        let before = content_signature(&dir);
+        fs::write(dir.join("data.bin"), b"\x02\x03\x04\x05").unwrap();
+        let after = content_signature(&dir);
+        assert_eq!(before, after);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
