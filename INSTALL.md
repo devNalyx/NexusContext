@@ -1,6 +1,6 @@
 # Installing and Using NexusContext
 
-This covers what's actually built and working today (all 13 phases in `README.md`). It assumes Ubuntu/GNOME.
+This covers what's actually built and working today (see the full phase-by-phase roadmap in `README.md`). It assumes Ubuntu/GNOME.
 
 ## 0. Download a release (Linux/macOS)
 
@@ -133,11 +133,18 @@ model = "nomic-embed-text"
 allow_remote = false   # must be true to use a non-loopback/private endpoint
 
 allowed_roots = []   # if non-empty, index_repository/reindex refuses paths outside these
+
+[watcher]
+warm_window_secs = 21600   # 6h default - a project not queried within this window stops being
+                           # auto-watched/auto-reindexed in the background (still catches up with
+                           # one synchronous reindex the next time it's actually queried again)
 ```
 
 Env var overrides: `NEXUS_CACHE_DIR` (data dir), `NEXUS_LOG_LEVEL` (`trace`/`debug`/`info`/`warn`/`error`), `NEXUS_LOG_FORMAT=json` (structured logs, `serve`/`mcp` modes both support it).
 
 All four `[embeddings]` fields can also be set from the GUI's Config tab, not just by hand-editing `config.toml` - including a "Test Connection" button that embeds a short probe string and reports back the model/dimension/latency, so you can verify an endpoint works before enabling it. From the CLI: `nexus test-embeddings` (no `--project` - it's a global config check) and `nexus search-codebase <query> --project <path>`. After enabling and reindexing, `index_repository`'s response includes `embeddings_status` (e.g. `"ok: 342 chunks embedded"`, `"skipped: disabled"`, `"partial: endpoint became unreachable after 96 chunks"`) so you don't need a second round-trip to know whether semantic search will actually work.
+
+The GUI's Projects tab also has **Import** (top row, next to Index/Reindex - point it at a path with a `.nexuscontext/index.db.zst` artifact, e.g. one a teammate exported and committed) and, per project, **Export** (writes that same artifact into the project so it can be shared) - the same `nexus export`/`nexus import` CLI commands, now reachable without leaving the GUI.
 
 ## Known limitations (see `README.md` for full detail)
 
@@ -145,6 +152,7 @@ All four `[embeddings]` fields can also be set from the GUI's Config tab, not ju
 - Call resolution is name-based, not import-aware: same-file matches win, and a cross-file call resolves only when the callee name is unique project-wide. Two files defining the same-named function, with no local match in the caller's file, stays unresolved rather than guessing wrong.
 - 11 languages supported (Rust, Python, JavaScript, TypeScript/TSX, Go, Java, C, C++, C#, Ruby, PHP), but call-graph quality varies: solid for Rust/Python/JS/TS/Go/Java/Ruby; structural-only (functions/types work, but no call edges) for C/C++/C#/PHP, since those languages' community-maintained tag queries don't capture calls the same way - see `language.rs` for specifics.
 - Reindexing is a full rebuild, not an incremental diff (though concurrent rebuilds of the same project are now safe - see above).
+- A project not queried within `warm_window_secs` (6h default) stops being auto-watched in the background - the first tool call after that gap pays for a synchronous full reindex before returning results, which can take minutes on a large or embeddings-enabled project, rather than the usual near-instant response.
 - `query_graph`'s Cypher-lite supports exactly one pattern shape (`MATCH (a:Kind)-[:EDGE]->(b:Kind) [WHERE ...] RETURN a|b`) - not a real query language. `Kind` can also be `Section` (a markdown heading) alongside `Function`/`Type`/`File`.
 - `search_code`'s full-text index covers files tree-sitter parses (any of the 11 supported languages) plus markdown docs (`.md`/`.markdown`, headings extracted into `Section` nodes with `CONTAINS` edges for nesting) - other file types aren't indexed yet.
 - The Flatpak manifest (`packaging/flatpak/`) hasn't been built - see its README for the remaining steps.
