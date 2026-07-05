@@ -1,7 +1,8 @@
 use anyhow::{anyhow, bail, Result};
 use nexus_core::{Config, Paths, Registry};
 use nexus_index::{
-    delete_project, get_architecture, graph_db_path, index_project, project_disk_usage, GraphStore,
+    delete_project, export_project, get_architecture, graph_db_path, import_project, index_project,
+    project_disk_usage, GraphStore,
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -98,6 +99,8 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
         "projects.list" => projects_list(),
         "projects.reindex" => projects_reindex(params),
         "projects.delete" => projects_delete(params),
+        "projects.export" => projects_export(params),
+        "projects.import" => projects_import(params),
         "projects.architecture" => projects_architecture(params),
         "config.get" => config_get(),
         "config.set" => config_set(params),
@@ -257,6 +260,24 @@ fn projects_delete(params: Value) -> Result<Value> {
         .ok_or_else(|| anyhow!("missing 'repo_path' argument"))?;
     delete_project(std::path::Path::new(repo_path))?;
     Ok(json!({ "status": "deleted" }))
+}
+
+fn projects_export(params: Value) -> Result<Value> {
+    let repo_path = params
+        .get("repo_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing 'repo_path' argument"))?;
+    let artifact = export_project(std::path::Path::new(repo_path))?;
+    Ok(json!({ "status": "exported", "artifact_path": artifact.display().to_string() }))
+}
+
+fn projects_import(params: Value) -> Result<Value> {
+    let repo_path = params
+        .get("repo_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing 'repo_path' argument"))?;
+    let stats = import_project(std::path::Path::new(repo_path))?;
+    Ok(json!({ "status": "imported", "nodes": stats.nodes, "edges": stats.edges }))
 }
 
 fn projects_architecture(params: Value) -> Result<Value> {

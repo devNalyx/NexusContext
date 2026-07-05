@@ -107,6 +107,8 @@ pub fn artifact_path(repo_path: &Path) -> PathBuf {
 /// imported snapshot only saves the *first* reindex; anyone who wants fresh
 /// data after that still runs a normal full `index_project`.
 pub fn export_project(repo_path: &Path) -> Result<PathBuf> {
+    require_path_allowed(&Paths::resolve(), repo_path)?;
+
     let db_path = graph_db_path(repo_path);
     if !db_path.exists() {
         bail!(

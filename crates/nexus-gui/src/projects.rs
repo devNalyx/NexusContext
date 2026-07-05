@@ -23,8 +23,13 @@ pub fn build() -> GtkBox {
         .hexpand(true)
         .build();
     let reindex_button = Button::with_label("Index / Reindex");
+    let import_button = Button::with_label("Import");
+    import_button.set_tooltip_text(Some(
+        "Load a snapshot from <path>/.nexuscontext/index.db.zst",
+    ));
     add_row.append(&path_entry);
     add_row.append(&reindex_button);
+    add_row.append(&import_button);
 
     let list = ListBox::builder()
         .selection_mode(SelectionMode::None)
@@ -48,6 +53,24 @@ pub fn build() -> GtkBox {
             }
             let result =
                 crate::client::call("projects.reindex", serde_json::json!({ "repo_path": path }));
+            if let Err(err) = result {
+                show_error(&list, &err.to_string());
+            } else {
+                refresh_list(&list);
+            }
+        });
+    }
+
+    {
+        let list = list.clone();
+        let path_entry = path_entry.clone();
+        import_button.connect_clicked(move |_| {
+            let path = path_entry.text().to_string();
+            if path.trim().is_empty() {
+                return;
+            }
+            let result =
+                crate::client::call("projects.import", serde_json::json!({ "repo_path": path }));
             if let Err(err) = result {
                 show_error(&list, &err.to_string());
             } else {
@@ -127,6 +150,25 @@ fn refresh_list(list: &ListBox) {
                         .build(),
                 );
 
+                let export_button = Button::with_label("Export");
+                export_button.set_tooltip_text(Some(
+                    "Write a snapshot to <project>/.nexuscontext/index.db.zst for teammates to import",
+                ));
+                {
+                    let list = list.clone();
+                    let root_path = root_path.clone();
+                    export_button.connect_clicked(move |_| {
+                        let result = crate::client::call(
+                            "projects.export",
+                            serde_json::json!({ "repo_path": root_path }),
+                        );
+                        match result {
+                            Ok(_) => refresh_list(&list),
+                            Err(err) => show_error(&list, &err.to_string()),
+                        }
+                    });
+                }
+
                 let delete_button = Button::with_label("Delete");
                 delete_button.add_css_class("destructive-action");
                 {
@@ -153,6 +195,7 @@ fn refresh_list(list: &ListBox) {
                     .margin_end(8)
                     .build();
                 row.append(&labels);
+                row.append(&export_button);
                 row.append(&delete_button);
                 list.append(&row);
             }

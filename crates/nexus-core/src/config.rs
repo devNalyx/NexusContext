@@ -13,6 +13,32 @@ pub struct Config {
     /// anyone who wants it, not a default restriction.
     #[serde(default)]
     pub allowed_roots: Vec<String>,
+    #[serde(default)]
+    pub watcher: WatcherConfig,
+}
+
+/// Governs which registered projects the background file watcher actively
+/// watches/auto-reindexes. A project not queried via any MCP tool within
+/// `warm_window_secs` is "cold" and stops being watched - see
+/// `ProjectEntry::is_warm` - so idle repos stop costing inotify watches and
+/// (for embeddings-enabled projects) real network calls on every file
+/// change nobody's looking at.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatcherConfig {
+    #[serde(default = "default_warm_window_secs")]
+    pub warm_window_secs: u64,
+}
+
+fn default_warm_window_secs() -> u64 {
+    6 * 3600
+}
+
+impl Default for WatcherConfig {
+    fn default() -> Self {
+        Self {
+            warm_window_secs: default_warm_window_secs(),
+        }
+    }
 }
 
 /// Embeddings are an optional layer: the knowledge graph covers structural
@@ -176,6 +202,7 @@ mod tests {
                 allow_remote,
             },
             allowed_roots: vec![],
+            watcher: WatcherConfig::default(),
         }
     }
 

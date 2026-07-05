@@ -32,6 +32,21 @@ pub struct ProjectEntry {
     pub last_auto_reindex_unix: u64,
 }
 
+impl ProjectEntry {
+    /// Whether this project has been queried recently enough to keep
+    /// costing an active file watch / auto-reindex. Judged purely on
+    /// `last_queried_unix`, never `last_indexed_unix` - the latter is
+    /// bumped by auto-reindex itself, so using it here would let a cold
+    /// project's own watcher-triggered reindex re-arm its warm window,
+    /// defeating the point. A project never queried at all (0) is treated
+    /// as cold rather than warm, so it only starts being watched once
+    /// something actually asks about it.
+    pub fn is_warm(&self, now_unix: u64, warm_window_secs: u64) -> bool {
+        self.last_queried_unix != 0
+            && now_unix.saturating_sub(self.last_queried_unix) <= warm_window_secs
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Registry {
     pub projects: Vec<ProjectEntry>,
@@ -101,5 +116,51 @@ impl Registry {
             entry.last_auto_reindex_ms = duration_ms;
             entry.last_auto_reindex_unix = unix_time;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(last_queried_unix: u64) -> ProjectEntry {
+        ProjectEntry {
+            root_path: "/tmp/example".to_string(),
+            hash: "abc123".to_string(),
+            last_indexed_unix: 1_000_000,
+            nodes: 1,
+            edges: 0,
+            last_queried_unix,
+            auto_reindex_count: 0,
+            auto_reindex_fail_count: 0,
+            auto_reindex_total_ms: 0,
+            last_auto_reindex_ms: 0,
+            last_auto_reindex_unix: 0,
+        }
+    }
+
+    #[test]
+    fn never_queried_is_cold() {
+        assert!(!entry(0).is_warm(1_000_000, 6 * 3600));
+    }
+
+    #[test]
+    fn just_queried_is_warm() {
+        let now = 1_000_000;
+        assert!(entry(now).is_warm(now, 6 * 3600));
+    }
+
+    #[test]
+    fn exactly_at_window_boundary_is_warm() {
+        let now = 1_000_000;
+        let warm_window_secs = 6 * 3600;
+        assert!(entry(now - warm_window_secs).is_warm(now, warm_window_secs));
+    }
+
+    #[test]
+    fn past_window_is_cold() {
+        let now = 1_000_000;
+        let warm_window_secs = 6 * 3600;
+        assert!(!entry(now - warm_window_secs - 1).is_warm(now, warm_window_secs));
     }
 }

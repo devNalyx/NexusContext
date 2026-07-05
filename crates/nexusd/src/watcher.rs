@@ -118,9 +118,18 @@ fn sync_watches(
 ) {
     let paths = nexus_core::Paths::resolve();
     let registry = nexus_core::Registry::load(&paths.registry_file());
+    let warm_window_secs = nexus_core::Config::load(&paths.config_file())
+        .map(|c| c.watcher.warm_window_secs)
+        .unwrap_or_else(|_| nexus_core::WatcherConfig::default().warm_window_secs);
+    let now = now_unix();
+    // Cold projects (not queried within warm_window_secs) are excluded here
+    // rather than filtered out of the reindex loop below - the whole point
+    // is to stop paying for an active inotify watch on them, not just to
+    // skip acting on events they'd otherwise generate.
     let current: HashSet<PathBuf> = registry
         .projects
         .iter()
+        .filter(|p| p.is_warm(now, warm_window_secs))
         .map(|p| PathBuf::from(&p.root_path))
         .filter(|p| p.exists())
         .collect();
@@ -139,6 +148,13 @@ fn sync_watches(
     }
     *watched = current;
     WATCHED_COUNT.store(watched.len(), Ordering::Relaxed);
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Simple path-component denylist rather than full .gitignore semantics in
