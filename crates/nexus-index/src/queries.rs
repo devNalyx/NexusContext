@@ -246,11 +246,17 @@ fn parse_diff_hunks(diff: &str) -> Vec<(String, Vec<(u32, u32)>)> {
     result
 }
 
+/// Default window size when no explicit range is given and `full` isn't set -
+/// keeps a plain "read this file" call from returning an unbounded response
+/// on a large file. See change_proposal.md.
+const DEFAULT_CONTEXT_LINES: usize = 300;
+
 pub fn get_file_context(
     repo_path: &Path,
     file: &str,
     start_line: Option<usize>,
     end_line: Option<usize>,
+    full: bool,
 ) -> Result<String> {
     let canonical_root = repo_path
         .canonicalize()
@@ -264,14 +270,43 @@ pub fn get_file_context(
     }
 
     let content = std::fs::read_to_string(&canonical_file)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+
     match (start_line, end_line) {
+        // Both bounds given: an explicit two-sided ask, stays unbounded.
         (Some(s), Some(e)) => {
-            let lines: Vec<&str> = content.lines().collect();
-            let s = s.saturating_sub(1).min(lines.len());
-            let e = e.min(lines.len());
+            let s = s.saturating_sub(1).min(total);
+            let e = e.min(total);
             Ok(lines[s..e].join("\n"))
         }
-        _ => Ok(content),
+        // full=true is the explicit escape hatch for the whole file.
+        _ if full => Ok(content),
+        // Only one bound given: today this silently returned the whole
+        // file - a bounded window anchored at the given bound instead.
+        (Some(s), None) => {
+            let s = s.saturating_sub(1).min(total);
+            let e = (s + DEFAULT_CONTEXT_LINES).min(total);
+            Ok(lines[s..e].join("\n"))
+        }
+        (None, Some(e)) => {
+            let e = e.min(total);
+            let s = e.saturating_sub(DEFAULT_CONTEXT_LINES);
+            Ok(lines[s..e].join("\n"))
+        }
+        // Neither bound given, not full: first DEFAULT_CONTEXT_LINES lines,
+        // with a trailing note if there's more.
+        (None, None) => {
+            let e = DEFAULT_CONTEXT_LINES.min(total);
+            let shown = lines[..e].join("\n");
+            if total > e {
+                Ok(format!(
+                    "{shown}\n\n--- truncated: showing lines 1-{e} of {total} total. Pass end_line or full=true for the rest. ---"
+                ))
+            } else {
+                Ok(shown)
+            }
+        }
     }
 }
 
@@ -306,7 +341,7 @@ pub fn plan_query(
     end_line: Option<usize>,
 ) -> Result<QueryPlanResult> {
     if let Some(file) = file {
-        let text = get_file_context(repo_path, file, start_line, end_line)?;
+        let text = get_file_context(repo_path, file, start_line, end_line, false)?;
         return Ok(QueryPlanResult {
             strategy: "file_read",
             note: None,
@@ -380,4 +415,95 @@ pub fn plan_query(
         file_content: None,
         records: merged,
     })
+}
+
+#[cfg(test)]
+mod get_file_context_tests {
+    use super::{get_file_context, DEFAULT_CONTEXT_LINES};
+    use std::fs;
+
+    fn temp_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_get_file_context_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn numbered_lines(n: usize) -> String {
+        (1..=n)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn small_file_with_no_range_is_returned_whole_and_unmarked() {
+        let dir = temp_project("small");
+        fs::write(dir.join("f.txt"), numbered_lines(10)).unwrap();
+        let result = get_file_context(&dir, "f.txt", None, None, false).unwrap();
+        assert_eq!(result, numbered_lines(10));
+        assert!(!result.contains("truncated"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn large_file_with_no_range_is_truncated_with_a_note() {
+        let dir = temp_project("large");
+        let total = DEFAULT_CONTEXT_LINES + 50;
+        fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
+        let result = get_file_context(&dir, "f.txt", None, None, false).unwrap();
+        assert!(result.contains("line 1\n"));
+        assert!(result.contains(&format!("line {DEFAULT_CONTEXT_LINES}")));
+        assert!(!result.contains(&format!("line {}", DEFAULT_CONTEXT_LINES + 1)));
+        assert!(result.contains(&format!(
+            "truncated: showing lines 1-{DEFAULT_CONTEXT_LINES} of {total} total"
+        )));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lone_start_line_returns_a_bounded_window_not_the_whole_file() {
+        let dir = temp_project("lone_start");
+        let total = DEFAULT_CONTEXT_LINES + 50;
+        fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
+        let result = get_file_context(&dir, "f.txt", Some(10), None, false).unwrap();
+        assert!(result.starts_with("line 10\n"));
+        assert!(!result.contains(&format!("line {total}")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lone_end_line_returns_a_bounded_window_not_the_whole_file() {
+        let dir = temp_project("lone_end");
+        let total = DEFAULT_CONTEXT_LINES + 50;
+        fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
+        let result = get_file_context(&dir, "f.txt", None, Some(total), false).unwrap();
+        assert!(result.ends_with(&format!("line {total}")));
+        assert!(!result.contains("line 1\n"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn both_bounds_set_stays_unbounded_and_unmarked() {
+        let dir = temp_project("both_bounds");
+        let total = DEFAULT_CONTEXT_LINES + 50;
+        fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
+        let result = get_file_context(&dir, "f.txt", Some(1), Some(total), false).unwrap();
+        assert_eq!(result, numbered_lines(total));
+        assert!(!result.contains("truncated"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_true_bypasses_truncation_regardless_of_size() {
+        let dir = temp_project("full_true");
+        let total = DEFAULT_CONTEXT_LINES + 50;
+        fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
+        let result = get_file_context(&dir, "f.txt", None, None, true).unwrap();
+        assert_eq!(result, numbered_lines(total));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

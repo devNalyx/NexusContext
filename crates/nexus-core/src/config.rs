@@ -15,6 +15,8 @@ pub struct Config {
     pub allowed_roots: Vec<String>,
     #[serde(default)]
     pub watcher: WatcherConfig,
+    #[serde(default)]
+    pub tools: ToolsConfig,
 }
 
 /// Governs which registered projects the background file watcher actively
@@ -39,6 +41,27 @@ impl Default for WatcherConfig {
             warm_window_secs: default_warm_window_secs(),
         }
     }
+}
+
+/// Which MCP tools `tools/list` advertises. Every session start pays a fixed
+/// token cost for the schema of each tool returned here, so trimming this
+/// set is the highest-leverage way to reduce that per-session tax - see
+/// change_proposal.md. `enabled`, when set, takes precedence over `preset`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolsConfig {
+    #[serde(default)]
+    pub preset: ToolsPreset,
+    #[serde(default)]
+    pub enabled: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolsPreset {
+    Minimal,
+    #[default]
+    Standard,
+    Full,
 }
 
 /// Embeddings are an optional layer: the knowledge graph covers structural
@@ -203,6 +226,7 @@ mod tests {
             },
             allowed_roots: vec![],
             watcher: WatcherConfig::default(),
+            tools: ToolsConfig::default(),
         }
     }
 
@@ -272,5 +296,39 @@ mod tests {
             .embeddings_policy(),
             EmbeddingsPolicy::Allowed
         );
+    }
+
+    #[test]
+    fn tools_config_defaults_to_standard_preset_with_no_enabled_override() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.tools.preset, ToolsPreset::Standard);
+        assert_eq!(config.tools.enabled, None);
+    }
+
+    #[test]
+    fn tools_config_round_trips_preset_only() {
+        let config: Config = toml::from_str("[tools]\npreset = \"minimal\"\n").unwrap();
+        assert_eq!(config.tools.preset, ToolsPreset::Minimal);
+        assert_eq!(config.tools.enabled, None);
+    }
+
+    #[test]
+    fn tools_config_round_trips_enabled_only() {
+        let config: Config =
+            toml::from_str("[tools]\nenabled = [\"search_code\", \"get_file_context\"]\n").unwrap();
+        assert_eq!(config.tools.preset, ToolsPreset::Standard);
+        assert_eq!(
+            config.tools.enabled,
+            Some(vec![
+                "search_code".to_string(),
+                "get_file_context".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn tools_config_round_trips_full_preset() {
+        let config: Config = toml::from_str("[tools]\npreset = \"full\"\n").unwrap();
+        assert_eq!(config.tools.preset, ToolsPreset::Full);
     }
 }

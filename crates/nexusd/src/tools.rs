@@ -4,6 +4,15 @@ use nexus_index::{self as index, index_project, Direction, NodeRecord};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
+/// Hard ceiling on any caller-supplied `limit`, independent of each tool's
+/// own default - a single bad call from a coding agent can't blow up a
+/// response regardless of what limit it asked for. See change_proposal.md.
+const SERVER_MAX_LIMIT: u32 = 200;
+
+fn clamp_limit(requested: u32) -> u32 {
+    requested.min(SERVER_MAX_LIMIT)
+}
+
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -55,28 +64,30 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "trace_call_path",
-            "description": "BFS over the CALLS graph to find callers/callees of a function. Resolution is name-based, not import-aware: same-file matches win, and a cross-file call resolves only if the callee name is unique project-wide - ambiguous same-named functions across files are left unresolved. Call-graph quality varies by language: solid for Rust/Python/JS/TS/Go/Java/Ruby; structural-only (no call edges) for C/C++/C#/PHP - see language.rs for why.",
+            "description": "BFS over the CALLS graph to find callers/callees of a function. Resolution is name-based, not import-aware - see README.md for per-language call-graph quality and resolution caveats. Response is capped; check `total_nodes` vs `shown` for truncation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "repo_path": { "type": "string" },
                     "name": { "type": "string" },
                     "direction": { "type": "string", "enum": ["inbound", "outbound"], "default": "outbound" },
-                    "depth": { "type": "integer", "default": 3 }
+                    "depth": { "type": "integer", "default": 3 },
+                    "limit": { "type": "integer", "default": 100 }
                 },
                 "required": ["repo_path", "name"]
             }
         },
         {
             "name": "get_file_context",
-            "description": "Read a file, optionally a specific line range, from an indexed project.",
+            "description": "Read a file, optionally a specific line range, from an indexed project. With no range and full=false (default), returns only the first 300 lines with a truncation note - pass an explicit range or full=true for the rest.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "repo_path": { "type": "string" },
                     "file": { "type": "string" },
                     "start_line": { "type": "integer" },
-                    "end_line": { "type": "integer" }
+                    "end_line": { "type": "integer" },
+                    "full": { "type": "boolean", "default": false }
                 },
                 "required": ["repo_path", "file"]
             }
@@ -110,7 +121,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "detect_dead_code",
-            "description": "Functions with no inbound CALLS edge (excluding main). Caveat: call resolution is name-based (same-file, or cross-file only when the name is unique project-wide), so a function called only via an ambiguous same-named cross-file call, or invoked via reflection/routing/dependency injection rather than a direct call, may show up as a false positive - treat results as worth a second look, not a guarantee. Response is capped at `limit` (default 50) with a `total_flagged` count, since an untargeted sweep on a large project can flag hundreds of mostly-false-positive results.",
+            "description": "Functions with no inbound CALLS edge (excluding main). High false-positive rate expected - see README.md. Response is capped at `limit` (default 50) with a `total_flagged` count.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -135,7 +146,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "query_planner",
-            "description": "Picks the cheapest retrieval strategy for a query instead of the agent guessing: a specific file goes straight to get_file_context, a single identifier-like token goes to search_graph, and a descriptive multi-word query goes to semantic search if configured or a keyword-over-the-graph fallback otherwise. Returns which strategy was used alongside the results.",
+            "description": "Picks the cheapest retrieval strategy for a query (file read, symbol search, or semantic/keyword fallback) instead of the agent guessing. Returns which strategy was used alongside the results - see README.md for the exact routing rules.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -150,7 +161,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "query_graph",
-            "description": "Minimal ad-hoc graph query - not full Cypher, exactly one pattern shape: MATCH (a:Kind)-[:EDGE_KIND]->(b:Kind) [WHERE a.name = 'value' or b.name = 'value'] RETURN a|b. Kind is Function, Type, File, or Section (a markdown heading; CONTAINS edges link a heading to its nested sub-headings). Fails with a clear error for anything outside that shape rather than guessing.",
+            "description": "Minimal ad-hoc graph query - one pattern shape only: MATCH (a:Kind)-[:EDGE_KIND]->(b:Kind) [WHERE ...] RETURN a|b. See README.md for the full Kind/edge vocabulary.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -163,7 +174,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "search_codebase",
-            "description": "Semantic search via cosine similarity against embedded Function/Type nodes and markdown heading sections alike. Requires embeddings.enabled = true and a reachable endpoint/model in config.toml (see the GUI's Config tab), and that this project was reindexed after enabling it. Errors with a specific, actionable reason otherwise - structural tools (search_graph, search_code, query_planner) work regardless.",
+            "description": "Semantic search via cosine similarity over embedded Function/Type nodes and markdown sections. Requires `embeddings.enabled = true` and a reachable endpoint/model - errors with an actionable reason otherwise.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer" } },
@@ -180,6 +191,96 @@ pub fn tool_definitions() -> Value {
             }
         }
     ])
+}
+
+/// Source of truth for every tool `tool_definitions()` can return - kept in
+/// sync via `full_preset_matches_all_tool_names` below, so a 14th tool added
+/// to `tool_definitions()` without also being added to a preset fails a test
+/// instead of silently vanishing from every preset.
+const ALL_TOOL_NAMES: &[&str] = &[
+    "index_repository",
+    "search_graph",
+    "trace_call_path",
+    "get_file_context",
+    "get_architecture",
+    "detect_changes",
+    "delete_project",
+    "detect_dead_code",
+    "search_code",
+    "query_planner",
+    "query_graph",
+    "search_codebase",
+    "query_memory",
+];
+
+/// A read-heavy coding session's core loop: bootstrap the index, then read
+/// and trace code. Every other tool needs one of these to have run first.
+const MINIMAL_TOOLS: &[&str] = &[
+    "index_repository",
+    "search_code",
+    "get_file_context",
+    "get_architecture",
+    "trace_call_path",
+];
+
+/// Rounds out `MINIMAL_TOOLS` with the rest of the everyday-useful,
+/// non-destructive, non-embeddings-gated tools.
+const STANDARD_EXTRA_TOOLS: &[&str] = &[
+    "search_graph",
+    "detect_changes",
+    "detect_dead_code",
+    "query_planner",
+];
+
+/// Admin/destructive (`delete_project`) or embeddings-gated
+/// (`search_codebase`, `query_memory`) tools, plus the niche ad-hoc
+/// `query_graph` DSL - opt-in via `preset = "full"` or an explicit
+/// `enabled` list, not advertised by default.
+const FULL_EXTRA_TOOLS: &[&str] = &[
+    "delete_project",
+    "query_graph",
+    "search_codebase",
+    "query_memory",
+];
+
+fn resolved_tool_names(config: &Config) -> std::collections::HashSet<&'static str> {
+    if let Some(explicit) = &config.tools.enabled {
+        return ALL_TOOL_NAMES
+            .iter()
+            .copied()
+            .filter(|name| explicit.iter().any(|e| e == name))
+            .collect();
+    }
+    match config.tools.preset {
+        nexus_core::ToolsPreset::Minimal => MINIMAL_TOOLS.iter().copied().collect(),
+        nexus_core::ToolsPreset::Standard => MINIMAL_TOOLS
+            .iter()
+            .chain(STANDARD_EXTRA_TOOLS)
+            .copied()
+            .collect(),
+        nexus_core::ToolsPreset::Full => MINIMAL_TOOLS
+            .iter()
+            .chain(STANDARD_EXTRA_TOOLS)
+            .chain(FULL_EXTRA_TOOLS)
+            .copied()
+            .collect(),
+    }
+}
+
+/// `tools/list`'s entry point - filters `tool_definitions()` down to the
+/// resolved enabled-set so a session only pays the schema-token cost for
+/// tools it can actually use. See change_proposal.md.
+pub fn enabled_tool_definitions(config: &Config) -> Value {
+    let enabled = resolved_tool_names(config);
+    let all = tool_definitions();
+    Value::Array(
+        all.as_array()
+            .expect("tool_definitions() always returns a JSON array")
+            .iter()
+            .filter(|t| t["name"].as_str().is_some_and(|n| enabled.contains(n)))
+            .cloned()
+            .collect(),
+    )
 }
 
 pub fn call(params: Value) -> Result<Value> {
@@ -282,7 +383,7 @@ fn semantic_search_tool(args: Value) -> Result<String> {
         .get("query")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("missing 'query' argument"))?;
-    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as u32;
+    let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as u32);
 
     let config = Config::load(&Paths::resolve().config_file())?;
     match config.embeddings_policy() {
@@ -379,7 +480,7 @@ fn search_graph(args: Value) -> Result<String> {
         .get("pattern")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("missing 'pattern' argument"))?;
-    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as u32;
+    let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as u32);
 
     let store = index::open_store(&repo_path)?;
     let results = store.search_by_name(pattern, limit)?;
@@ -397,10 +498,21 @@ fn trace_call_path(args: Value) -> Result<String> {
         _ => Direction::Outbound,
     };
     let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as u32;
+    let limit =
+        clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as u32) as usize;
 
     let store = index::open_store(&repo_path)?;
     let results = store.trace_calls(name, direction, depth)?;
-    Ok(serde_json::to_string_pretty(&records_to_json(&results))?)
+    // Unbounded BFS output on a high-fan-out function can return an
+    // arbitrarily large node set - same total/shown truncation pattern as
+    // detect_dead_code, so the response stays honest about what's hidden.
+    let total = results.len();
+    let shown: Vec<_> = results.into_iter().take(limit).collect();
+    Ok(serde_json::to_string_pretty(&json!({
+        "total_nodes": total,
+        "shown": shown.len(),
+        "nodes": records_to_json(&shown)
+    }))?)
 }
 
 fn get_file_context(args: Value) -> Result<String> {
@@ -417,7 +529,8 @@ fn get_file_context(args: Value) -> Result<String> {
         .get("end_line")
         .and_then(|v| v.as_u64())
         .map(|n| n as usize);
-    index::get_file_context(&repo_path, file, start, end)
+    let full = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+    index::get_file_context(&repo_path, file, start, end, full)
 }
 
 fn last_indexed_unix(repo_path: &std::path::Path) -> u64 {
@@ -486,7 +599,8 @@ fn query_planner(args: Value) -> Result<String> {
 
 fn detect_dead_code(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
-    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+    let limit =
+        clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as u32) as usize;
     let dead = index::detect_dead_code(&repo_path)?;
     // Unbounded on a real project this size flagged ~40% of all indexed
     // symbols as "dead" (mostly false positives - see the tool description's
@@ -510,7 +624,7 @@ fn search_code(args: Value) -> Result<String> {
         .get("query")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("missing 'query' argument"))?;
-    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as u32;
+    let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as u32);
 
     let hits = index::search_code(&repo_path, query, limit)?;
     Ok(serde_json::to_string_pretty(&json!(hits
@@ -525,7 +639,7 @@ fn query_graph(args: Value) -> Result<String> {
         .get("query")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("missing 'query' argument"))?;
-    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as u32;
+    let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as u32);
 
     let results = nexus_index::run_cypher_query(&repo_path, query, limit)?;
     Ok(serde_json::to_string_pretty(&records_to_json(&results))?)
@@ -535,4 +649,139 @@ fn detect_changes(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
     let affected = index::detect_changes(&repo_path)?;
     Ok(serde_json::to_string_pretty(&records_to_json(&affected))?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nexus_core::ToolsPreset;
+
+    fn tool_names(defs: &Value) -> std::collections::HashSet<String> {
+        defs.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn clamp_limit_passes_through_requests_at_or_below_the_max() {
+        assert_eq!(clamp_limit(1), 1);
+        assert_eq!(clamp_limit(SERVER_MAX_LIMIT), SERVER_MAX_LIMIT);
+    }
+
+    #[test]
+    fn clamp_limit_caps_requests_above_the_max() {
+        assert_eq!(clamp_limit(SERVER_MAX_LIMIT + 1), SERVER_MAX_LIMIT);
+        assert_eq!(clamp_limit(100_000), SERVER_MAX_LIMIT);
+    }
+
+    #[test]
+    fn full_preset_matches_all_tool_definitions() {
+        let config = Config {
+            tools: nexus_core::ToolsConfig {
+                preset: ToolsPreset::Full,
+                enabled: None,
+            },
+            ..Default::default()
+        };
+        let filtered = tool_names(&enabled_tool_definitions(&config));
+        let all = tool_names(&tool_definitions());
+        assert_eq!(filtered, all);
+        assert_eq!(all.len(), ALL_TOOL_NAMES.len());
+    }
+
+    #[test]
+    fn minimal_and_standard_presets_are_subsets_of_full() {
+        let all: std::collections::HashSet<_> = ALL_TOOL_NAMES.iter().copied().collect();
+        let minimal: std::collections::HashSet<_> = MINIMAL_TOOLS.iter().copied().collect();
+        let standard: std::collections::HashSet<_> = MINIMAL_TOOLS
+            .iter()
+            .chain(STANDARD_EXTRA_TOOLS)
+            .copied()
+            .collect();
+        assert!(minimal.is_subset(&standard));
+        assert!(standard.is_subset(&all));
+    }
+
+    #[test]
+    fn minimal_standard_extra_and_full_extra_partition_all_tool_names_exactly() {
+        let reconstructed: std::collections::HashSet<_> = MINIMAL_TOOLS
+            .iter()
+            .chain(STANDARD_EXTRA_TOOLS)
+            .chain(FULL_EXTRA_TOOLS)
+            .copied()
+            .collect();
+        let all: std::collections::HashSet<_> = ALL_TOOL_NAMES.iter().copied().collect();
+        assert_eq!(
+            reconstructed, all,
+            "a tool was added to tool_definitions() without being added to a preset, or vice versa"
+        );
+    }
+
+    #[test]
+    fn default_config_resolves_to_standard_nine_tools() {
+        let config = Config::default();
+        let filtered = tool_names(&enabled_tool_definitions(&config));
+        assert_eq!(filtered.len(), 9);
+        assert!(filtered.contains("search_code"));
+        assert!(!filtered.contains("delete_project"));
+        assert!(!filtered.contains("search_codebase"));
+    }
+
+    #[test]
+    fn minimal_preset_resolves_to_exactly_five_tools() {
+        let config = Config {
+            tools: nexus_core::ToolsConfig {
+                preset: ToolsPreset::Minimal,
+                enabled: None,
+            },
+            ..Default::default()
+        };
+        let filtered = tool_names(&enabled_tool_definitions(&config));
+        assert_eq!(filtered.len(), 5);
+        assert_eq!(
+            filtered,
+            MINIMAL_TOOLS
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<std::collections::HashSet<_>>()
+        );
+    }
+
+    #[test]
+    fn explicit_enabled_list_overrides_preset() {
+        let config = Config {
+            tools: nexus_core::ToolsConfig {
+                preset: ToolsPreset::Standard,
+                enabled: Some(vec![
+                    "search_codebase".to_string(),
+                    "query_graph".to_string(),
+                ]),
+            },
+            ..Default::default()
+        };
+        let filtered = tool_names(&enabled_tool_definitions(&config));
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains("search_codebase"));
+        assert!(filtered.contains("query_graph"));
+        assert!(!filtered.contains("search_code"));
+    }
+
+    #[test]
+    fn unknown_name_in_enabled_list_is_silently_dropped() {
+        let config = Config {
+            tools: nexus_core::ToolsConfig {
+                preset: ToolsPreset::Standard,
+                enabled: Some(vec![
+                    "search_code".to_string(),
+                    "not_a_real_tool".to_string(),
+                ]),
+            },
+            ..Default::default()
+        };
+        let filtered = tool_names(&enabled_tool_definitions(&config));
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains("search_code"));
+    }
 }
