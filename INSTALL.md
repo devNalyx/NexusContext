@@ -99,6 +99,8 @@ Once `nexusd mcp` is wired into an agent, these tools are exposed (no embeddings
 
 `index_repository`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes`, `detect_dead_code`, `search_code`, `query_graph`, `query_planner`, `delete_project`, `search_codebase`, `query_memory`.
 
+By default only 9 of these 13 are actually advertised to an agent (the `standard` preset - see Section 8's `[tools]` block) to cut the fixed per-session token cost of loading tool schemas. Set `preset = "full"` to get all 13, `preset = "minimal"` for just the 5 core read tools, or list exact tool names via `enabled`.
+
 ## 6. Desktop GUI
 
 ```bash
@@ -138,6 +140,10 @@ allowed_roots = []   # if non-empty, index_repository/reindex refuses paths outs
 warm_window_secs = 21600   # 6h default - a project not queried within this window stops being
                            # auto-watched/auto-reindexed in the background (still catches up with
                            # one synchronous reindex the next time it's actually queried again)
+
+[tools]
+preset = "standard"   # "minimal" (5 core read tools) | "standard" (default, 9) | "full" (all 13)
+# enabled = ["search_code", "get_architecture"]   # optional explicit list, overrides preset
 ```
 
 Env var overrides: `NEXUS_CACHE_DIR` (data dir), `NEXUS_LOG_LEVEL` (`trace`/`debug`/`info`/`warn`/`error`), `NEXUS_LOG_FORMAT=json` (structured logs, `serve`/`mcp` modes both support it).
