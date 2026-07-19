@@ -1,4 +1,4 @@
-use crate::graph::{EdgeKind, GraphStore, NodeKind};
+use crate::graph::{EdgeKind, EmbeddingsSnapshot, GraphStore, NodeKind};
 use crate::language::{self, Language};
 use anyhow::Result;
 use ignore::WalkBuilder;
@@ -49,8 +49,21 @@ struct PendingCall {
 /// own file doesn't also define one, the call is left unresolved rather
 /// than guessing which one - wrong edges would be worse than missing ones.
 pub fn index_directory(root: &Path, store: &GraphStore) -> Result<IndexStats> {
+    // Snapshot existing embeddings for the configured model *before* the
+    // rebuild's clear() wipes them, so embed_pending_nodes can reuse
+    // vectors for chunks whose source text hasn't changed instead of
+    // re-calling the embeddings endpoint for all of them every time - see
+    // the freshness proposal's Stage 0. Empty if embeddings aren't
+    // configured or nothing's embedded yet, matching this pipeline's
+    // existing "just skip it" fallback shape everywhere else.
+    let embeddings_snapshot = Config::load(&Paths::resolve().config_file())
+        .ok()
+        .and_then(|c| c.embeddings.model)
+        .and_then(|model| store.embeddings_snapshot(&model).ok())
+        .unwrap_or_default();
+
     store.begin_immediate()?;
-    match index_directory_inner(root, store) {
+    match index_directory_inner(root, store, &embeddings_snapshot) {
         Ok(stats) => {
             store.commit()?;
             Ok(stats)
@@ -112,13 +125,17 @@ pub fn content_signature(root: &Path) -> u64 {
     hasher.finish()
 }
 
-fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> {
+fn index_directory_inner(
+    root: &Path,
+    store: &GraphStore,
+    embeddings_snapshot: &EmbeddingsSnapshot,
+) -> Result<IndexStats> {
     store.clear()?;
 
     let mut files_indexed = 0;
     let mut global_fn_registry: HashMap<String, Vec<i64>> = HashMap::new();
     let mut pending_calls: Vec<PendingCall> = Vec::new();
-    let mut pending_embeddings: Vec<(i64, String)> = Vec::new();
+    let mut pending_embeddings: Vec<(i64, String, String)> = Vec::new();
 
     // Building a TagsConfiguration recompiles that language's query, so it's
     // cached per-language rather than rebuilt for every single file; the
@@ -203,7 +220,7 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
         }
     }
 
-    let embeddings_status = embed_pending_nodes(store, pending_embeddings);
+    let embeddings_status = embed_pending_nodes(store, pending_embeddings, embeddings_snapshot);
 
     let (nodes, edges) = store.stats()?;
     Ok(IndexStats {
@@ -214,13 +231,58 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
     })
 }
 
+/// (node_id, chunk_text, dim, embedding_bytes) for a chunk whose existing
+/// vector is being reinserted as-is under a new node_id, rather than
+/// re-embedded - see `split_reusable_embeddings`.
+type ReusableEmbedding = (i64, String, i64, Vec<u8>);
+
+/// Pure split of `pending` into chunks that can be reused as-is (their text
+/// exactly matches what's already embedded under the same `qualified_name`
+/// in `snapshot`) versus chunks that are new or changed and must go to a
+/// real embedding call. No I/O, no config/policy lookup - kept separate from
+/// `embed_pending_nodes` specifically so this decision is unit-testable
+/// without a live GraphStore or Config. See Stage 0 of the freshness
+/// proposal's incremental-reindexing plan.
+fn split_reusable_embeddings(
+    pending: Vec<(i64, String, String)>,
+    snapshot: &EmbeddingsSnapshot,
+) -> (Vec<ReusableEmbedding>, Vec<(i64, String)>) {
+    let mut reusable = Vec::new();
+    let mut to_embed = Vec::new();
+    for (node_id, qualified_name, chunk_text) in pending {
+        match snapshot.get(&qualified_name) {
+            Some((old_text, old_dim, old_bytes)) if *old_text == chunk_text => {
+                reusable.push((node_id, chunk_text, *old_dim, old_bytes.clone()));
+            }
+            _ => to_embed.push((node_id, chunk_text)),
+        }
+    }
+    (reusable, to_embed)
+}
+
 /// Third pass, after every file and every cross-file call edge is already
 /// resolved - embeds each Function/Type node's source text, entirely
 /// best-effort: skipped up front (zero cost) unless embeddings are
 /// configured, enabled, and allowed, and if the endpoint fails partway
 /// through, whatever succeeded before that stays persisted rather than
 /// being thrown away (see `embed_in_batches`).
-fn embed_pending_nodes(store: &GraphStore, pending: Vec<(i64, String)>) -> String {
+///
+/// Stage 0 of the freshness proposal's incremental-reindexing plan: `pending`
+/// carries each chunk's `qualified_name` alongside its (fresh, this-rebuild)
+/// node_id and text, checked against `snapshot` (taken before `clear()` wiped
+/// the old embeddings) so a chunk whose source text hasn't actually changed
+/// gets its existing vector reinserted under the new node_id instead of
+/// being resent to the embeddings endpoint. This is what keeps a catch-up
+/// reindex cheap once cold projects start self-healing from `nexus-cli`
+/// queries too (see `nexus_index::touch_and_catchup`) - most of a project's
+/// content is unchanged between two indexing runs, and the embeddings HTTP
+/// round-trip dominates reindex cost far more than local tree-sitter parsing
+/// does.
+fn embed_pending_nodes(
+    store: &GraphStore,
+    pending: Vec<(i64, String, String)>,
+    snapshot: &EmbeddingsSnapshot,
+) -> String {
     let config = match Config::load(&Paths::resolve().config_file()) {
         Ok(c) => c,
         Err(err) => return format!("skipped: failed to load config: {err}"),
@@ -238,8 +300,25 @@ fn embed_pending_nodes(store: &GraphStore, pending: Vec<(i64, String)>) -> Strin
     }
 
     let model = config.embeddings.model.clone().unwrap_or_default();
-    let ids: Vec<i64> = pending.iter().map(|(id, _)| *id).collect();
-    let texts: Vec<String> = pending.iter().map(|(_, text)| text.clone()).collect();
+
+    let (reusable, mut to_embed) = split_reusable_embeddings(pending, snapshot);
+    let mut reused = 0usize;
+    for (node_id, text, dim, bytes) in reusable {
+        // A write failure here is rare (same DB the rest of this pass
+        // already writes to) but shouldn't lose the chunk entirely - fall
+        // back to a real embedding rather than silently dropping it.
+        match store.insert_embedding(node_id, &model, dim as usize, &text, &bytes) {
+            Ok(()) => reused += 1,
+            Err(_) => to_embed.push((node_id, text)),
+        }
+    }
+
+    if to_embed.is_empty() {
+        return format!("ok: 0 chunks embedded, {reused} reused unchanged");
+    }
+
+    let ids: Vec<i64> = to_embed.iter().map(|(id, _)| *id).collect();
+    let texts: Vec<String> = to_embed.iter().map(|(_, text)| text.clone()).collect();
     let mut embedded = 0usize;
     let mut insert_err: Option<anyhow::Error> = None;
 
@@ -260,17 +339,21 @@ fn embed_pending_nodes(store: &GraphStore, pending: Vec<(i64, String)>) -> Strin
         });
 
     match (result, insert_err, embedded) {
-        (Ok(()), None, _) => format!("ok: {embedded} chunks embedded"),
+        (Ok(()), None, _) => format!("ok: {embedded} chunks embedded, {reused} reused unchanged"),
         (Ok(()), Some(err), _) => {
-            format!("partial: {embedded} chunks embedded, then a storage error: {err}")
+            format!(
+                "partial: {embedded} chunks embedded, {reused} reused unchanged, then a storage error: {err}"
+            )
         }
         (Err(err), _, 0) => {
             tracing::warn!(error = %err, "embeddings endpoint unreachable, skipping embeddings for this index run");
-            format!("skipped: embeddings endpoint unreachable: {err}")
+            format!("skipped: embeddings endpoint unreachable: {err} ({reused} reused unchanged)")
         }
         (Err(err), _, embedded) => {
             tracing::warn!(error = %err, embedded, "embeddings endpoint failed partway through indexing");
-            format!("partial: endpoint became unreachable after {embedded} chunks: {err}")
+            format!(
+                "partial: endpoint became unreachable after {embedded} chunks: {err} ({reused} reused unchanged)"
+            )
         }
     }
 }
@@ -281,11 +364,14 @@ struct FileIndexResult {
     /// (caller_id, callee_name) for every call site, left unresolved until
     /// the project-wide pass in `index_directory`.
     pending_calls: Vec<(i64, String)>,
-    /// (node_id, chunk_text) for every Function/Type node defined in this
-    /// file - left unembedded until the project-wide embeddings pass in
-    /// `index_directory`, which only actually calls the endpoint if
-    /// embeddings are configured/enabled/allowed at all.
-    pending_embeddings: Vec<(i64, String)>,
+    /// (node_id, qualified_name, chunk_text) for every Function/Type node
+    /// defined in this file - left unembedded until the project-wide
+    /// embeddings pass in `index_directory`, which only actually calls the
+    /// endpoint if embeddings are configured/enabled/allowed at all, and
+    /// reuses an unchanged chunk's existing vector (matched on
+    /// qualified_name) rather than re-embedding it - see
+    /// `embed_pending_nodes`'s Stage 0 note.
+    pending_embeddings: Vec<(i64, String, String)>,
 }
 
 fn index_file(
@@ -319,7 +405,7 @@ fn index_file(
 
     let extracted = language::extract(config, tags_context, &source)?;
 
-    let mut pending_embeddings: Vec<(i64, String)> = Vec::new();
+    let mut pending_embeddings: Vec<(i64, String, String)> = Vec::new();
     let mut fn_nodes: Vec<(String, tree_sitter::Range, i64)> = Vec::new();
     for (name, range) in extracted.functions {
         let qualified_name = format!("{rel_path}::{name}#{}", range.start_point.row);
@@ -332,7 +418,7 @@ fn index_file(
             range.end_point.row as u32 + 1,
         )?;
         store.insert_edge(file_id, id, EdgeKind::Defines)?;
-        pending_embeddings.push((id, chunk_text_for(&range)));
+        pending_embeddings.push((id, qualified_name, chunk_text_for(&range)));
         fn_nodes.push((name, range, id));
     }
 
@@ -347,7 +433,7 @@ fn index_file(
             range.end_point.row as u32 + 1,
         )?;
         store.insert_edge(file_id, id, EdgeKind::Defines)?;
-        pending_embeddings.push((id, chunk_text_for(&range)));
+        pending_embeddings.push((id, qualified_name, chunk_text_for(&range)));
     }
 
     // Find which function contains each call site, by nearest-preceding-
@@ -399,8 +485,8 @@ fn is_markdown(path: &Path) -> bool {
 /// shape `index_file` does with empty `fn_nodes`/`pending_calls`, populated
 /// `pending_embeddings`. Because of that shape match, the project-wide
 /// aggregation and embeddings pass in `index_directory_inner` need zero
-/// changes - they already just consume `(node_id, chunk_text)` pairs
-/// regardless of what produced them.
+/// changes - they already just consume `(node_id, qualified_name,
+/// chunk_text)` triples regardless of what produced them.
 fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<FileIndexResult> {
     let source = std::fs::read(path)?;
     let rel_path = path
@@ -441,7 +527,7 @@ fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<F
 
         let start = (section.start_line as usize - 1).min(lines.len().saturating_sub(1));
         let end = (section.end_line as usize - 1).min(lines.len().saturating_sub(1));
-        pending_embeddings.push((id, lines[start..=end].join("\n")));
+        pending_embeddings.push((id, qualified_name, lines[start..=end].join("\n")));
 
         node_ids.push(id);
     }
@@ -451,6 +537,80 @@ fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<F
         pending_calls: Vec::new(),
         pending_embeddings,
     })
+}
+
+#[cfg(test)]
+mod split_reusable_embeddings_tests {
+    use super::split_reusable_embeddings;
+    use crate::graph::EmbeddingsSnapshot;
+
+    fn snapshot_with(entries: &[(&str, &str, i64, Vec<u8>)]) -> EmbeddingsSnapshot {
+        entries
+            .iter()
+            .map(|(qn, text, dim, bytes)| (qn.to_string(), (text.to_string(), *dim, bytes.clone())))
+            .collect()
+    }
+
+    #[test]
+    fn unchanged_chunk_is_reused_not_sent_for_reembedding() {
+        let snapshot = snapshot_with(&[("a.rs::foo#1", "fn foo() {}", 3, vec![1, 2, 3])]);
+        let pending = vec![(42, "a.rs::foo#1".to_string(), "fn foo() {}".to_string())];
+
+        let (reusable, to_embed) = split_reusable_embeddings(pending, &snapshot);
+        assert_eq!(
+            reusable,
+            vec![(42, "fn foo() {}".to_string(), 3, vec![1, 2, 3])]
+        );
+        assert!(to_embed.is_empty());
+    }
+
+    #[test]
+    fn changed_chunk_text_is_not_reused_even_with_the_same_qualified_name() {
+        let snapshot = snapshot_with(&[("a.rs::foo#1", "fn foo() {}", 3, vec![1, 2, 3])]);
+        let pending = vec![(
+            42,
+            "a.rs::foo#1".to_string(),
+            "fn foo() { changed() }".to_string(),
+        )];
+
+        let (reusable, to_embed) = split_reusable_embeddings(pending, &snapshot);
+        assert!(reusable.is_empty());
+        assert_eq!(to_embed, vec![(42, "fn foo() { changed() }".to_string())]);
+    }
+
+    #[test]
+    fn a_qualified_name_absent_from_the_snapshot_is_sent_for_embedding() {
+        let snapshot = snapshot_with(&[]);
+        let pending = vec![(
+            1,
+            "a.rs::new_fn#5".to_string(),
+            "fn new_fn() {}".to_string(),
+        )];
+
+        let (reusable, to_embed) = split_reusable_embeddings(pending, &snapshot);
+        assert!(reusable.is_empty());
+        assert_eq!(to_embed, vec![(1, "fn new_fn() {}".to_string())]);
+    }
+
+    #[test]
+    fn mixed_batch_splits_correctly() {
+        let snapshot = snapshot_with(&[
+            ("a.rs::unchanged#1", "same text", 2, vec![9, 9]),
+            ("a.rs::changed#10", "old text", 2, vec![5, 5]),
+        ]);
+        let pending = vec![
+            (1, "a.rs::unchanged#1".to_string(), "same text".to_string()),
+            (2, "a.rs::changed#10".to_string(), "new text".to_string()),
+            (3, "a.rs::brand_new#20".to_string(), "brand new".to_string()),
+        ];
+
+        let (reusable, to_embed) = split_reusable_embeddings(pending, &snapshot);
+        assert_eq!(reusable, vec![(1, "same text".to_string(), 2, vec![9, 9])]);
+        assert_eq!(
+            to_embed,
+            vec![(2, "new text".to_string()), (3, "brand new".to_string()),]
+        );
+    }
 }
 
 #[cfg(test)]

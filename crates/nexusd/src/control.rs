@@ -88,9 +88,20 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
     // the GUI talks to this control API, not the MCP tool list, so without
     // this the registry would only ever see last_queried_unix move for
     // MCP-driven usage and never for someone just using the GUI directly.
+    // Now also runs the same cold-catchup reindex tools.rs already had
+    // (nexus_index::touch_and_catchup) - the control API never had that
+    // half of the guarantee before, so a GUI query against a project the
+    // watcher had stopped watching could silently answer from a stale
+    // index. projects.reindex is excluded from catch-up (it already
+    // unconditionally reindexes) but still marks the project warm.
     if method != "projects.delete" {
         if let Some(repo_path) = params.get("repo_path").and_then(|v| v.as_str()) {
-            nexus_index::touch_queried(std::path::Path::new(repo_path));
+            let repo_path = std::path::Path::new(repo_path);
+            if method == "projects.reindex" {
+                nexus_index::touch_queried(repo_path);
+            } else {
+                nexus_index::touch_and_catchup(repo_path);
+            }
         }
     }
     let call_start = std::time::Instant::now();

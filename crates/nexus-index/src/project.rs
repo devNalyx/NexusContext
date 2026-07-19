@@ -1,7 +1,7 @@
 use crate::graph::GraphStore;
 use crate::ingest::{index_directory, IndexStats};
 use anyhow::{bail, Result};
-use nexus_core::{project_hash, Config, Paths, ProjectEntry, Registry};
+use nexus_core::{project_hash, Config, Paths, ProjectEntry, Registry, WatcherConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -71,6 +71,49 @@ pub fn record_auto_reindex(repo_path: &Path, duration_ms: u64, success: bool) {
     };
     registry.record_auto_reindex(&hash, duration_ms, now.as_secs(), success);
     let _ = registry.save(&paths.registry_file());
+}
+
+/// Whether `repo_path` is registered and has gone cold (not warm per
+/// `ProjectEntry::is_warm`) - i.e. the background watcher has already
+/// stopped watching it, per the same warm-window config it uses. An
+/// unregistered project (never indexed) isn't "cold", it's just untouched -
+/// nothing to catch up here, `index_project` is the entry point for that.
+fn is_cold(repo_path: &Path) -> bool {
+    let paths = Paths::resolve();
+    let hash = project_hash(repo_path);
+    let registry = Registry::load(&paths.registry_file());
+    let Some(entry) = registry.projects.iter().find(|p| p.hash == hash) else {
+        return false;
+    };
+    let warm_window_secs = Config::load(&paths.config_file())
+        .map(|c| c.watcher.warm_window_secs)
+        .unwrap_or_else(|_| WatcherConfig::default().warm_window_secs);
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    !entry.is_warm(now_unix, warm_window_secs)
+}
+
+/// Marks `repo_path` as actually used, catching it up first with a
+/// synchronous reindex if the watcher had already stopped watching it (gone
+/// cold per `is_cold`/`ProjectEntry::is_warm`). One shared entry point for
+/// every caller that answers a query about a project - MCP tool dispatch
+/// (`nexusd::tools`), the control API (`nexusd::control`), and the CLI all
+/// need the exact same "don't silently answer from a stale index" guarantee;
+/// this used to be duplicated in the first two and missing entirely from the
+/// third, which is what let a project checked only via the CLI go cold
+/// forever without ever self-healing. Callers should skip this for
+/// `index_repository`/`Reindex`/`projects.reindex`/`delete_project` (already
+/// unconditional, or about to make the entry moot) - checking first there
+/// would just double the work or query a registry entry about to be deleted.
+pub fn touch_and_catchup(repo_path: &Path) {
+    if is_cold(repo_path) {
+        let start = std::time::Instant::now();
+        let success = index_project(repo_path).is_ok();
+        record_auto_reindex(repo_path, start.elapsed().as_millis() as u64, success);
+    }
+    touch_queried(repo_path);
 }
 
 /// Total bytes on disk for a project's indexed data (graph.db plus its WAL

@@ -188,6 +188,7 @@ fn main() -> Result<()> {
             project,
             limit,
         } => {
+            index::touch_and_catchup(&project);
             let store = index::open_store(&project)?;
             let results = store.search_by_name(&pattern, limit)?;
             print_records(&results);
@@ -198,6 +199,7 @@ fn main() -> Result<()> {
             direction,
             depth,
         } => {
+            index::touch_and_catchup(&project);
             let store = index::open_store(&project)?;
             let results = store.trace_calls(&name, direction.into(), depth)?;
             if results.is_empty() {
@@ -210,6 +212,7 @@ fn main() -> Result<()> {
             print_records(&results);
         }
         Command::Architecture { project } => {
+            index::touch_and_catchup(&project);
             let summary = index::get_architecture(&project)?;
             println!("total nodes: {}", summary.total_nodes);
             println!("total edges: {}", summary.total_edges);
@@ -223,10 +226,12 @@ fn main() -> Result<()> {
             }
         }
         Command::DetectChanges { project } => {
+            index::touch_and_catchup(&project);
             let affected = index::detect_changes(&project)?;
             print_records(&affected);
         }
         Command::DeadCode { project } => {
+            index::touch_and_catchup(&project);
             let dead = index::detect_dead_code(&project)?;
             print_records(&dead);
         }
@@ -237,6 +242,7 @@ fn main() -> Result<()> {
             start_line,
             end_line,
         } => {
+            index::touch_and_catchup(&project);
             let plan = index::plan_query(&project, &query, file.as_deref(), start_line, end_line)?;
             println!("strategy: {}", plan.strategy);
             if let Some(note) = plan.note {
@@ -275,6 +281,7 @@ fn main() -> Result<()> {
             project,
             limit,
         } => {
+            index::touch_and_catchup(&project);
             let hits = index::search_code(&project, &query, limit)?;
             if hits.is_empty() {
                 println!("no matches for '{query}'");
@@ -288,6 +295,7 @@ fn main() -> Result<()> {
             project,
             limit,
         } => {
+            index::touch_and_catchup(&project);
             let results = index::run_cypher_query(&project, &query, limit)?;
             print_records(&results);
         }
@@ -296,6 +304,7 @@ fn main() -> Result<()> {
             project,
             limit,
         } => {
+            index::touch_and_catchup(&project);
             let config = Config::load(&paths.config_file())?;
             let hits = index::semantic_search(&project, &config.embeddings, &query, limit)?;
             if hits.is_empty() {

@@ -13,31 +13,6 @@ fn clamp_limit(requested: u32) -> u32 {
     requested.min(SERVER_MAX_LIMIT)
 }
 
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// Whether `repo_path` is registered and has gone cold (not warm per
-/// `ProjectEntry::is_warm`) - i.e. the background watcher has already
-/// stopped watching it, per the same warm-window config it uses. An
-/// unregistered project (never indexed) isn't "cold", it's just untouched -
-/// nothing to catch up here, `index_repository` is the entry point for that.
-fn is_cold(repo_path: &std::path::Path) -> bool {
-    let paths = Paths::resolve();
-    let hash = project_hash(repo_path);
-    let registry = Registry::load(&paths.registry_file());
-    let Some(entry) = registry.projects.iter().find(|p| p.hash == hash) else {
-        return false;
-    };
-    let warm_window_secs = Config::load(&paths.config_file())
-        .map(|c| c.watcher.warm_window_secs)
-        .unwrap_or_else(|_| nexus_core::WatcherConfig::default().warm_window_secs);
-    !entry.is_warm(now_unix(), warm_window_secs)
-}
-
 pub fn tool_definitions() -> Value {
     json!([
         {
@@ -293,36 +268,23 @@ pub fn call(params: Value) -> Result<Value> {
     // Best-effort "this project is actually being used" signal, distinct
     // from last_indexed_unix which only moves on a reindex - lets the
     // registry answer "which of these have I actually touched lately" for
-    // someone who's indexed many projects over time. delete_project makes
-    // this moot (the entry is gone right after) so it's skipped there.
+    // someone who's indexed many projects over time, and catches a cold
+    // project up with a synchronous reindex first if the watcher had
+    // stopped watching it - see nexus_index::touch_and_catchup, the one
+    // shared entry point this, control.rs, and the CLI all call.
+    // delete_project is excluded entirely: the entry is gone right after,
+    // so there's nothing to mark warm. index_repository still marks the
+    // project warm (it's real usage too) but skips the catch-up check -
+    // it's about to unconditionally reindex itself, so checking staleness
+    // first would just double the work.
     if name != "delete_project" {
         if let Some(repo_path) = args.get("repo_path").and_then(|v| v.as_str()) {
             let repo_path = std::path::Path::new(repo_path);
-            // The watcher (watcher::sync_watches) stops actively watching a
-            // project once it's gone cold - see ProjectEntry::is_warm - so a
-            // query returning to one after a gap could otherwise silently
-            // answer from a stale index. Catch it up here, synchronously,
-            // before touch_queried below marks it warm again. Checked
-            // *before* touch_queried, since that call is about to overwrite
-            // the very timestamp this staleness check reads.
-            // index_repository is excluded: it already unconditionally
-            // reindexes, so catching up first here would just double the work.
-            if name != "index_repository" && is_cold(repo_path) {
-                let reindex_start = std::time::Instant::now();
-                let success = match index_project(repo_path) {
-                    Ok(_) => true,
-                    Err(err) => {
-                        tracing::warn!(project = %repo_path.display(), error = %err, "catch-up reindex of a cold project failed");
-                        false
-                    }
-                };
-                index::record_auto_reindex(
-                    repo_path,
-                    reindex_start.elapsed().as_millis() as u64,
-                    success,
-                );
+            if name == "index_repository" {
+                index::touch_queried(repo_path);
+            } else {
+                index::touch_and_catchup(repo_path);
             }
-            index::touch_queried(repo_path);
         }
     }
 

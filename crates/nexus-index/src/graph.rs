@@ -1,5 +1,6 @@
 use anyhow::Result;
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::Path;
 
 /// One SQLite file per indexed project (matches the proposal's
@@ -8,6 +9,10 @@ use std::path::Path;
 pub struct GraphStore {
     conn: Connection,
 }
+
+/// (chunk_text, dim, embedding_bytes) for one previously-embedded chunk,
+/// keyed by qualified_name - see `GraphStore::embeddings_snapshot`.
+pub type EmbeddingsSnapshot = HashMap<String, (String, i64, Vec<u8>)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
@@ -393,6 +398,33 @@ impl GraphStore {
             .map_err(Into::into)
     }
 
+    /// Snapshot of every embedded chunk for `model`, keyed by
+    /// `qualified_name` rather than `node_id` - node ids are fresh
+    /// autoincrements on every full rebuild (`clear()` wipes the table
+    /// first), but a function's qualified_name
+    /// (`{file_path}::{name}#{start_line}`, see `ingest.rs`) stays stable
+    /// across a rebuild as long as it hasn't actually moved. Taken *before*
+    /// `clear()` runs, so a reindex can reuse unchanged vectors instead of
+    /// re-calling the embeddings endpoint for content that didn't change -
+    /// see the freshness proposal's Stage 0. Empty map if nothing is
+    /// embedded yet (fresh project, or embeddings not configured) - callers
+    /// treat a miss exactly like "never embedded", no special-casing needed.
+    pub fn embeddings_snapshot(&self, model: &str) -> Result<EmbeddingsSnapshot> {
+        let mut stmt = self.conn.prepare(
+            "SELECT nodes.qualified_name, embeddings.chunk_text, embeddings.dim, embeddings.embedding
+             FROM embeddings JOIN nodes ON embeddings.node_id = nodes.id
+             WHERE embeddings.model = ?1",
+        )?;
+        let rows = stmt.query_map([model], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get(1)?, row.get(2)?, row.get(3)?),
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<HashMap<_, _>>>()
+            .map_err(Into::into)
+    }
+
     /// All nodes in the graph - used by the Obsidian export, which needs
     /// the whole graph rather than a name/range-scoped query.
     pub fn all_nodes(&self) -> Result<Vec<NodeRecord>> {
@@ -622,5 +654,96 @@ impl GraphStore {
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod embeddings_snapshot_tests {
+    use super::*;
+
+    fn temp_store(name: &str) -> GraphStore {
+        let path = std::env::temp_dir().join(format!(
+            "nexus_embeddings_snapshot_test_{name}_{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        GraphStore::open(&path).unwrap()
+    }
+
+    #[test]
+    fn snapshot_is_empty_for_a_model_with_no_embeddings() {
+        let store = temp_store("empty");
+        let snapshot = store.embeddings_snapshot("some-model").unwrap();
+        assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn snapshot_is_keyed_by_qualified_name_not_node_id() {
+        let store = temp_store("keyed");
+        let id = store
+            .insert_node(NodeKind::Function, "foo", "a.rs::foo#1", "a.rs", 1, 2)
+            .unwrap();
+        store
+            .insert_embedding(id, "m1", 3, "fn foo() {}", &[1, 2, 3])
+            .unwrap();
+
+        let snapshot = store.embeddings_snapshot("m1").unwrap();
+        let (text, dim, bytes) = snapshot.get("a.rs::foo#1").expect("entry present");
+        assert_eq!(text, "fn foo() {}");
+        assert_eq!(*dim, 3);
+        assert_eq!(bytes, &vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn snapshot_only_returns_the_requested_models_rows() {
+        let store = temp_store("model_scoped");
+        let id = store
+            .insert_node(NodeKind::Function, "foo", "a.rs::foo#1", "a.rs", 1, 2)
+            .unwrap();
+        store
+            .insert_embedding(id, "m1", 3, "fn foo() {}", &[1, 2, 3])
+            .unwrap();
+        store
+            .insert_embedding(id, "m2", 4, "fn foo() {}", &[4, 5, 6, 7])
+            .unwrap();
+
+        let snapshot = store.embeddings_snapshot("m1").unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert!(snapshot.contains_key("a.rs::foo#1"));
+        let (_, dim, _) = &snapshot["a.rs::foo#1"];
+        assert_eq!(*dim, 3, "must not pick up the other model's row");
+    }
+
+    #[test]
+    fn snapshot_survives_the_node_being_deleted_and_reinserted_under_a_new_id() {
+        // Mirrors what a real rebuild does: clear() wipes nodes/embeddings,
+        // then the same qualified_name gets a fresh autoincrement id. The
+        // snapshot must have been taken *before* that happened (this test
+        // simulates it by taking the snapshot, then clearing and
+        // reinserting) and still be usable by qualified_name alone.
+        let store = temp_store("survives_rebuild");
+        let old_id = store
+            .insert_node(NodeKind::Function, "foo", "a.rs::foo#1", "a.rs", 1, 2)
+            .unwrap();
+        store
+            .insert_embedding(old_id, "m1", 3, "fn foo() {}", &[9, 9, 9])
+            .unwrap();
+
+        let snapshot = store.embeddings_snapshot("m1").unwrap();
+
+        store.clear().unwrap();
+        let new_id = store
+            .insert_node(NodeKind::Function, "foo", "a.rs::foo#1", "a.rs", 1, 2)
+            .unwrap();
+        assert_ne!(old_id, new_id, "clear() must reset the autoincrement id");
+
+        let (text, dim, bytes) = snapshot.get("a.rs::foo#1").expect("entry present");
+        assert_eq!(text, "fn foo() {}");
+        store
+            .insert_embedding(new_id, "m1", *dim as usize, text, bytes)
+            .unwrap();
+
+        let (nodes, _) = store.stats().unwrap();
+        assert_eq!(nodes, 1);
     }
 }
