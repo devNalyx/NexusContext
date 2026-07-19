@@ -299,6 +299,14 @@ Verified: `cargo build`/`test --workspace`/`clippy --all-targets -D warnings`/`f
 
 Full per-file incremental diffing (a persistent `file_signatures` table plus a durable `call_sites` table so a rename/removal in one file correctly invalidates a resolved call edge from an *unchanged* caller elsewhere) is deliberately not attempted here - genuinely harder, and it deserves the same iterate-against-a-real-dogfooded-project rigor Phases 19-20 needed before their fix actually held, not a first-shot implementation. Tracked as follow-up.
 
+**Phase 24 — v0.1.11 Hotfix: the GUI's Control API Never Should Have Gotten Catch-Up** ✅ *(a real crash, reported by a user within hours of the v0.1.11 release, root-caused and fixed same-day)*
+
+Phase 23 upgraded `control.rs`'s `dispatch()` from a bare `touch_queried` to the full `touch_and_catchup` "for consistency" with `tools.rs`'s MCP path - and shipped a real regression doing it. `crates/nexus-gui/src/client.rs` calls the control socket synchronously on GTK's main thread, on a documented assumption stated in its own comment: *"Local Unix-socket calls are sub-millisecond... this is acceptable."* That was true when every control method's pre-dispatch hook was a fast registry write. Once `projects.architecture`/`viz.call_graph` could trigger a full, potentially multi-minute catch-up reindex first, opening the Architecture or Visualize tab against a cold project froze the entire GTK event loop for the reindex's duration - long enough that the window manager/compositor reasonably concluded the app was unresponsive and killed it. Reported as the GUI "crashing" on Architecture/Visualize; root cause was one line of shared logic applied to a transport it didn't fit.
+
+Fix: reverted `control.rs` to plain `touch_queried` only, exactly as it was before Phase 23 - GUI actions mark a project warm again but no longer trigger a synchronous reindex from inside a GTK signal handler. `tools.rs`'s MCP dispatch and the CLI keep the full `touch_and_catchup` unchanged: a slow tool call or a CLI command blocking is normal, expected behavior for those two transports (the caller already expects a tool/command invocation might take time), not a frozen persistent GUI window.
+
+Verified: `cargo build`/`test --workspace`/`clippy --all-targets -D warnings`/`fmt --check` all clean. Live-verified against the real dogfooding daemon: built and installed the `.deb` over the running `nexuscontext.service`, then timed a raw `projects.architecture` call directly against the control socket - 0.114s, back in the sub-second range `client.rs`'s own assumption requires, regardless of the queried project's warm/cold state.
+
 ## 5. Why This Counts as "Full-Fledged"
 
 A daemon alone is a backend, not a tool. What makes this complete for a Linux desktop user:

@@ -88,20 +88,23 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
     // the GUI talks to this control API, not the MCP tool list, so without
     // this the registry would only ever see last_queried_unix move for
     // MCP-driven usage and never for someone just using the GUI directly.
-    // Now also runs the same cold-catchup reindex tools.rs already had
-    // (nexus_index::touch_and_catchup) - the control API never had that
-    // half of the guarantee before, so a GUI query against a project the
-    // watcher had stopped watching could silently answer from a stale
-    // index. projects.reindex is excluded from catch-up (it already
-    // unconditionally reindexes) but still marks the project warm.
+    //
+    // Deliberately touch_queried only, NOT nexus_index::touch_and_catchup -
+    // a v0.1.11 regression, found live within hours of release, briefly had
+    // this call the full catch-up-if-cold reindex here too. That's wrong
+    // for this transport specifically: nexus-gui's client.rs calls this
+    // synchronously on GTK's main thread, on the documented assumption that
+    // a control-socket round-trip is sub-millisecond (see its own comment).
+    // A catch-up reindex against a cold project can take minutes - blocking
+    // the GTK main thread for that long freezes the whole app, and the
+    // window manager/compositor kills it as unresponsive well before a
+    // reindex like that finishes. tools.rs's MCP dispatch and the CLI don't
+    // have this problem (a slow tool call or a CLI command blocking is
+    // normal, expected UX, not a frozen persistent GUI event loop), so only
+    // this transport needed to be reverted.
     if method != "projects.delete" {
         if let Some(repo_path) = params.get("repo_path").and_then(|v| v.as_str()) {
-            let repo_path = std::path::Path::new(repo_path);
-            if method == "projects.reindex" {
-                nexus_index::touch_queried(repo_path);
-            } else {
-                nexus_index::touch_and_catchup(repo_path);
-            }
+            nexus_index::touch_queried(std::path::Path::new(repo_path));
         }
     }
     let call_start = std::time::Instant::now();
