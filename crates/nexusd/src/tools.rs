@@ -13,6 +13,39 @@ fn clamp_limit(requested: u32) -> u32 {
     requested.min(SERVER_MAX_LIMIT)
 }
 
+/// `search_codebase`/`query_memory` rows are far heavier than every other
+/// tool's - each carries a `chunk_text` up to `embeddings::MAX_CHUNK_CHARS`
+/// (6000) rather than the small fixed set of fields `records_to_json`
+/// returns - so `SERVER_MAX_LIMIT` alone doesn't bound their response the
+/// way it does for structural tools. A worst case of `SERVER_MAX_LIMIT`
+/// rows here was ~1.2MB (300K+ tokens) in one MCP response. Capped much
+/// lower, and paired with `RESPONSE_CHUNK_TEXT_MAX_CHARS` below - see the
+/// GitHub issue this fixes.
+const SEMANTIC_MAX_LIMIT: u32 = 30;
+
+fn clamp_semantic_limit(requested: u32) -> u32 {
+    requested.min(SEMANTIC_MAX_LIMIT)
+}
+
+/// Separate from `embeddings::MAX_CHUNK_CHARS` (6000, applied once at index
+/// time so the stored chunk matches what was actually embedded) - this is
+/// the much smaller ceiling on what's worth spending response tokens on
+/// *per hit*, applied here rather than at index time so the full chunk
+/// stays available for the embedding call's own accuracy.
+const RESPONSE_CHUNK_TEXT_MAX_CHARS: usize = 1000;
+
+/// Shared by any tool response field that can be much larger than a normal
+/// JSON value - returns the (possibly shortened) text and whether it was
+/// actually shortened, so the caller can surface that honestly instead of
+/// silently dropping content.
+fn truncate_for_response(text: &str, max_chars: usize) -> (String, bool) {
+    if text.len() <= max_chars {
+        (text.to_string(), false)
+    } else {
+        (text.chars().take(max_chars).collect(), true)
+    }
+}
+
 pub fn tool_definitions() -> Value {
     json!([
         {
@@ -152,7 +185,7 @@ pub fn tool_definitions() -> Value {
             "description": "Semantic search via cosine similarity over embedded Function/Type nodes and markdown sections. Requires `embeddings.enabled = true` and a reachable endpoint/model - errors with an actionable reason otherwise.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer" } },
+                "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer", "default": 10, "maximum": 30 } },
                 "required": ["repo_path", "query"]
             }
         },
@@ -161,7 +194,7 @@ pub fn tool_definitions() -> Value {
             "description": "RAG-style retrieval over indexed content - currently the same ranked semantic search as search_codebase (richer retrieval, e.g. pulling full surrounding context per hit, is a future enhancement). Same requirements and fallback guidance as search_codebase.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer" } },
+                "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer", "default": 10, "maximum": 30 } },
                 "required": ["repo_path", "query"]
             }
         }
@@ -345,7 +378,8 @@ fn semantic_search_tool(args: Value) -> Result<String> {
         .get("query")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("missing 'query' argument"))?;
-    let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as u32);
+    let limit =
+        clamp_semantic_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as u32);
 
     let config = Config::load(&Paths::resolve().config_file())?;
     match config.embeddings_policy() {
@@ -381,16 +415,21 @@ fn semantic_search_tool(args: Value) -> Result<String> {
 fn semantic_hits_to_json(hits: &[index::SemanticHit]) -> Value {
     json!(hits
         .iter()
-        .map(|hit| json!({
-            "kind": format!("{:?}", hit.node.kind),
-            "name": hit.node.name,
-            "qualified_name": hit.node.qualified_name,
-            "file": hit.node.file_path,
-            "start_line": hit.node.start_line,
-            "end_line": hit.node.end_line,
-            "score": hit.score,
-            "chunk_text": hit.chunk_text,
-        }))
+        .map(|hit| {
+            let (chunk_text, chunk_text_truncated) =
+                truncate_for_response(&hit.chunk_text, RESPONSE_CHUNK_TEXT_MAX_CHARS);
+            json!({
+                "kind": format!("{:?}", hit.node.kind),
+                "name": hit.node.name,
+                "qualified_name": hit.node.qualified_name,
+                "file": hit.node.file_path,
+                "start_line": hit.node.start_line,
+                "end_line": hit.node.end_line,
+                "score": hit.score,
+                "chunk_text": chunk_text,
+                "chunk_text_truncated": chunk_text_truncated,
+            })
+        })
         .collect::<Vec<_>>())
 }
 
@@ -636,6 +675,56 @@ mod tests {
     fn clamp_limit_caps_requests_above_the_max() {
         assert_eq!(clamp_limit(SERVER_MAX_LIMIT + 1), SERVER_MAX_LIMIT);
         assert_eq!(clamp_limit(100_000), SERVER_MAX_LIMIT);
+    }
+
+    #[test]
+    fn clamp_semantic_limit_is_far_tighter_than_the_general_server_max() {
+        assert_eq!(clamp_semantic_limit(1), 1);
+        assert_eq!(clamp_semantic_limit(SEMANTIC_MAX_LIMIT), SEMANTIC_MAX_LIMIT);
+        // The whole point: a caller asking for SERVER_MAX_LIMIT rows here
+        // still only gets SEMANTIC_MAX_LIMIT - the general cap alone isn't
+        // tight enough for chunk_text-bearing rows.
+        assert_eq!(clamp_semantic_limit(SERVER_MAX_LIMIT), SEMANTIC_MAX_LIMIT);
+        assert!(SEMANTIC_MAX_LIMIT < SERVER_MAX_LIMIT);
+    }
+
+    #[test]
+    fn truncate_for_response_passes_short_text_through_unmarked() {
+        let (text, truncated) = truncate_for_response("short", 1000);
+        assert_eq!(text, "short");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn truncate_for_response_caps_long_text_and_flags_it() {
+        let long = "x".repeat(RESPONSE_CHUNK_TEXT_MAX_CHARS + 500);
+        let (text, truncated) = truncate_for_response(&long, RESPONSE_CHUNK_TEXT_MAX_CHARS);
+        assert_eq!(text.len(), RESPONSE_CHUNK_TEXT_MAX_CHARS);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn semantic_hits_to_json_truncates_long_chunk_text_with_a_flag() {
+        let hits = vec![index::SemanticHit {
+            node: NodeRecord {
+                id: 1,
+                kind: nexus_index::NodeKind::Function,
+                name: "f".to_string(),
+                qualified_name: "f".to_string(),
+                file_path: "f.rs".to_string(),
+                start_line: 1,
+                end_line: 2,
+            },
+            score: 0.9,
+            chunk_text: "x".repeat(RESPONSE_CHUNK_TEXT_MAX_CHARS + 500),
+        }];
+        let json = semantic_hits_to_json(&hits);
+        let hit = &json[0];
+        assert_eq!(
+            hit["chunk_text"].as_str().unwrap().len(),
+            RESPONSE_CHUNK_TEXT_MAX_CHARS
+        );
+        assert_eq!(hit["chunk_text_truncated"], true);
     }
 
     #[test]

@@ -276,25 +276,33 @@ pub fn get_file_context(
     let total = lines.len();
 
     match (start_line, end_line) {
-        // Both bounds given: an explicit two-sided ask, stays unbounded.
+        // Both bounds given: an explicit two-sided ask - still passes
+        // through the MAX_RETURNED_LINES ceiling below, though, since
+        // start_line=1/end_line=999999 is otherwise indistinguishable from
+        // full=true for how much it can return.
         (Some(s), Some(e)) => {
             let s = s.saturating_sub(1).min(total);
             let e = e.min(total);
-            Ok(lines[s..e].join("\n"))
+            Ok(bounded_lines(&lines, s, e))
         }
-        // full=true is the explicit escape hatch for the whole file.
-        _ if full => Ok(content),
+        // full=true is the explicit escape hatch for the whole file - still
+        // capped, just at MAX_RETURNED_LINES rather than the default
+        // preview's DEFAULT_CONTEXT_LINES. A single indexed file dumping
+        // tens of thousands of lines into the calling agent's context is an
+        // expensive mistake even when explicitly asked for - see the
+        // GitHub issue this fixes.
+        _ if full => Ok(bounded_lines(&lines, 0, total)),
         // Only one bound given: today this silently returned the whole
         // file - a bounded window anchored at the given bound instead.
         (Some(s), None) => {
             let s = s.saturating_sub(1).min(total);
             let e = (s + DEFAULT_CONTEXT_LINES).min(total);
-            Ok(lines[s..e].join("\n"))
+            Ok(bounded_lines(&lines, s, e))
         }
         (None, Some(e)) => {
             let e = e.min(total);
             let s = e.saturating_sub(DEFAULT_CONTEXT_LINES);
-            Ok(lines[s..e].join("\n"))
+            Ok(bounded_lines(&lines, s, e))
         }
         // Neither bound given, not full: first DEFAULT_CONTEXT_LINES lines,
         // with a trailing note if there's more.
@@ -309,6 +317,31 @@ pub fn get_file_context(
                 Ok(shown)
             }
         }
+    }
+}
+
+/// Hard ceiling on any single `get_file_context` response, independent of
+/// which branch above computed `[s, e)` - `full=true` and an explicit
+/// two-sided range are the two paths that were previously unbounded (see
+/// the GitHub issue this fixes); this applies to every branch uniformly so
+/// a future one can't reintroduce the same gap. Well above
+/// `DEFAULT_CONTEXT_LINES` so the existing bounded-window branches (which
+/// only ever request up to `DEFAULT_CONTEXT_LINES` lines) are never
+/// affected by this cap in practice.
+const MAX_RETURNED_LINES: usize = 4000;
+
+fn bounded_lines(lines: &[&str], s: usize, e: usize) -> String {
+    let capped_e = e.min(s + MAX_RETURNED_LINES);
+    let shown = lines[s..capped_e].join("\n");
+    if capped_e < e {
+        format!(
+            "{shown}\n\n--- truncated: showing {} of {} requested lines (server cap is {MAX_RETURNED_LINES} lines per call). Narrow the range, or make another call starting from line {} for the rest. ---",
+            capped_e - s,
+            e - s,
+            capped_e + 1
+        )
+    } else {
+        shown
     }
 }
 
@@ -489,7 +522,7 @@ mod get_file_context_tests {
     }
 
     #[test]
-    fn both_bounds_set_stays_unbounded_and_unmarked() {
+    fn both_bounds_set_under_the_cap_stays_unmarked() {
         let dir = temp_project("both_bounds");
         let total = DEFAULT_CONTEXT_LINES + 50;
         fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
@@ -500,12 +533,36 @@ mod get_file_context_tests {
     }
 
     #[test]
-    fn full_true_bypasses_truncation_regardless_of_size() {
+    fn full_true_under_the_cap_stays_unmarked() {
         let dir = temp_project("full_true");
         let total = DEFAULT_CONTEXT_LINES + 50;
         fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
         let result = get_file_context(&dir, "f.txt", None, None, true).unwrap();
         assert_eq!(result, numbered_lines(total));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_true_beyond_the_cap_is_truncated_with_a_note() {
+        let dir = temp_project("full_true_huge");
+        let total = super::MAX_RETURNED_LINES + 500;
+        fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
+        let result = get_file_context(&dir, "f.txt", None, None, true).unwrap();
+        let (body, note) = result.split_once("\n\n--- truncated").unwrap();
+        assert_eq!(body, numbered_lines(super::MAX_RETURNED_LINES));
+        assert!(note.contains(&format!("server cap is {} lines", super::MAX_RETURNED_LINES)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn both_bounds_set_beyond_the_cap_is_truncated_with_a_note() {
+        let dir = temp_project("both_bounds_huge");
+        let total = super::MAX_RETURNED_LINES + 500;
+        fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
+        let result = get_file_context(&dir, "f.txt", Some(1), Some(total), false).unwrap();
+        let (body, note) = result.split_once("\n\n--- truncated").unwrap();
+        assert_eq!(body, numbered_lines(super::MAX_RETURNED_LINES));
+        assert!(note.contains(&format!("server cap is {} lines", super::MAX_RETURNED_LINES)));
         let _ = fs::remove_dir_all(&dir);
     }
 }
