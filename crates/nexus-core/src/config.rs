@@ -140,7 +140,7 @@ impl Config {
             })?;
         }
         let raw = toml::to_string_pretty(self)?;
-        std::fs::write(path, raw).map_err(|source| Error::ConfigRead {
+        write_config_file(path, &raw).map_err(|source| Error::ConfigRead {
             path: path.to_path_buf(),
             source,
         })
@@ -168,6 +168,35 @@ impl Config {
         self.allowed_roots.is_empty()
             || self.allowed_roots.iter().any(|root| path.starts_with(root))
     }
+}
+
+/// `config.toml` can hold `embeddings.api_key` in plaintext, so it's written
+/// owner-only (0600) rather than left to whatever the process umask happens
+/// to produce - on a shared/multi-user box a group- or world-readable
+/// config file is a real plaintext-secret leak, not a hypothetical one.
+#[cfg(unix)]
+fn write_config_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    // `.mode(0o600)` is applied atomically by the OS at creation time, so a
+    // freshly-created file is never briefly world-readable the way a
+    // write-then-chmod sequence would leave it. `set_permissions` afterward
+    // additionally normalizes a *pre-existing* file that predates this fix
+    // (mode() only affects files the open() call actually creates).
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents.as_bytes())?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn write_config_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    std::fs::write(path, contents)
 }
 
 fn extract_host(endpoint: &str) -> Option<&str> {
@@ -330,5 +359,36 @@ mod tests {
     fn tools_config_round_trips_full_preset() {
         let config: Config = toml::from_str("[tools]\npreset = \"full\"\n").unwrap();
         assert_eq!(config.tools.preset, ToolsPreset::Full);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_writes_config_file_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "nexuscontext-config-test-{:?}-{}",
+            std::thread::current().id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let config = Config::default();
+        config.save(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        // Re-saving an existing file (e.g. a pre-fix 0644 file, simulated
+        // here by widening it first) must also end up owner-only - `mode()`
+        // on OpenOptions only governs *creation*, so save() has to actively
+        // normalize an existing file's permissions too, not just rely on it.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        config.save(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        std::fs::remove_file(&path).ok();
     }
 }
