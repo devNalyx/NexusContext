@@ -235,6 +235,18 @@ fn run() -> anyhow::Result<()> {
                     let estimate = watched.get(&root).copied().unwrap_or_else(|| {
                         nexus_index::estimate_watch_count(&root, watch_budget())
                     });
+                    // Deliberately doesn't check EVICTION_COOLDOWN/
+                    // is_admission_candidate here, unlike sync_watches -
+                    // cooldown governs re-*admission* of a project nothing
+                    // has actually touched since it was evicted; a project
+                    // that just got reindexed because its files genuinely
+                    // changed has earned a fresh watch regardless of
+                    // whether it happened to be evicted moments earlier in
+                    // the same batch. Self-limiting either way: under
+                    // persistent real pressure the watch() call below
+                    // fails (not recorded in `watched`), and the cooldown
+                    // still holds for sync_watches' own admission path
+                    // afterward.
                     if debouncer
                         .watcher()
                         .watch(&root, RecursiveMode::Recursive)
@@ -374,6 +386,18 @@ fn evict_least_recently_used(
     WATCH_PRESSURE_EVENTS.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Whether a warm, not-currently-watched project should be considered a
+/// candidate for (re-)admission right now - `false` if it's still within
+/// its post-eviction cooldown. Pulled out of `sync_watches`' `to_add`
+/// filter into its own function so this decision is unit-testable without
+/// a live watcher, the same reasoning `plan_admission` above already
+/// applies to the eviction-ordering decision. Governs `sync_watches`'
+/// admission path only - the `run` loop's reindex-triggered re-watch
+/// doesn't check this (see its own comment for why that's fine).
+fn is_admission_candidate(path: &Path, evicted_at: &HashMap<PathBuf, Instant>) -> bool {
+    !evicted_at.contains_key(path)
+}
+
 /// Registered projects can change while the daemon is running (a new
 /// project gets indexed via CLI/MCP/GUI at any time) - rather than wiring a
 /// signal from every indexing call site into this thread, just re-read the
@@ -455,14 +479,14 @@ fn sync_watches(
         .iter()
         .filter(|p| !watched.contains_key(*p))
         .filter(|p| {
-            let in_cooldown = evicted_at.contains_key(*p);
-            if in_cooldown {
+            let admit = is_admission_candidate(p, evicted_at);
+            if !admit {
                 tracing::debug!(
                     project = %p.display(),
                     "still in post-eviction cooldown, not re-admitting yet"
                 );
             }
-            !in_cooldown
+            admit
         })
         .cloned()
         .collect();
@@ -656,6 +680,38 @@ fn is_noise(path: &Path) -> bool {
             Some(".git") | Some("target") | Some("node_modules") | Some(".nexuscontext")
         )
     })
+}
+
+#[cfg(test)]
+mod is_admission_candidate_tests {
+    use super::*;
+
+    #[test]
+    fn a_path_never_evicted_is_a_candidate() {
+        let evicted_at = HashMap::new();
+        assert!(is_admission_candidate(
+            &PathBuf::from("/projects/a"),
+            &evicted_at
+        ));
+    }
+
+    #[test]
+    fn a_recently_evicted_path_is_not_a_candidate() {
+        let evicted_at = HashMap::from([(PathBuf::from("/projects/a"), Instant::now())]);
+        assert!(!is_admission_candidate(
+            &PathBuf::from("/projects/a"),
+            &evicted_at
+        ));
+    }
+
+    #[test]
+    fn only_the_evicted_path_is_excluded_not_every_path() {
+        let evicted_at = HashMap::from([(PathBuf::from("/projects/a"), Instant::now())]);
+        assert!(is_admission_candidate(
+            &PathBuf::from("/projects/b"),
+            &evicted_at
+        ));
+    }
 }
 
 #[cfg(test)]
