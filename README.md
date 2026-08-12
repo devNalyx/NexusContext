@@ -337,6 +337,14 @@ Watch budget/usage/pressure-event count is now surfaced via `status.get` (and th
 
 Verified: `cargo build`/`test --workspace`/`clippy --all-targets -D warnings`/`fmt --check` all clean, with new unit tests for every piece (`canonicalize_for_registry`'s relative-path resolution, `estimate_watch_count`'s gitignore-blind directory walk and early-exit, `heal_noncanonical_root_paths`'s warm-only correction, and `plan_admission`'s eviction ordering/tie-breaking/skip-vs-evict decision - the actual core logic, pulled out pure and testable rather than left entangled with live `notify` calls). Applied as a live workaround on the dogfooding box the moment it was found (registry entry corrected, daemon restarted) well before this code fix landed - see the issue for the incident timeline.
 
+**Phase 27 — v0.1.15: Obsidian Export Notes Had No Idea What a Symbol Actually Was** ✅ *(dogfooding-driven: generated this repo's own vault, read a note, it was a bare link map)*
+
+`nexus export --format obsidian` wrote one note per function/type/doc-section with a Kind/Location header and a `## Calls`/`## Called by` link list - structurally correct, but a note for, say, `sync_watches` told you it exists and what it's connected to without ever showing what it *is*. Every note was a graph node, not documentation.
+
+Fixed: each note now also carries a `## Source` section with the symbol's actual code, re-read from disk via the same `get_file_context` the MCP tool uses (already bounded, already `allowed_roots`-checked - no new file-reading logic, no schema change, since `NodeRecord` already carries everything needed: `file_path`/`start_line`/`end_line`). Fenced with the right syntax-highlighting language, derived from the same extension-to-language mapping `ingest.rs` already uses so it can't drift out of sync. Markdown `Section` nodes are fenced as `markdown` specifically so a heading inside the body can't be misread as a real subheading of the note itself. A node whose source can't be read anymore (file moved/deleted since indexing) just gets a note without that section, rather than failing the whole export.
+
+Verified: `cargo build`/`test --workspace`/`clippy --all-targets -D warnings`/`fmt --check` all clean, new unit tests for the language-fence mapping. Live-verified against this repo's own vault, not just tests: regenerated `.nexuscontext/vault/`, `sync_watches`'s note now shows its full ~130-line body with Rust syntax highlighting, its existing call graph untouched.
+
 ## 5. Why This Counts as "Full-Fledged"
 
 A daemon alone is a backend, not a tool. What makes this complete for a Linux desktop user:
