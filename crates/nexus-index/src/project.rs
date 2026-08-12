@@ -28,7 +28,14 @@ pub fn index_project(repo_path: &Path) -> Result<IndexStats> {
     // reindex forever - recover the lock rather than propagating the
     // poison.
     let _guard = REINDEX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    index_project_locked(repo_path)
+}
 
+/// The actual rebuild, factored out so `touch_and_catchup`'s cold path can
+/// hold `REINDEX_LOCK` across its own "is this still cold?" recheck instead
+/// of just around the rebuild itself - see that function's doc comment for
+/// why the recheck has to happen after the lock is held, not before.
+fn index_project_locked(repo_path: &Path) -> Result<IndexStats> {
     let paths = Paths::resolve();
     require_path_allowed(&paths, repo_path)?;
 
@@ -107,11 +114,27 @@ fn is_cold(repo_path: &Path) -> bool {
 /// `index_repository`/`Reindex`/`projects.reindex`/`delete_project` (already
 /// unconditional, or about to make the entry moot) - checking first there
 /// would just double the work or query a registry entry about to be deleted.
+///
+/// The `is_cold` check below is deliberately done twice - once here (cheap,
+/// unlocked, so the common warm-project case never touches `REINDEX_LOCK` at
+/// all) and once more inside the lock right before the reindex actually
+/// runs. Without the second check, two tool calls racing against the same
+/// freshly-cold project both see "cold" before either has reindexed, and
+/// `REINDEX_LOCK` only serializes their two full rebuilds rather than
+/// skipping the redundant one - on an embeddings-enabled project that's a
+/// real duplicate embeddings-API spend, not just wasted CPU (see the GitHub
+/// issue this fixes for the full race). The second check is what turns that
+/// into ordinary double-checked locking: whichever caller loses the race to
+/// acquire the lock finds the project already warm by the time it's their
+/// turn and skips out instead of redoing the work.
 pub fn touch_and_catchup(repo_path: &Path) {
     if is_cold(repo_path) {
-        let start = std::time::Instant::now();
-        let success = index_project(repo_path).is_ok();
-        record_auto_reindex(repo_path, start.elapsed().as_millis() as u64, success);
+        let _guard = REINDEX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if is_cold(repo_path) {
+            let start = std::time::Instant::now();
+            let success = index_project_locked(repo_path).is_ok();
+            record_auto_reindex(repo_path, start.elapsed().as_millis() as u64, success);
+        }
     }
     touch_queried(repo_path);
 }
