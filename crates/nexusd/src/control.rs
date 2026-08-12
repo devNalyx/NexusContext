@@ -324,10 +324,32 @@ fn projects_architecture(params: Value) -> Result<Value> {
     }))
 }
 
+/// `Config`'s `Serialize` impl includes `embeddings.api_key` verbatim -
+/// correct for what `Config::save` persists to disk (see
+/// `nexus_core::config`'s owner-only file permissions for how *that* copy
+/// is protected), but not for what goes out over the control socket, which
+/// has no authentication of its own - any local process that can connect
+/// gets back whatever this returns. Every response that echoes a `Config`
+/// goes through this instead of a raw `serde_json::to_value`, so the key
+/// itself never leaves this process: callers get `has_api_key: bool`
+/// instead, enough to render "a key is set" without needing the value.
+fn redact_config(config: &Config) -> Result<Value> {
+    let mut value = serde_json::to_value(config)?;
+    if let Some(embeddings) = value.get_mut("embeddings").and_then(|v| v.as_object_mut()) {
+        let has_api_key = embeddings
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .is_some_and(|k| !k.is_empty());
+        embeddings.remove("api_key");
+        embeddings.insert("has_api_key".to_string(), json!(has_api_key));
+    }
+    Ok(value)
+}
+
 fn config_get() -> Result<Value> {
     let paths = Paths::resolve();
     let config = Config::load(&paths.config_file())?;
-    Ok(serde_json::to_value(config)?)
+    redact_config(&config)
 }
 
 fn config_set(params: Value) -> Result<Value> {
@@ -344,6 +366,13 @@ fn config_set(params: Value) -> Result<Value> {
         if let Some(model) = embeddings.get("model").and_then(|v| v.as_str()) {
             config.embeddings.model = Some(model.to_string());
         }
+        // Only touched when the request includes an `api_key` field at all -
+        // config_get/config_set responses never send the key back (see
+        // redact_config), so a request built by round-tripping either
+        // response naturally omits it and leaves whatever's stored
+        // untouched, rather than clobbering it with nothing. An explicit
+        // empty string is still honored (as "clear it") - embeddings.rs
+        // already treats an empty key the same as no key.
         if let Some(api_key) = embeddings.get("api_key").and_then(|v| v.as_str()) {
             config.embeddings.api_key = Some(api_key.to_string());
         }
@@ -356,7 +385,7 @@ fn config_set(params: Value) -> Result<Value> {
     }
 
     config.save(&paths.config_file())?;
-    Ok(serde_json::to_value(&config)?)
+    redact_config(&config)
 }
 
 /// Checks the currently-saved endpoint/model are actually reachable, by
@@ -434,4 +463,37 @@ fn viz_call_graph(params: Value) -> Result<Value> {
         depth,
     )?;
     Ok(json!({ "dot": dot }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redact_config_replaces_a_set_api_key_with_has_api_key_true() {
+        let mut config = Config::default();
+        config.embeddings.api_key = Some("sk-real-secret".to_string());
+
+        let redacted = redact_config(&config).unwrap();
+
+        assert_eq!(redacted.pointer("/embeddings/has_api_key"), Some(&json!(true)));
+        assert!(redacted.pointer("/embeddings/api_key").is_none());
+        // Belt and suspenders: the secret string itself must not appear
+        // anywhere in the serialized output, not just at the expected path.
+        assert!(!redacted.to_string().contains("sk-real-secret"));
+    }
+
+    #[test]
+    fn redact_config_reports_has_api_key_false_when_unset_or_empty() {
+        let unset = redact_config(&Config::default()).unwrap();
+        assert_eq!(unset.pointer("/embeddings/has_api_key"), Some(&json!(false)));
+
+        let mut empty = Config::default();
+        empty.embeddings.api_key = Some(String::new());
+        let redacted_empty = redact_config(&empty).unwrap();
+        assert_eq!(
+            redacted_empty.pointer("/embeddings/has_api_key"),
+            Some(&json!(false))
+        );
+    }
 }
