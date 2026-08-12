@@ -220,12 +220,23 @@ fn avg(total: u64, count: u64) -> f64 {
 fn status_get() -> Result<Value> {
     let paths = Paths::resolve();
     let registry = Registry::load(&paths.registry_file());
+    let watch = crate::watcher::watch_status();
     Ok(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "data_dir": paths.data_dir.display().to_string(),
         "log_file": paths.log_file().display().to_string(),
         "projects_indexed": registry.projects.len(),
-        "projects_watched": crate::watcher::watched_count()
+        "projects_watched": watch.watched_projects,
+        // Self-imposed inotify watch budget (see nexusd::watcher's own doc
+        // comment) - `pressure_events` non-zero means a project has been
+        // skipped or evicted at least once, the loud signal that
+        // fs.inotify.max_user_watches is actually constraining real usage
+        // on this machine rather than staying buried in a log file.
+        "watch_budget": {
+            "estimated_watches_used": watch.estimated_watches_used,
+            "estimated_watches_budget": watch.estimated_watches_budget,
+            "pressure_events": watch.pressure_events
+        }
     }))
 }
 

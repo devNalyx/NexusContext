@@ -40,8 +40,25 @@ pub fn build() -> GtkBox {
 fn refresh(status_label: &Label) {
     match crate::client::call("status.get", serde_json::json!({})) {
         Ok(result) => {
+            let pressure_events = result
+                .pointer("/watch_budget/pressure_events")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            // Only called out when non-zero - see nexusd::watcher's own
+            // doc comment: this is the loud signal that
+            // fs.inotify.max_user_watches is actually constraining real
+            // usage, not routine status noise for the common case where
+            // it never comes up at all.
+            let pressure_note = if pressure_events > 0 {
+                format!(
+                    " ({pressure_events} project(s) skipped or evicted - inotify budget is tight; \
+                     raise fs.inotify.max_user_watches if you want everything auto-watched)"
+                )
+            } else {
+                String::new()
+            };
             let text = format!(
-                "version: {}\ndata_dir: {}\nlog_file: {}\nprojects indexed: {}\nauto-sync watching: {} project(s)",
+                "version: {}\ndata_dir: {}\nlog_file: {}\nprojects indexed: {}\nauto-sync watching: {} project(s)\ninotify watches: ~{}/{} used{}",
                 result.get("version").and_then(|v| v.as_str()).unwrap_or("?"),
                 result.get("data_dir").and_then(|v| v.as_str()).unwrap_or("?"),
                 result.get("log_file").and_then(|v| v.as_str()).unwrap_or("?"),
@@ -53,6 +70,15 @@ fn refresh(status_label: &Label) {
                     .get("projects_watched")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0),
+                result
+                    .pointer("/watch_budget/estimated_watches_used")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                result
+                    .pointer("/watch_budget/estimated_watches_budget")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                pressure_note,
             );
             status_label.set_label(&text);
         }
