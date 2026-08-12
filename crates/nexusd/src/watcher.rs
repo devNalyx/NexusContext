@@ -36,6 +36,20 @@ const REGISTRY_RESYNC_INTERVAL: Duration = Duration::from_secs(30);
 ///    project's next eligible attempt rather than instantly.
 const MIN_REINDEX_GAP: Duration = Duration::from_secs(180);
 
+/// How long an evicted project is excluded from being re-admitted, even
+/// though it's still warm and the eviction that just freed room for it
+/// would otherwise let `sync_watches`/`plan_admission` add it right back.
+/// Without this, sustained real watch pressure (an estimate that
+/// persistently undercounts actual usage, or another app on the box also
+/// consuming inotify watches) flips the same project in and out on every
+/// `REGISTRY_RESYNC_INTERVAL`: evict -> next sync re-admits it (the
+/// eviction freed exactly the room it needs) -> pressure returns -> evict
+/// again. Caught in PR review, not a hypothetical - found while looking at
+/// exactly this eviction path. Long enough to actually break that cycle,
+/// short enough that a since-resolved pressure spike doesn't leave a
+/// project un-watched far longer than the pressure that caused it.
+const EVICTION_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+
 /// Self-imposed ceiling on total inotify watches this daemon will hold, as
 /// a fraction of what the OS reports available - deliberately well under
 /// 100%, since this daemon isn't the only thing on the machine that needs
@@ -121,7 +135,10 @@ fn run() -> anyhow::Result<()> {
     );
 
     let mut watched: HashMap<PathBuf, usize> = HashMap::new();
-    sync_watches(&mut debouncer, &mut watched);
+    // When a project was last evicted under watch pressure - see
+    // EVICTION_COOLDOWN's doc comment for why this exists at all.
+    let mut evicted_at: HashMap<PathBuf, Instant> = HashMap::new();
+    sync_watches(&mut debouncer, &mut watched, &mut evicted_at);
     let mut last_sync = Instant::now();
     let mut last_attempt: HashMap<PathBuf, Instant> = HashMap::new();
     let mut content_signatures: HashMap<PathBuf, u64> = HashMap::new();
@@ -159,7 +176,7 @@ fn run() -> anyhow::Result<()> {
                     // pressure immediately rather than waiting up to
                     // REGISTRY_RESYNC_INTERVAL and leaving every other app
                     // on the machine still starved in the meantime.
-                    evict_least_recently_used(&mut debouncer, &mut watched);
+                    evict_least_recently_used(&mut debouncer, &mut watched, &mut evicted_at);
                 }
 
                 for root in to_reindex {
@@ -259,7 +276,7 @@ fn run() -> anyhow::Result<()> {
         }
 
         if last_sync.elapsed() > REGISTRY_RESYNC_INTERVAL {
-            sync_watches(&mut debouncer, &mut watched);
+            sync_watches(&mut debouncer, &mut watched, &mut evicted_at);
             last_sync = std::time::Instant::now();
         }
     }
@@ -322,6 +339,7 @@ fn evict_least_recently_used(
         notify_debouncer_mini::notify::RecommendedWatcher,
     >,
     watched: &mut HashMap<PathBuf, usize>,
+    evicted_at: &mut HashMap<PathBuf, Instant>,
 ) {
     let paths = nexus_core::Paths::resolve();
     let registry = nexus_core::Registry::load(&paths.registry_file());
@@ -346,6 +364,11 @@ fn evict_least_recently_used(
     );
     let _ = debouncer.watcher().unwatch(&victim);
     watched.remove(&victim);
+    // Starts EVICTION_COOLDOWN - without this, the very next sync_watches
+    // would just re-admit `victim` (the eviction freed exactly the room it
+    // needs) and, under sustained pressure, flip it in and out every
+    // REGISTRY_RESYNC_INTERVAL.
+    evicted_at.insert(victim, Instant::now());
     WATCHED_COUNT.store(watched.len(), Ordering::Relaxed);
     WATCH_ESTIMATE_USED.store(watched.values().sum(), Ordering::Relaxed);
     WATCH_PRESSURE_EVENTS.fetch_add(1, Ordering::Relaxed);
@@ -377,6 +400,7 @@ fn sync_watches(
         notify_debouncer_mini::notify::RecommendedWatcher,
     >,
     watched: &mut HashMap<PathBuf, usize>,
+    evicted_at: &mut HashMap<PathBuf, Instant>,
 ) {
     let paths = nexus_core::Paths::resolve();
     let mut registry = nexus_core::Registry::load(&paths.registry_file());
@@ -389,6 +413,11 @@ fn sync_watches(
     if heal_noncanonical_root_paths(&mut registry.projects, now, warm_window_secs) {
         let _ = registry.save(&paths.registry_file());
     }
+
+    // Cheap housekeeping: drop cooldown entries that have already expired,
+    // both so the map doesn't grow unbounded over the daemon's lifetime
+    // and so the filter below only has to check "is this key present".
+    evicted_at.retain(|_, at| at.elapsed() < EVICTION_COOLDOWN);
 
     let mut last_queried: HashMap<PathBuf, u64> = HashMap::new();
     let mut current: HashSet<PathBuf> = HashSet::new();
@@ -417,10 +446,24 @@ fn sync_watches(
 
     // Watch whatever's newly warm, in a deterministic order (sorted by
     // path) so eviction/skip decisions aren't dependent on HashSet
-    // iteration order run to run.
+    // iteration order run to run. A path still in its post-eviction
+    // cooldown is held back even though it's warm and missing from
+    // `watched` - see EVICTION_COOLDOWN's doc comment for why re-admitting
+    // it immediately would just flip it in and out under sustained
+    // pressure.
     let mut to_add: Vec<PathBuf> = current
         .iter()
         .filter(|p| !watched.contains_key(*p))
+        .filter(|p| {
+            let in_cooldown = evicted_at.contains_key(*p);
+            if in_cooldown {
+                tracing::debug!(
+                    project = %p.display(),
+                    "still in post-eviction cooldown, not re-admitting yet"
+                );
+            }
+            !in_cooldown
+        })
         .cloned()
         .collect();
     to_add.sort();
@@ -454,6 +497,7 @@ fn sync_watches(
             );
             let _ = debouncer.watcher().unwatch(&victim);
             watched.remove(&victim);
+            evicted_at.insert(victim, Instant::now());
             WATCH_PRESSURE_EVENTS.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -733,6 +777,30 @@ mod heal_noncanonical_root_paths_tests {
         dir
     }
 
+    /// Restores the original process cwd on drop, even if the test body
+    /// between `enter` and the natural end of scope panics - see
+    /// nexus-index's `project.rs` `canonicalize_for_registry_tests` module
+    /// for the identical helper and the full reasoning (duplicated here
+    /// rather than shared, since it's test-only and these are two
+    /// different crates). Caught in PR review.
+    struct CwdGuard {
+        original: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(dir: &std::path::Path) -> Self {
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(dir).unwrap();
+            Self { original }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
     fn entry(root_path: &str, last_queried_unix: u64) -> ProjectEntry {
         ProjectEntry {
             root_path: root_path.to_string(),
@@ -757,21 +825,21 @@ mod heal_noncanonical_root_paths_tests {
         // why the other seemingly-similar test doesn't need to), so cargo
         // test's default parallelism can't race two cwd mutations against
         // each other here. Keep it that way if adding more cwd-dependent
-        // tests to this module.
-        let original_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&dir).unwrap();
-
+        // tests to this module. CwdGuard restores cwd on drop even if an
+        // assertion below panics.
         let now = 1_000_000;
-        let mut projects = vec![entry(".", now)]; // the exact real-incident shape
-        let changed = heal_noncanonical_root_paths(&mut projects, now, 6 * 3600);
-
-        std::env::set_current_dir(&original_cwd).unwrap();
+        let changed = {
+            let _guard = CwdGuard::enter(&dir);
+            let mut projects = vec![entry(".", now)]; // the exact real-incident shape
+            let changed = heal_noncanonical_root_paths(&mut projects, now, 6 * 3600);
+            assert_eq!(
+                projects[0].root_path,
+                dir.canonicalize().unwrap().display().to_string()
+            );
+            changed
+        };
 
         assert!(changed);
-        assert_eq!(
-            projects[0].root_path,
-            dir.canonicalize().unwrap().display().to_string()
-        );
         let _ = fs::remove_dir_all(&dir);
     }
 

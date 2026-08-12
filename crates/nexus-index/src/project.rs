@@ -372,6 +372,30 @@ mod canonicalize_for_registry_tests {
         dir
     }
 
+    /// Restores the original process cwd on drop, even if the test body
+    /// between `enter` and the natural end of scope panics - without this,
+    /// an `.unwrap()` failing partway through a cwd-mutating test would
+    /// leave the process cwd poisoned for every subsequent test in this
+    /// binary (process cwd is global, not per-thread), producing confusing
+    /// order-dependent failures elsewhere. Caught in PR review.
+    struct CwdGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(dir: &std::path::Path) -> Self {
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(dir).unwrap();
+            Self { original }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
     #[test]
     fn relative_dot_resolves_to_the_current_directory_absolute_path() {
         let dir = temp_dir("relative_dot");
@@ -388,10 +412,10 @@ mod canonicalize_for_registry_tests {
         // resolution, it could flake if it happens to run concurrently
         // with this one under cargo test's default parallelism. No other
         // test currently does (grep for `current_dir` before adding one).
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&dir).unwrap();
-        let result = canonicalize_for_registry(std::path::Path::new("."));
-        std::env::set_current_dir(&original_dir).unwrap();
+        let result = {
+            let _guard = CwdGuard::enter(&dir);
+            canonicalize_for_registry(std::path::Path::new("."))
+        };
 
         assert_eq!(result.unwrap(), expected);
         let _ = fs::remove_dir_all(&dir);
