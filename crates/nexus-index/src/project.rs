@@ -253,7 +253,13 @@ pub fn delete_project(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn require_path_allowed(paths: &Paths, repo_path: &Path) -> Result<()> {
+/// `pub(crate)` rather than private: `queries.rs`'s `get_file_context` and
+/// `detect_changes` also take a caller-supplied `repo_path` and need the
+/// same `allowed_roots` check `index_project`/`export_project`/
+/// `import_project` already apply - see the GitHub issue this closes for
+/// why leaving them unchecked made `allowed_roots` not actually mean what
+/// its own doc comment says once you opted into it.
+pub(crate) fn require_path_allowed(paths: &Paths, repo_path: &Path) -> Result<()> {
     let config = Config::load(&paths.config_file())?;
     if !config.is_path_allowed(repo_path) {
         bail!(

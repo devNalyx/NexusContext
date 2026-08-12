@@ -191,6 +191,7 @@ pub fn semantic_search(
 }
 
 pub fn detect_changes(repo_path: &Path) -> Result<Vec<NodeRecord>> {
+    crate::project::require_path_allowed(&Paths::resolve(), repo_path)?;
     let store = open_store(repo_path)?;
 
     let output = std::process::Command::new("git")
@@ -258,6 +259,7 @@ pub fn get_file_context(
     end_line: Option<usize>,
     full: bool,
 ) -> Result<String> {
+    crate::project::require_path_allowed(&Paths::resolve(), repo_path)?;
     let canonical_root = repo_path
         .canonicalize()
         .map_err(|_| anyhow::anyhow!("repo_path does not exist: {}", repo_path.display()))?;
