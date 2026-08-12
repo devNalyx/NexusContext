@@ -12,7 +12,7 @@ pub use cypher::run_query as run_cypher_query;
 pub use graph::{
     CodeSearchHit, Direction, EdgeKind, EmbeddingsSnapshot, GraphStore, NodeKind, NodeRecord,
 };
-pub use ingest::{content_signature, index_directory, IndexStats};
+pub use ingest::{content_signature, estimate_watch_count, index_directory, IndexStats};
 pub use language::Language;
 pub use obsidian::export_obsidian;
 pub use project::{

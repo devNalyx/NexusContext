@@ -125,6 +125,47 @@ pub fn content_signature(root: &Path) -> u64 {
     hasher.finish()
 }
 
+/// Approximates how many inotify watches recursively watching `root` would
+/// consume - notify's recursive watch backend registers one watch per
+/// *directory* (not per file), and, critically, it has no concept of
+/// `.gitignore` at all: it watches literally every directory in the tree,
+/// including `node_modules`, `target`, `.git`, build output, anything.
+/// That's the opposite of `content_signature`/`index_directory`'s walk
+/// above, which deliberately *does* respect ignore rules - counting only
+/// the ignore-filtered set here would systematically undercount exactly
+/// the case most likely to blow a real watch budget (a JS project's
+/// `node_modules`, a Rust project's `target`, both routinely tens of
+/// thousands of directories). All standard filters are explicitly disabled
+/// so this walk matches what notify will actually touch.
+///
+/// Stops early once the count already exceeds `budget` - for a "does this
+/// fit" decision the exact count past that point doesn't matter, and
+/// early-exiting keeps this cheap even against a project that's grown far
+/// past any reasonable budget (no point walking a million-directory tree
+/// to completion just to learn "no, it doesn't fit").
+pub fn estimate_watch_count(root: &Path, budget: usize) -> usize {
+    let walker = WalkBuilder::new(root)
+        .hidden(false)
+        .ignore(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .parents(false)
+        .build();
+
+    let mut count = 0usize;
+    for entry in walker {
+        let Ok(entry) = entry else { continue };
+        if entry.file_type().is_some_and(|t| t.is_dir()) {
+            count += 1;
+            if count > budget {
+                return count;
+            }
+        }
+    }
+    count
+}
+
 fn index_directory_inner(
     root: &Path,
     store: &GraphStore,
@@ -671,6 +712,69 @@ mod content_signature_tests {
         fs::write(dir.join("data.bin"), b"\x02\x03\x04\x05").unwrap();
         let after = content_signature(&dir);
         assert_eq!(before, after);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod estimate_watch_count_tests {
+    use super::estimate_watch_count;
+    use std::fs;
+
+    fn temp_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_estimate_watch_count_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn counts_the_root_and_every_subdirectory() {
+        let dir = temp_project("nested");
+        fs::create_dir_all(dir.join("a/b/c")).unwrap();
+        fs::create_dir_all(dir.join("d")).unwrap();
+        // root + a + a/b + a/b/c + d = 5 - files don't count, only dirs.
+        fs::write(dir.join("a/b/c/file.txt"), "x").unwrap();
+        assert_eq!(estimate_watch_count(&dir, 1000), 5);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The whole point of this function vs. content_signature's walk:
+    /// notify's recursive watch has no concept of .gitignore, so a
+    /// gitignored directory (node_modules, target, .git, ...) still
+    /// consumes real watches and must still be counted here.
+    #[test]
+    fn counts_gitignored_directories_too() {
+        let dir = temp_project("gitignored");
+        fs::write(dir.join(".gitignore"), "node_modules/\n").unwrap();
+        fs::create_dir_all(dir.join("node_modules/some-pkg")).unwrap();
+        // root + node_modules + node_modules/some-pkg = 3.
+        assert_eq!(estimate_watch_count(&dir, 1000), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stops_early_once_the_budget_is_exceeded() {
+        let dir = temp_project("early_exit");
+        for i in 0..50 {
+            fs::create_dir_all(dir.join(format!("d{i}"))).unwrap();
+        }
+        // root + 50 subdirs = 51 - a budget of 10 should stop well short of
+        // walking all of them, returning *some* count over budget rather
+        // than the exact total.
+        let count = estimate_watch_count(&dir, 10);
+        assert!(count > 10);
+        assert!(count < 51);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_directory_counts_as_just_the_root() {
+        let dir = temp_project("empty");
+        assert_eq!(estimate_watch_count(&dir, 1000), 1);
         let _ = fs::remove_dir_all(&dir);
     }
 }

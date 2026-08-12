@@ -36,6 +36,9 @@ pub fn index_project(repo_path: &Path) -> Result<IndexStats> {
 /// of just around the rebuild itself - see that function's doc comment for
 /// why the recheck has to happen after the lock is held, not before.
 fn index_project_locked(repo_path: &Path) -> Result<IndexStats> {
+    let repo_path = canonicalize_for_registry(repo_path)?;
+    let repo_path = repo_path.as_path();
+
     let paths = Paths::resolve();
     require_path_allowed(&paths, repo_path)?;
 
@@ -201,6 +204,9 @@ pub fn export_project(repo_path: &Path) -> Result<PathBuf> {
 /// updated the same way `index_project` does, using the imported DB's real
 /// stats rather than trusting the artifact blindly.
 pub fn import_project(repo_path: &Path) -> Result<IndexStats> {
+    let repo_path = canonicalize_for_registry(repo_path)?;
+    let repo_path = repo_path.as_path();
+
     let paths = Paths::resolve();
     require_path_allowed(&paths, repo_path)?;
 
@@ -251,6 +257,24 @@ pub fn delete_project(repo_path: &Path) -> Result<()> {
     registry.projects.retain(|p| p.hash != hash);
     registry.save(&paths.registry_file())?;
     Ok(())
+}
+
+/// Resolves `repo_path` to an absolute, canonical path before it's allowed
+/// anywhere near `record_indexed` - shared by `index_project_locked` and
+/// `import_project`, the two entry points that persist `root_path` into the
+/// registry. A relative path (e.g. `nexus reindex .`) stored verbatim is
+/// exactly what let a real incident happen: the background watcher later
+/// resolved a stored `"."` against *its own* cwd (the daemon's `$HOME`
+/// under systemd), not the directory the CLI was run from, and recursively
+/// watched the entire home tree until it exhausted the system's inotify
+/// budget - see the GitHub issue this fixes. Canonicalizing once, here, at
+/// write time means every reader of a registry `root_path` (the watcher,
+/// the CLI, the GUI) can trust it's always absolute and resolved, with no
+/// defensive re-canonicalizing needed at each read site.
+fn canonicalize_for_registry(repo_path: &Path) -> Result<PathBuf> {
+    repo_path
+        .canonicalize()
+        .map_err(|_| anyhow::anyhow!("repo_path does not exist: {}", repo_path.display()))
 }
 
 /// `pub(crate)` rather than private: `queries.rs`'s `get_file_context` and
@@ -331,4 +355,84 @@ fn ensure_gitattributes_merge_ours(repo_path: &Path) -> Result<()> {
         .open(&gitattributes)?;
     writeln!(file, ".nexuscontext/index.db.zst merge=ours")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod canonicalize_for_registry_tests {
+    use super::canonicalize_for_registry;
+    use std::fs;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_canonicalize_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Restores the original process cwd on drop, even if the test body
+    /// between `enter` and the natural end of scope panics - without this,
+    /// an `.unwrap()` failing partway through a cwd-mutating test would
+    /// leave the process cwd poisoned for every subsequent test in this
+    /// binary (process cwd is global, not per-thread), producing confusing
+    /// order-dependent failures elsewhere. Caught in PR review.
+    struct CwdGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(dir: &std::path::Path) -> Self {
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(dir).unwrap();
+            Self { original }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    #[test]
+    fn relative_dot_resolves_to_the_current_directory_absolute_path() {
+        let dir = temp_dir("relative_dot");
+        let expected = dir.canonicalize().unwrap();
+
+        // This is exactly the real incident: `nexus reindex .` run with cwd
+        // set to the project root. `canonicalize_for_registry` has to turn
+        // that bare "." into an absolute path *before* it's ever stored,
+        // not leave it for a later reader (the watcher) to resolve against
+        // a completely different cwd.
+        //
+        // NOTE: process cwd is global, not per-thread - if a future test
+        // elsewhere in this crate starts depending on relative-path
+        // resolution, it could flake if it happens to run concurrently
+        // with this one under cargo test's default parallelism. No other
+        // test currently does (grep for `current_dir` before adding one).
+        let result = {
+            let _guard = CwdGuard::enter(&dir);
+            canonicalize_for_registry(std::path::Path::new("."))
+        };
+
+        assert_eq!(result.unwrap(), expected);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn already_absolute_path_round_trips() {
+        let dir = temp_dir("already_absolute");
+        let expected = dir.canonicalize().unwrap();
+        assert_eq!(canonicalize_for_registry(&dir).unwrap(), expected);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nonexistent_path_is_a_clear_error_not_a_silent_pass_through() {
+        let missing = std::env::temp_dir().join("nexus_canonicalize_test_does_not_exist_12345");
+        let err = canonicalize_for_registry(&missing).unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
+    }
 }
