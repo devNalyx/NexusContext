@@ -550,7 +550,10 @@ mod get_file_context_tests {
         let result = get_file_context(&dir, "f.txt", None, None, true).unwrap();
         let (body, note) = result.split_once("\n\n--- truncated").unwrap();
         assert_eq!(body, numbered_lines(super::MAX_RETURNED_LINES));
-        assert!(note.contains(&format!("server cap is {} lines", super::MAX_RETURNED_LINES)));
+        assert!(note.contains(&format!(
+            "server cap is {} lines",
+            super::MAX_RETURNED_LINES
+        )));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -562,7 +565,10 @@ mod get_file_context_tests {
         let result = get_file_context(&dir, "f.txt", Some(1), Some(total), false).unwrap();
         let (body, note) = result.split_once("\n\n--- truncated").unwrap();
         assert_eq!(body, numbered_lines(super::MAX_RETURNED_LINES));
-        assert!(note.contains(&format!("server cap is {} lines", super::MAX_RETURNED_LINES)));
+        assert!(note.contains(&format!(
+            "server cap is {} lines",
+            super::MAX_RETURNED_LINES
+        )));
         let _ = fs::remove_dir_all(&dir);
     }
 }

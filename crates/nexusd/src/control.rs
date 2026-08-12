@@ -476,7 +476,10 @@ mod tests {
 
         let redacted = redact_config(&config).unwrap();
 
-        assert_eq!(redacted.pointer("/embeddings/has_api_key"), Some(&json!(true)));
+        assert_eq!(
+            redacted.pointer("/embeddings/has_api_key"),
+            Some(&json!(true))
+        );
         assert!(redacted.pointer("/embeddings/api_key").is_none());
         // Belt and suspenders: the secret string itself must not appear
         // anywhere in the serialized output, not just at the expected path.
@@ -486,7 +489,10 @@ mod tests {
     #[test]
     fn redact_config_reports_has_api_key_false_when_unset_or_empty() {
         let unset = redact_config(&Config::default()).unwrap();
-        assert_eq!(unset.pointer("/embeddings/has_api_key"), Some(&json!(false)));
+        assert_eq!(
+            unset.pointer("/embeddings/has_api_key"),
+            Some(&json!(false))
+        );
 
         let mut empty = Config::default();
         empty.embeddings.api_key = Some(String::new());

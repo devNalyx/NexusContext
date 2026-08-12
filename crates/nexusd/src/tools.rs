@@ -685,7 +685,6 @@ mod tests {
         // still only gets SEMANTIC_MAX_LIMIT - the general cap alone isn't
         // tight enough for chunk_text-bearing rows.
         assert_eq!(clamp_semantic_limit(SERVER_MAX_LIMIT), SEMANTIC_MAX_LIMIT);
-        assert!(SEMANTIC_MAX_LIMIT < SERVER_MAX_LIMIT);
     }
 
     #[test]
