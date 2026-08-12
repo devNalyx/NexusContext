@@ -44,7 +44,7 @@ One note per function/type/section, each with its actual source snippet
 Open `.nexuscontext/vault/` as its own separate Obsidian vault — this is
 generated, per-project, local-only (gitignored), and answers "what does
 this codebase's call graph look like," not "how does NexusContext itself
-work" (that's what *this* vault, `docs/`, is for).
+work" (that's what *this* vault, `docs/NexusContext-Wiki/`, is for).
 
 ## Embeddings
 
