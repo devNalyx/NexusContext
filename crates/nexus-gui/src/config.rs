@@ -45,6 +45,17 @@ pub fn build() -> GtkBox {
         )
         .build();
 
+    // `config.get`/`config.set` never send the actual api_key value back
+    // (see control.rs's redact_config) - just whether one is set, which is
+    // all a status line needs. Setting/clearing the key itself isn't a GUI
+    // feature yet (config.toml or config.set's raw JSON is the only way
+    // today), so this is read-only.
+    let api_key_label = Label::builder()
+        .label("")
+        .halign(Align::Start)
+        .css_classes(["dim-label", "caption"])
+        .build();
+
     let status_label = Label::builder()
         .label("")
         .halign(Align::Start)
@@ -116,6 +127,7 @@ pub fn build() -> GtkBox {
     container.append(&Label::builder().label("Model").halign(Align::Start).build());
     container.append(&model_entry);
     container.append(&allow_remote_check);
+    container.append(&api_key_label);
     container.append(&button_row);
     container.append(&status_label);
 
@@ -124,6 +136,7 @@ pub fn build() -> GtkBox {
         &endpoint_entry,
         &model_entry,
         &allow_remote_check,
+        &api_key_label,
         &status_label,
     );
     container
@@ -134,6 +147,7 @@ fn load_current(
     endpoint_entry: &Entry,
     model_entry: &Entry,
     allow_remote_check: &CheckButton,
+    api_key_label: &Label,
     status_label: &Label,
 ) {
     match crate::client::call("config.get", serde_json::json!({})) {
@@ -159,6 +173,15 @@ fn load_current(
             {
                 allow_remote_check.set_active(allow_remote);
             }
+            let has_api_key = config
+                .pointer("/embeddings/has_api_key")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            api_key_label.set_label(if has_api_key {
+                "API key: set (edit config.toml directly to change it)"
+            } else {
+                "API key: not set"
+            });
         }
         Err(err) => status_label.set_label(&format!("Error loading config: {err}")),
     }

@@ -2,7 +2,7 @@ use crate::graph::{Direction, GraphStore};
 use crate::project::graph_db_path;
 use crate::{CodeSearchHit, NodeRecord};
 use anyhow::{bail, Result};
-use nexus_core::{Config, EmbeddingsPolicy, Paths};
+use nexus_core::{truncate_to_byte_boundary, Config, EmbeddingsPolicy, Paths};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -191,6 +191,7 @@ pub fn semantic_search(
 }
 
 pub fn detect_changes(repo_path: &Path) -> Result<Vec<NodeRecord>> {
+    crate::project::require_path_allowed(&Paths::resolve(), repo_path)?;
     let store = open_store(repo_path)?;
 
     let output = std::process::Command::new("git")
@@ -258,6 +259,7 @@ pub fn get_file_context(
     end_line: Option<usize>,
     full: bool,
 ) -> Result<String> {
+    crate::project::require_path_allowed(&Paths::resolve(), repo_path)?;
     let canonical_root = repo_path
         .canonicalize()
         .map_err(|_| anyhow::anyhow!("repo_path does not exist: {}", repo_path.display()))?;
@@ -274,25 +276,33 @@ pub fn get_file_context(
     let total = lines.len();
 
     match (start_line, end_line) {
-        // Both bounds given: an explicit two-sided ask, stays unbounded.
+        // Both bounds given: an explicit two-sided ask - still passes
+        // through the MAX_RETURNED_LINES ceiling below, though, since
+        // start_line=1/end_line=999999 is otherwise indistinguishable from
+        // full=true for how much it can return.
         (Some(s), Some(e)) => {
             let s = s.saturating_sub(1).min(total);
             let e = e.min(total);
-            Ok(lines[s..e].join("\n"))
+            Ok(bounded_lines(&lines, s, e))
         }
-        // full=true is the explicit escape hatch for the whole file.
-        _ if full => Ok(content),
+        // full=true is the explicit escape hatch for the whole file - still
+        // capped, just at MAX_RETURNED_LINES rather than the default
+        // preview's DEFAULT_CONTEXT_LINES. A single indexed file dumping
+        // tens of thousands of lines into the calling agent's context is an
+        // expensive mistake even when explicitly asked for - see the
+        // GitHub issue this fixes.
+        _ if full => Ok(bounded_lines(&lines, 0, total)),
         // Only one bound given: today this silently returned the whole
         // file - a bounded window anchored at the given bound instead.
         (Some(s), None) => {
             let s = s.saturating_sub(1).min(total);
             let e = (s + DEFAULT_CONTEXT_LINES).min(total);
-            Ok(lines[s..e].join("\n"))
+            Ok(bounded_lines(&lines, s, e))
         }
         (None, Some(e)) => {
             let e = e.min(total);
             let s = e.saturating_sub(DEFAULT_CONTEXT_LINES);
-            Ok(lines[s..e].join("\n"))
+            Ok(bounded_lines(&lines, s, e))
         }
         // Neither bound given, not full: first DEFAULT_CONTEXT_LINES lines,
         // with a trailing note if there's more.
@@ -307,6 +317,75 @@ pub fn get_file_context(
                 Ok(shown)
             }
         }
+    }
+}
+
+/// Hard ceiling on any single `get_file_context` response, independent of
+/// which branch above computed `[s, e)` - `full=true` and an explicit
+/// two-sided range are the two paths that were previously unbounded (see
+/// the GitHub issue this fixes); this applies to every branch uniformly so
+/// a future one can't reintroduce the same gap. Well above
+/// `DEFAULT_CONTEXT_LINES` so the existing bounded-window branches (which
+/// only ever request up to `DEFAULT_CONTEXT_LINES` lines) are never
+/// affected by this cap in practice.
+const MAX_RETURNED_LINES: usize = 4000;
+
+/// A second, independent ceiling from `MAX_RETURNED_LINES` - a *line count*
+/// cap alone doesn't bound a response whose lines are individually huge (a
+/// minified bundle, a generated one-line JSON blob: few lines, megabytes).
+/// Caught in PR review on the fix that added `MAX_RETURNED_LINES` - see the
+/// GitHub issue this fixes. ~300KB is generous for legitimate source but
+/// still a real ceiling.
+const MAX_RETURNED_BYTES: usize = 300_000;
+
+fn bounded_lines(lines: &[&str], s: usize, e: usize) -> String {
+    let line_capped_e = e.min(s + MAX_RETURNED_LINES);
+
+    // A single line bigger than the whole byte budget can't be included
+    // whole - truncate that one line's text directly (byte-safe, not a raw
+    // slice that could land mid-codepoint) rather than either skip it
+    // (useless response) or return it unbounded (the exact gap this cap
+    // exists to close).
+    if let Some(first) = lines.get(s) {
+        if first.len() > MAX_RETURNED_BYTES {
+            let (truncated_line, _) = truncate_to_byte_boundary(first, MAX_RETURNED_BYTES);
+            return format!(
+                "{truncated_line}\n\n--- truncated: line {} alone is {} bytes, over the server's {MAX_RETURNED_BYTES}-byte cap per call - showing a byte-truncated prefix of it. Narrow the range, or make another call starting from line {} for the rest. ---",
+                s + 1,
+                first.len(),
+                s + 2
+            );
+        }
+    }
+
+    let mut included = s;
+    let mut byte_total = 0usize;
+    let mut byte_capped = false;
+    for line in &lines[s..line_capped_e] {
+        let add = line.len() + if included > s { 1 } else { 0 }; // +1 for the '\n' joiner
+        if byte_total + add > MAX_RETURNED_BYTES {
+            byte_capped = true;
+            break;
+        }
+        byte_total += add;
+        included += 1;
+    }
+
+    let shown = lines[s..included].join("\n");
+    if included < e {
+        let reason = if byte_capped {
+            format!("server cap is {MAX_RETURNED_BYTES} bytes per call")
+        } else {
+            format!("server cap is {MAX_RETURNED_LINES} lines per call")
+        };
+        format!(
+            "{shown}\n\n--- truncated: showing {} of {} requested lines ({reason}). Narrow the range, or make another call starting from line {} for the rest. ---",
+            included - s,
+            e - s,
+            included + 1
+        )
+    } else {
+        shown
     }
 }
 
@@ -487,7 +566,7 @@ mod get_file_context_tests {
     }
 
     #[test]
-    fn both_bounds_set_stays_unbounded_and_unmarked() {
+    fn both_bounds_set_under_the_cap_stays_unmarked() {
         let dir = temp_project("both_bounds");
         let total = DEFAULT_CONTEXT_LINES + 50;
         fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
@@ -498,12 +577,85 @@ mod get_file_context_tests {
     }
 
     #[test]
-    fn full_true_bypasses_truncation_regardless_of_size() {
+    fn full_true_under_the_cap_stays_unmarked() {
         let dir = temp_project("full_true");
         let total = DEFAULT_CONTEXT_LINES + 50;
         fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
         let result = get_file_context(&dir, "f.txt", None, None, true).unwrap();
         assert_eq!(result, numbered_lines(total));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_true_beyond_the_cap_is_truncated_with_a_note() {
+        let dir = temp_project("full_true_huge");
+        let total = super::MAX_RETURNED_LINES + 500;
+        fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
+        let result = get_file_context(&dir, "f.txt", None, None, true).unwrap();
+        let (body, note) = result.split_once("\n\n--- truncated").unwrap();
+        assert_eq!(body, numbered_lines(super::MAX_RETURNED_LINES));
+        assert!(note.contains(&format!(
+            "server cap is {} lines",
+            super::MAX_RETURNED_LINES
+        )));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn both_bounds_set_beyond_the_cap_is_truncated_with_a_note() {
+        let dir = temp_project("both_bounds_huge");
+        let total = super::MAX_RETURNED_LINES + 500;
+        fs::write(dir.join("f.txt"), numbered_lines(total)).unwrap();
+        let result = get_file_context(&dir, "f.txt", Some(1), Some(total), false).unwrap();
+        let (body, note) = result.split_once("\n\n--- truncated").unwrap();
+        assert_eq!(body, numbered_lines(super::MAX_RETURNED_LINES));
+        assert!(note.contains(&format!(
+            "server cap is {} lines",
+            super::MAX_RETURNED_LINES
+        )));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // PR-review-caught gap: a *line count* cap alone doesn't bound a
+    // response whose lines are individually enormous - a minified bundle
+    // or a one-line generated blob passes MAX_RETURNED_LINES (2 lines is
+    // nowhere near 4000) while still being megabytes. These two tests
+    // exercise the byte-based backstop that closes that gap.
+    #[test]
+    fn many_lines_each_moderately_sized_hits_the_byte_cap_before_the_line_cap() {
+        let dir = temp_project("byte_cap_many_lines");
+        // Each line is 1000 bytes; MAX_RETURNED_LINES (4000) lines of that
+        // would be ~4MB, far past MAX_RETURNED_BYTES (300_000) - so the
+        // byte cap, not the line cap, has to be what stops this.
+        let line = "x".repeat(1000);
+        let total = 1000;
+        let content = std::iter::repeat_n(line.as_str(), total)
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(dir.join("f.txt"), &content).unwrap();
+        let result = get_file_context(&dir, "f.txt", None, None, true).unwrap();
+        let (body, note) = result.split_once("\n\n--- truncated").unwrap();
+        assert!(body.len() <= super::MAX_RETURNED_BYTES);
+        assert!(note.contains(&format!(
+            "server cap is {} bytes",
+            super::MAX_RETURNED_BYTES
+        )));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_single_line_bigger_than_the_whole_byte_budget_is_truncated_in_place() {
+        let dir = temp_project("byte_cap_one_giant_line");
+        // The pathological case from the review: one line (a minified
+        // bundle, a generated one-line blob), no newlines at all, bigger
+        // than MAX_RETURNED_BYTES on its own.
+        let huge_line = "y".repeat(super::MAX_RETURNED_BYTES + 50_000);
+        fs::write(dir.join("f.txt"), &huge_line).unwrap();
+        let result = get_file_context(&dir, "f.txt", None, None, true).unwrap();
+        let (body, note) = result.split_once("\n\n--- truncated").unwrap();
+        assert_eq!(body.len(), super::MAX_RETURNED_BYTES);
+        assert!(note.contains("line 1 alone is"));
+        assert!(note.contains(&format!("{}-byte cap", super::MAX_RETURNED_BYTES)));
         let _ = fs::remove_dir_all(&dir);
     }
 }
