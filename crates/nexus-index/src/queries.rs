@@ -2,7 +2,7 @@ use crate::graph::{Direction, GraphStore};
 use crate::project::graph_db_path;
 use crate::{CodeSearchHit, NodeRecord};
 use anyhow::{bail, Result};
-use nexus_core::{Config, EmbeddingsPolicy, Paths};
+use nexus_core::{truncate_to_byte_boundary, Config, EmbeddingsPolicy, Paths};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -387,24 +387,6 @@ fn bounded_lines(lines: &[&str], s: usize, e: usize) -> String {
     } else {
         shown
     }
-}
-
-/// Truncates to at most `max_bytes`, cutting at the last whole UTF-8
-/// character rather than a raw byte index - a raw slice can land
-/// mid-codepoint, which panics (or worse, silently corrupts) on non-ASCII
-/// text. Returns whether it actually shortened anything.
-fn truncate_to_byte_boundary(text: &str, max_bytes: usize) -> (String, bool) {
-    if text.len() <= max_bytes {
-        return (text.to_string(), false);
-    }
-    let mut end = 0;
-    for (i, ch) in text.char_indices() {
-        if i + ch.len_utf8() > max_bytes {
-            break;
-        }
-        end = i + ch.len_utf8();
-    }
-    (text[..end].to_string(), true)
 }
 
 pub struct QueryPlanResult {
