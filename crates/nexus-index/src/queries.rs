@@ -330,19 +330,81 @@ pub fn get_file_context(
 /// affected by this cap in practice.
 const MAX_RETURNED_LINES: usize = 4000;
 
+/// A second, independent ceiling from `MAX_RETURNED_LINES` - a *line count*
+/// cap alone doesn't bound a response whose lines are individually huge (a
+/// minified bundle, a generated one-line JSON blob: few lines, megabytes).
+/// Caught in PR review on the fix that added `MAX_RETURNED_LINES` - see the
+/// GitHub issue this fixes. ~300KB is generous for legitimate source but
+/// still a real ceiling.
+const MAX_RETURNED_BYTES: usize = 300_000;
+
 fn bounded_lines(lines: &[&str], s: usize, e: usize) -> String {
-    let capped_e = e.min(s + MAX_RETURNED_LINES);
-    let shown = lines[s..capped_e].join("\n");
-    if capped_e < e {
+    let line_capped_e = e.min(s + MAX_RETURNED_LINES);
+
+    // A single line bigger than the whole byte budget can't be included
+    // whole - truncate that one line's text directly (byte-safe, not a raw
+    // slice that could land mid-codepoint) rather than either skip it
+    // (useless response) or return it unbounded (the exact gap this cap
+    // exists to close).
+    if let Some(first) = lines.get(s) {
+        if first.len() > MAX_RETURNED_BYTES {
+            let (truncated_line, _) = truncate_to_byte_boundary(first, MAX_RETURNED_BYTES);
+            return format!(
+                "{truncated_line}\n\n--- truncated: line {} alone is {} bytes, over the server's {MAX_RETURNED_BYTES}-byte cap per call - showing a byte-truncated prefix of it. Narrow the range, or make another call starting from line {} for the rest. ---",
+                s + 1,
+                first.len(),
+                s + 2
+            );
+        }
+    }
+
+    let mut included = s;
+    let mut byte_total = 0usize;
+    let mut byte_capped = false;
+    for line in &lines[s..line_capped_e] {
+        let add = line.len() + if included > s { 1 } else { 0 }; // +1 for the '\n' joiner
+        if byte_total + add > MAX_RETURNED_BYTES {
+            byte_capped = true;
+            break;
+        }
+        byte_total += add;
+        included += 1;
+    }
+
+    let shown = lines[s..included].join("\n");
+    if included < e {
+        let reason = if byte_capped {
+            format!("server cap is {MAX_RETURNED_BYTES} bytes per call")
+        } else {
+            format!("server cap is {MAX_RETURNED_LINES} lines per call")
+        };
         format!(
-            "{shown}\n\n--- truncated: showing {} of {} requested lines (server cap is {MAX_RETURNED_LINES} lines per call). Narrow the range, or make another call starting from line {} for the rest. ---",
-            capped_e - s,
+            "{shown}\n\n--- truncated: showing {} of {} requested lines ({reason}). Narrow the range, or make another call starting from line {} for the rest. ---",
+            included - s,
             e - s,
-            capped_e + 1
+            included + 1
         )
     } else {
         shown
     }
+}
+
+/// Truncates to at most `max_bytes`, cutting at the last whole UTF-8
+/// character rather than a raw byte index - a raw slice can land
+/// mid-codepoint, which panics (or worse, silently corrupts) on non-ASCII
+/// text. Returns whether it actually shortened anything.
+fn truncate_to_byte_boundary(text: &str, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text.to_string(), false);
+    }
+    let mut end = 0;
+    for (i, ch) in text.char_indices() {
+        if i + ch.len_utf8() > max_bytes {
+            break;
+        }
+        end = i + ch.len_utf8();
+    }
+    (text[..end].to_string(), true)
 }
 
 pub struct QueryPlanResult {
@@ -569,6 +631,49 @@ mod get_file_context_tests {
             "server cap is {} lines",
             super::MAX_RETURNED_LINES
         )));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // PR-review-caught gap: a *line count* cap alone doesn't bound a
+    // response whose lines are individually enormous - a minified bundle
+    // or a one-line generated blob passes MAX_RETURNED_LINES (2 lines is
+    // nowhere near 4000) while still being megabytes. These two tests
+    // exercise the byte-based backstop that closes that gap.
+    #[test]
+    fn many_lines_each_moderately_sized_hits_the_byte_cap_before_the_line_cap() {
+        let dir = temp_project("byte_cap_many_lines");
+        // Each line is 1000 bytes; MAX_RETURNED_LINES (4000) lines of that
+        // would be ~4MB, far past MAX_RETURNED_BYTES (300_000) - so the
+        // byte cap, not the line cap, has to be what stops this.
+        let line = "x".repeat(1000);
+        let total = 1000;
+        let content = std::iter::repeat_n(line.as_str(), total)
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(dir.join("f.txt"), &content).unwrap();
+        let result = get_file_context(&dir, "f.txt", None, None, true).unwrap();
+        let (body, note) = result.split_once("\n\n--- truncated").unwrap();
+        assert!(body.len() <= super::MAX_RETURNED_BYTES);
+        assert!(note.contains(&format!(
+            "server cap is {} bytes",
+            super::MAX_RETURNED_BYTES
+        )));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_single_line_bigger_than_the_whole_byte_budget_is_truncated_in_place() {
+        let dir = temp_project("byte_cap_one_giant_line");
+        // The pathological case from the review: one line (a minified
+        // bundle, a generated one-line blob), no newlines at all, bigger
+        // than MAX_RETURNED_BYTES on its own.
+        let huge_line = "y".repeat(super::MAX_RETURNED_BYTES + 50_000);
+        fs::write(dir.join("f.txt"), &huge_line).unwrap();
+        let result = get_file_context(&dir, "f.txt", None, None, true).unwrap();
+        let (body, note) = result.split_once("\n\n--- truncated").unwrap();
+        assert_eq!(body.len(), super::MAX_RETURNED_BYTES);
+        assert!(note.contains("line 1 alone is"));
+        assert!(note.contains(&format!("{}-byte cap", super::MAX_RETURNED_BYTES)));
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -19,7 +19,7 @@ fn clamp_limit(requested: u32) -> u32 {
 /// returns - so `SERVER_MAX_LIMIT` alone doesn't bound their response the
 /// way it does for structural tools. A worst case of `SERVER_MAX_LIMIT`
 /// rows here was ~1.2MB (300K+ tokens) in one MCP response. Capped much
-/// lower, and paired with `RESPONSE_CHUNK_TEXT_MAX_CHARS` below - see the
+/// lower, and paired with `RESPONSE_CHUNK_TEXT_MAX_BYTES` below - see the
 /// GitHub issue this fixes.
 const SEMANTIC_MAX_LIMIT: u32 = 30;
 
@@ -31,19 +31,36 @@ fn clamp_semantic_limit(requested: u32) -> u32 {
 /// time so the stored chunk matches what was actually embedded) - this is
 /// the much smaller ceiling on what's worth spending response tokens on
 /// *per hit*, applied here rather than at index time so the full chunk
-/// stays available for the embedding call's own accuracy.
-const RESPONSE_CHUNK_TEXT_MAX_CHARS: usize = 1000;
+/// stays available for the embedding call's own accuracy. Byte-based, not
+/// char-based - see `truncate_for_response`'s doc comment for why that
+/// distinction matters here.
+const RESPONSE_CHUNK_TEXT_MAX_BYTES: usize = 1000;
 
 /// Shared by any tool response field that can be much larger than a normal
 /// JSON value - returns the (possibly shortened) text and whether it was
 /// actually shortened, so the caller can surface that honestly instead of
 /// silently dropping content.
-fn truncate_for_response(text: &str, max_chars: usize) -> (String, bool) {
-    if text.len() <= max_chars {
-        (text.to_string(), false)
-    } else {
-        (text.chars().take(max_chars).collect(), true)
+///
+/// `max_bytes` bounds `text.len()` (bytes), and truncation cuts at the last
+/// whole UTF-8 character rather than a raw byte index - a raw slice can
+/// land mid-codepoint, which panics on non-ASCII text. An earlier version
+/// of this checked `text.len() <= max_chars` (bytes) but truncated via
+/// `text.chars().take(max_chars)` (chars) - consistent for ASCII, but for
+/// multi-byte text (CJK, emoji, etc.) that let the *actual* byte count run
+/// up to ~4x the stated cap, caught in PR review. Fully byte-based now, so
+/// the cap means what it says regardless of the input's script.
+fn truncate_for_response(text: &str, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text.to_string(), false);
     }
+    let mut end = 0;
+    for (i, ch) in text.char_indices() {
+        if i + ch.len_utf8() > max_bytes {
+            break;
+        }
+        end = i + ch.len_utf8();
+    }
+    (text[..end].to_string(), true)
 }
 
 pub fn tool_definitions() -> Value {
@@ -417,7 +434,7 @@ fn semantic_hits_to_json(hits: &[index::SemanticHit]) -> Value {
         .iter()
         .map(|hit| {
             let (chunk_text, chunk_text_truncated) =
-                truncate_for_response(&hit.chunk_text, RESPONSE_CHUNK_TEXT_MAX_CHARS);
+                truncate_for_response(&hit.chunk_text, RESPONSE_CHUNK_TEXT_MAX_BYTES);
             json!({
                 "kind": format!("{:?}", hit.node.kind),
                 "name": hit.node.name,
@@ -696,10 +713,30 @@ mod tests {
 
     #[test]
     fn truncate_for_response_caps_long_text_and_flags_it() {
-        let long = "x".repeat(RESPONSE_CHUNK_TEXT_MAX_CHARS + 500);
-        let (text, truncated) = truncate_for_response(&long, RESPONSE_CHUNK_TEXT_MAX_CHARS);
-        assert_eq!(text.len(), RESPONSE_CHUNK_TEXT_MAX_CHARS);
+        let long = "x".repeat(RESPONSE_CHUNK_TEXT_MAX_BYTES + 500);
+        let (text, truncated) = truncate_for_response(&long, RESPONSE_CHUNK_TEXT_MAX_BYTES);
+        assert_eq!(text.len(), RESPONSE_CHUNK_TEXT_MAX_BYTES);
         assert!(truncated);
+    }
+
+    // PR-review-caught gap: the cap is on *bytes*, and multi-byte UTF-8
+    // text (CJK here, 3 bytes/char) must not be allowed to exceed it just
+    // because a char-based `.take(n)` would only look at character count.
+    #[test]
+    fn truncate_for_response_bounds_multi_byte_text_by_bytes_not_chars() {
+        let cjk = "文".repeat(RESPONSE_CHUNK_TEXT_MAX_BYTES); // 3 bytes each in UTF-8
+        let (text, truncated) = truncate_for_response(&cjk, RESPONSE_CHUNK_TEXT_MAX_BYTES);
+        assert!(truncated);
+        assert!(text.len() <= RESPONSE_CHUNK_TEXT_MAX_BYTES);
+        // A char-based `.take(RESPONSE_CHUNK_TEXT_MAX_BYTES)` would have
+        // returned exactly RESPONSE_CHUNK_TEXT_MAX_BYTES *characters* -
+        // 3x over budget in bytes. Confirm that regression can't recur.
+        assert!(text.chars().count() < RESPONSE_CHUNK_TEXT_MAX_BYTES);
+        // And it has to still be valid UTF-8 - str::len()/comparisons
+        // above already guarantee this (a mid-codepoint cut wouldn't
+        // compile/compare as a valid &str), but assert it explicitly as
+        // the thing this test exists to prove.
+        assert!(std::str::from_utf8(text.as_bytes()).is_ok());
     }
 
     #[test]
@@ -715,13 +752,13 @@ mod tests {
                 end_line: 2,
             },
             score: 0.9,
-            chunk_text: "x".repeat(RESPONSE_CHUNK_TEXT_MAX_CHARS + 500),
+            chunk_text: "x".repeat(RESPONSE_CHUNK_TEXT_MAX_BYTES + 500),
         }];
         let json = semantic_hits_to_json(&hits);
         let hit = &json[0];
         assert_eq!(
             hit["chunk_text"].as_str().unwrap().len(),
-            RESPONSE_CHUNK_TEXT_MAX_CHARS
+            RESPONSE_CHUNK_TEXT_MAX_BYTES
         );
         assert_eq!(hit["chunk_text_truncated"], true);
     }
