@@ -20,14 +20,19 @@ pub struct IndexStats {
     pub embeddings_status: String,
 }
 
-/// An unresolved call site, carried past the per-file pass so it can be
-/// resolved once every file's functions are known project-wide.
+/// A call site whose callee wasn't found in its own file, carried past the
+/// per-file pass so it can be resolved once every file's functions are
+/// known project-wide. Same-file calls are resolved immediately in the
+/// per-file loop instead (see `index_directory`) rather than being carried
+/// here - that used to mean cloning the *entire* same-file name map onto
+/// every single pending call (`same_file_names: HashMap<String, i64>` per
+/// call), which is O(functions x calls) memory for a file and was the
+/// actual OOM mechanism behind a dense/minified file taking down the whole
+/// process (see the #17 investigation). Carrying just the two scalars below
+/// for the cross-file-only remainder fixes that without changing what gets
+/// resolved.
 struct PendingCall {
     caller_id: i64,
-    /// This call's own file's functions by name - checked before falling
-    /// back to a global lookup, so same-file resolution still wins when
-    /// it's available (preserves the original, more-certain behavior).
-    same_file_names: HashMap<String, i64>,
     callee_name: String,
 }
 
@@ -227,13 +232,27 @@ fn index_directory_inner(
                         .push(*id);
                 }
                 pending_embeddings.extend(result.pending_embeddings);
+                // Same-file resolution wins when available (preserves the
+                // original, more-certain behavior) - resolved here, once
+                // per call, against this file's own name map rather than
+                // carrying a clone of that map alongside every call for a
+                // second pass to check. Only calls that don't resolve
+                // in-file go on to `pending_calls` for the cross-file pass
+                // below, where they're checked against `global_fn_registry`
+                // instead.
                 let same_file_names: HashMap<String, i64> = result.fn_nodes.into_iter().collect();
                 for (caller_id, callee_name) in result.pending_calls {
-                    pending_calls.push(PendingCall {
-                        caller_id,
-                        same_file_names: same_file_names.clone(),
-                        callee_name,
-                    });
+                    match same_file_names.get(&callee_name).copied() {
+                        Some(callee_id) => {
+                            if callee_id != caller_id {
+                                store.insert_edge(caller_id, callee_id, EdgeKind::Calls)?;
+                            }
+                        }
+                        None => pending_calls.push(PendingCall {
+                            caller_id,
+                            callee_name,
+                        }),
+                    }
                 }
             }
             Err(err) => {
@@ -245,14 +264,12 @@ fn index_directory_inner(
     }
 
     for call in pending_calls {
-        let resolved = call
-            .same_file_names
-            .get(&call.callee_name)
-            .copied()
-            .or_else(|| match global_fn_registry.get(&call.callee_name) {
-                Some(ids) if ids.len() == 1 => Some(ids[0]),
-                _ => None,
-            });
+        // Same-file resolution already happened above; this is purely the
+        // cross-file fallback, name-unique-across-the-project or nothing.
+        let resolved = match global_fn_registry.get(&call.callee_name) {
+            Some(ids) if ids.len() == 1 => Some(ids[0]),
+            _ => None,
+        };
 
         if let Some(callee_id) = resolved {
             if callee_id != call.caller_id {
@@ -438,10 +455,20 @@ fn index_file(
     // .txt, config files, etc.) is walked for full-text search yet.
     store.insert_file_content(&rel_path, &text)?;
     let lines: Vec<&str> = text.lines().collect();
+    // Truncated with the same cap `embeddings::embed_in_batches` applies
+    // before an API call, but applied here at build time instead of only
+    // right before sending: a tagger's definition range is a *line* range,
+    // and for a minified/bundled file where everything sits on one or two
+    // giant lines, every single function's range spans that same
+    // near-whole-file line - so an untruncated chunk here is held in
+    // `pending_embeddings` for the rest of the whole-project walk (not just
+    // this file), once per function, regardless of whether embeddings even
+    // end up enabled. That's what actually exhausted memory on a dense
+    // minified file (see #17) - truncating eagerly caps it project-wide.
     let chunk_text_for = |range: &tree_sitter::Range| -> String {
         let start = range.start_point.row.min(lines.len().saturating_sub(1));
         let end = range.end_point.row.min(lines.len().saturating_sub(1));
-        lines[start..=end].join("\n")
+        crate::embeddings::truncate_chunk(&lines[start..=end].join("\n"))
     };
 
     let extracted = language::extract(config, tags_context, &source)?;
@@ -493,15 +520,36 @@ fn index_file(
     let mut fn_nodes_by_start = fn_nodes.clone();
     fn_nodes_by_start.sort_by_key(|(_, r, _)| r.start_point.row);
 
-    let mut pending_calls = Vec::new();
-    for (callee_name, call_range) in extracted.calls {
-        let call_line = call_range.start_point.row;
-        let caller = fn_nodes_by_start
-            .iter()
-            .rfind(|(_, r, _)| r.start_point.row <= call_line);
+    // A single line this long is a strong minified/bundled-file signal
+    // regardless of extension, and it's exactly the case that breaks the
+    // nearest-preceding-start heuristic above: with (almost) every
+    // definition and every call landing on the same one or two rows, the
+    // `rfind` below stops discriminating between callers at all and
+    // silently attributes *every* call in the file to whichever function
+    // happens to sort last - wrong edges, not just noisy ones. Files like
+    // this can also inflate the tagger's function/call counts enough to
+    // make this loop itself expensive, so skipping it here is a cheap
+    // guard either way (see the #17 investigation).
+    const MAX_LINE_LEN_FOR_CALL_RESOLUTION: usize = 2000;
+    let max_line_len = lines.iter().map(|l| l.len()).max().unwrap_or(0);
 
-        if let Some((_, _, caller_id)) = caller {
-            pending_calls.push((*caller_id, callee_name));
+    let mut pending_calls = Vec::new();
+    if max_line_len > MAX_LINE_LEN_FOR_CALL_RESOLUTION {
+        tracing::debug!(
+            file = %path.display(),
+            max_line_len,
+            "line far exceeds source-code norms (likely minified/bundled) - skipping call-site resolution for this file"
+        );
+    } else {
+        for (callee_name, call_range) in extracted.calls {
+            let call_line = call_range.start_point.row;
+            let caller = fn_nodes_by_start
+                .iter()
+                .rfind(|(_, r, _)| r.start_point.row <= call_line);
+
+            if let Some((_, _, caller_id)) = caller {
+                pending_calls.push((*caller_id, callee_name));
+            }
         }
     }
 

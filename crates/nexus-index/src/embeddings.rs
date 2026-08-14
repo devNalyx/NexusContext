@@ -40,7 +40,7 @@ pub struct TestResult {
     pub latency_ms: u128,
 }
 
-fn truncate_chunk(text: &str) -> String {
+pub(crate) fn truncate_chunk(text: &str) -> String {
     if text.len() <= MAX_CHUNK_CHARS {
         text.to_string()
     } else {
