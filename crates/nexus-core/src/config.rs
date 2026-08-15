@@ -194,29 +194,11 @@ impl Config {
 /// owner-only (0600) rather than left to whatever the process umask happens
 /// to produce - on a shared/multi-user box a group- or world-readable
 /// config file is a real plaintext-secret leak, not a hypothetical one.
-#[cfg(unix)]
+/// `crate::paths::write_owner_only` now also backs `registry.json`/
+/// `usage_stats.json` (see issue #32) - this used to duplicate the same
+/// `OpenOptions`/`mode(0o600)` logic locally.
 fn write_config_file(path: &Path, contents: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-    // `.mode(0o600)` is applied atomically by the OS at creation time, so a
-    // freshly-created file is never briefly world-readable the way a
-    // write-then-chmod sequence would leave it. `set_permissions` afterward
-    // additionally normalizes a *pre-existing* file that predates this fix
-    // (mode() only affects files the open() call actually creates).
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(contents.as_bytes())?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn write_config_file(path: &Path, contents: &str) -> std::io::Result<()> {
-    std::fs::write(path, contents)
+    crate::paths::write_owner_only(path, contents.as_bytes())
 }
 
 fn extract_host(endpoint: &str) -> Option<&str> {

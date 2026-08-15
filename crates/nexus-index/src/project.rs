@@ -203,6 +203,52 @@ pub fn export_project(repo_path: &Path) -> Result<PathBuf> {
     Ok(artifact)
 }
 
+/// Generous headroom over any legitimate use (this repo's own real
+/// dogfooded `downtime` project, the largest measured so far, is ~119MB
+/// post-Phase-28) while still bounding a decompression bomb - a crafted
+/// `.zst` stream can trivially exceed 1000:1 compression ratios, so an
+/// unbounded `zstd::stream::copy_decode` on an artifact from a compromised
+/// or malicious teammate (exactly the "import a teammate's export"
+/// workflow this feature exists for) could exhaust disk with a tiny input
+/// file. See issue #31.
+const MAX_DECOMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+
+/// Streams the decode in fixed-size chunks rather than `copy_decode`'s
+/// single unbounded call, so the running total can be checked and the
+/// partial output removed the moment it crosses `max_bytes`, instead of
+/// only after disk is already exhausted. `max_bytes` is a parameter (rather
+/// than reading `MAX_DECOMPRESSED_BYTES` directly) so tests can exercise
+/// the rejection path with a small cap instead of needing gigabytes of
+/// real data to trigger it.
+fn decode_bounded(artifact: &Path, db_path: &Path, max_bytes: u64) -> Result<()> {
+    use std::io::{Read, Write};
+
+    let input = std::fs::File::open(artifact)?;
+    let mut decoder = zstd::stream::read::Decoder::new(input)?;
+    let mut output = std::fs::File::create(db_path)?;
+
+    let mut buf = [0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = decoder.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > max_bytes {
+            drop(output);
+            let _ = std::fs::remove_file(db_path);
+            bail!(
+                "shared index artifact decompresses past the {} MiB safety cap - refusing \
+                 (possible decompression bomb, or a corrupted/oversized artifact)",
+                max_bytes / (1024 * 1024)
+            );
+        }
+        output.write_all(&buf[..n])?;
+    }
+    Ok(())
+}
+
 /// Decompresses a shared artifact directly into place instead of walking the
 /// tree-sitter pipeline - the whole point is skipping that cost. Registry is
 /// updated the same way `index_project` does, using the imported DB's real
@@ -227,9 +273,7 @@ pub fn import_project(repo_path: &Path) -> Result<IndexStats> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut input = std::fs::File::open(&artifact)?;
-    let mut output = std::fs::File::create(&db_path)?;
-    zstd::stream::copy_decode(&mut input, &mut output)?;
+    decode_bounded(&artifact, &db_path, MAX_DECOMPRESSED_BYTES)?;
 
     let store = GraphStore::open(&db_path)?;
     let (nodes, edges) = store.stats()?;
@@ -438,5 +482,69 @@ mod canonicalize_for_registry_tests {
         let missing = std::env::temp_dir().join("nexus_canonicalize_test_does_not_exist_12345");
         let err = canonicalize_for_registry(&missing).unwrap_err();
         assert!(err.to_string().contains("does not exist"));
+    }
+}
+
+/// Regression tests for issue #31: `import_project` had no decompression-
+/// bomb protection at all.
+#[cfg(test)]
+mod decode_bounded_tests {
+    use super::decode_bounded;
+    use std::fs;
+    use std::io::Write;
+
+    fn scratch_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_decode_bounded_test_{label}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn zstd_artifact(dir: &std::path::Path, raw: &[u8]) -> std::path::PathBuf {
+        let path = dir.join("artifact.zst");
+        let file = fs::File::create(&path).unwrap();
+        let mut encoder = zstd::stream::write::Encoder::new(file, 3).unwrap();
+        encoder.write_all(raw).unwrap();
+        encoder.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn decompresses_normally_when_under_the_cap() {
+        let dir = scratch_dir("under_cap");
+        let raw = b"a small, ordinary shared-index artifact".repeat(10);
+        let artifact = zstd_artifact(&dir, &raw);
+        let out = dir.join("out.db");
+
+        decode_bounded(&artifact, &out, 10_000).unwrap();
+
+        assert_eq!(fs::read(&out).unwrap(), raw);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Highly repetitive input compresses to a tiny artifact but expands
+    /// back to something well past a small cap - a stand-in for a crafted
+    /// decompression bomb without needing gigabytes of real test data.
+    #[test]
+    fn refuses_and_cleans_up_when_decompressed_size_exceeds_the_cap() {
+        let dir = scratch_dir("over_cap");
+        let raw = vec![0u8; 1_000_000]; // compresses to well under 1KB
+        let artifact = zstd_artifact(&dir, &raw);
+        let out = dir.join("out.db");
+
+        let err = decode_bounded(&artifact, &out, 1_000).unwrap_err();
+        assert!(
+            err.to_string().contains("safety cap"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !out.exists(),
+            "partial output must be removed when the cap is exceeded, not left on disk"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

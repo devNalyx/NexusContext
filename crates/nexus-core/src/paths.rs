@@ -69,3 +69,39 @@ pub fn project_hash(root: &Path) -> String {
     canonical.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
+
+/// Writes `contents` to `path`, owner-only (0600), same reasoning as
+/// `config.toml`'s own fix: on a shared/multi-user box, anything else this
+/// daemon writes under the data dir - `registry.json`/`usage_stats.json`
+/// (plain `fs::write` previously inherited the process umask, commonly
+/// 0644) and `graph.db` (via `GraphStore::open`'s `Connection::open`, same
+/// story) - is readable by any other local user otherwise. `graph.db` is
+/// the most sensitive of the three: it holds the full indexed source text
+/// (FTS5) and embedding vectors for every project ever indexed. See issue
+/// #32.
+///
+/// `.mode(0o600)` on `OpenOptions` is applied atomically by the OS at
+/// creation time, so a freshly-created file is never briefly
+/// world-readable the way a write-then-chmod sequence would leave it;
+/// `set_permissions` afterward additionally normalizes a *pre-existing*
+/// file that predates this fix, since `mode()` only affects files the
+/// `open()` call actually creates.
+#[cfg(unix)]
+pub fn write_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+pub fn write_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, contents)
+}

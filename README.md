@@ -362,6 +362,20 @@ New `get_session_usage` MCP tool (no arguments): returns per-tool call count, er
 
 Verified: `cargo build`/`test --workspace` clean (32/32 in `tools.rs` including 2 new tests for the tool itself), `clippy`/`fmt --check` clean. Filed issue-first this time after a prior session shipped a feature before filing its issue.
 
+**Phase 30 — A Second Dedicated Security/Performance Review Pass** 🚧 *(a full audit of the repo's current state, not a reported bug - each finding filed as an issue before being fixed, same discipline as Phase 25)*
+
+`/code-review ultra`'s diff-based review didn't fit "audit the current state" once everything was already merged to a clean `main` - nothing to diff. Ran the audit directly instead: `cargo audit` against the dependency graph, plus two parallel read-only passes over every crate not deeply covered by the Phase 25 review, one security-focused, one performance-focused.
+
+**Dependency:** [RUSTSEC-2026-0204](https://rustsec.org/advisories/RUSTSEC-2026-0204) in `crossbeam-epoch` 0.9.18 (transitive via `ignore`) - fixed with a semver-compatible `cargo update -p crossbeam-epoch` (0.9.18 → 0.9.20). [Issue #27](https://github.com/devNalyx/NexusContext/issues/27)/[PR #28](https://github.com/devNalyx/NexusContext/pull/28).
+
+**Critical, MCP-reachable:** `allowed_roots` was bypassable via `..` traversal - `is_path_allowed` compared a raw, not-yet-canonicalized `repo_path` (`Path::starts_with` never resolves `..`), while `get_file_context` (default-enabled) and `detect_changes` only canonicalized *afterward*. Fixed at the check itself, not just by reordering the affected call sites, so a future caller getting the ordering wrong again is still protected - see [[Security-Model]] in the wiki for the full writeup. [Issue #29](https://github.com/devNalyx/NexusContext/issues/29)/[PR #39](https://github.com/devNalyx/NexusContext/pull/39).
+
+**High:** `index_markdown_file`'s chunk text was never truncated before `pending_embeddings`, unlike the code path's fix from Phase 28 - the same OOM mechanism, on the one path that fix didn't reach. Fixed by routing through the same `truncate_chunk`. [Issue #30](https://github.com/devNalyx/NexusContext/issues/30)/PR #39 (same PR as the critical fix above).
+
+**Medium/Low, in progress:** `import_project` had no decompression-bomb protection (now capped and streamed, 2GiB ceiling) and `registry.json`/`usage_stats.json`/`graph.db` weren't permission-hardened like `config.toml` already was ([#31](https://github.com/devNalyx/NexusContext/issues/31)/[#32](https://github.com/devNalyx/NexusContext/issues/32)); `trace_calls` had an N+1 query pattern, `graph.rs` used no `prepare_cached` anywhere, and `search_by_name`'s substring `LIKE` can't use its own index by construction, documented rather than force-fixed since real substring matching is the desired behavior ([#33](https://github.com/devNalyx/NexusContext/issues/33)/[#34](https://github.com/devNalyx/NexusContext/issues/34)/[#37](https://github.com/devNalyx/NexusContext/issues/37)). Remaining, not yet started as of this entry: a redundant double `Registry::load` per MCP call ([#35](https://github.com/devNalyx/NexusContext/issues/35)), no panic isolation around MCP dispatch ([#36](https://github.com/devNalyx/NexusContext/issues/36)), an O(n²) markdown-heading-range scan ([#38](https://github.com/devNalyx/NexusContext/issues/38)).
+
+*(This entry covers the whole review pass across several PRs rather than one phase per PR, matching how Phase 25 grouped its six findings - update in place as the remaining issues land, don't add Phase 31/32/... for each one.)*
+
 ## 5. Why This Counts as "Full-Fledged"
 
 A daemon alone is a backend, not a tool. What makes this complete for a Linux desktop user:

@@ -89,12 +89,48 @@ pub struct CodeSearchHit {
     pub snippet: String,
 }
 
+/// Owner-only (0700) on the project's data directory, not just the `.db`
+/// file itself - `graph.db` in WAL mode also creates `-wal`/`-shm` sidecar
+/// files lazily on first write (after `open()` already returns), which a
+/// single `harden_graph_db_file` call on the main file wouldn't reach.
+/// Hardening the directory covers those too, plus anything else ever
+/// written under it, same reasoning as `config.toml`'s 0600 fix - see
+/// issue #32. Best-effort: a failure here must never fail opening the
+/// store, since the on-disk directory permission just isn't as load-
+/// bearing as actually having a working index.
+#[cfg(unix)]
+fn harden_project_data_dir(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+}
+
+#[cfg(not(unix))]
+fn harden_project_data_dir(_dir: &Path) {}
+
+/// Owner-only (0600) on `graph.db` itself, as defense-in-depth alongside
+/// `harden_project_data_dir` - covers the case where the directory already
+/// existed with a looser mode from before this fix (an existing install
+/// being upgraded). `graph.db` is the most sensitive file this daemon
+/// writes: it holds the full indexed source text (FTS5) and embedding
+/// vectors for every project ever indexed. Best-effort for the same reason
+/// as above.
+#[cfg(unix)]
+fn harden_graph_db_file(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn harden_graph_db_file(_path: &Path) {}
+
 impl GraphStore {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            harden_project_data_dir(parent);
         }
         let conn = Connection::open(path)?;
+        harden_graph_db_file(path);
         // WAL lets readers (nexusd mcp) and a writer (nexusd serve, or vice
         // versa) work concurrently instead of the whole-file locking the
         // default rollback journal uses - relevant now that the daemon and
@@ -745,5 +781,58 @@ mod embeddings_snapshot_tests {
 
         let (nodes, _) = store.stats().unwrap();
         assert_eq!(nodes, 1);
+    }
+}
+
+/// Regression tests for issue #32: `GraphStore::open` used to create
+/// `graph.db` (and its containing directory) at the process umask's mode
+/// instead of owner-only.
+#[cfg(test)]
+#[cfg(unix)]
+mod permission_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn open_creates_the_db_file_and_project_dir_owner_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_graphstore_permissions_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db_path = dir.join("graph.db");
+
+        let _store = GraphStore::open(&db_path).unwrap();
+
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "project data dir must be owner-only");
+
+        let file_mode = std::fs::metadata(&db_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600, "graph.db must be owner-only");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_normalizes_a_pre_existing_looser_directory_mode() {
+        // Simulates an existing install upgrading into this fix - the
+        // directory already exists with a looser mode from before it, and
+        // open() must still tighten it, not just skip create_dir_all's
+        // no-op path and leave the old mode in place.
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_graphstore_permissions_upgrade_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let db_path = dir.join("graph.db");
+        let _store = GraphStore::open(&db_path).unwrap();
+
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -60,7 +60,11 @@ API's `stats.get` and the GUI's Usage tab.
 registry from the imported DB's real stats, skipping the tree-sitter walk
 entirely. Since there's no incremental diffing (see
 [[Known-Limitations]]), this only saves the *first* reindex on the
-teammate's end, not ongoing syncing.
+teammate's end, not ongoing syncing. The decompress is streamed and capped
+at 2GiB rather than done in one unbounded call — a crafted artifact from a
+compromised or malicious teammate can't turn `import` into a
+decompression-bomb disk-exhaustion vector; a refused import removes its
+own partial output rather than leaving it on disk. See [[Security-Model]].
 
 ## Related
 

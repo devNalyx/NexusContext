@@ -75,7 +75,14 @@ impl Registry {
             std::fs::create_dir_all(parent)?;
         }
         let tmp_path = path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, serde_json::to_string_pretty(self)?)?;
+        // Owner-only (0600), same reasoning as config.toml's own fix - this
+        // used to be a plain `fs::write`, inheriting the process umask
+        // (commonly 0644). Writing the *temp* file owner-only and then
+        // renaming keeps both properties at once: the rename is still
+        // atomic (same filesystem), and the permission is set before any
+        // reader could see the file at all, not chmod'd afterward. See
+        // issue #32.
+        crate::paths::write_owner_only(&tmp_path, serde_json::to_string_pretty(self)?.as_bytes())?;
         std::fs::rename(&tmp_path, path)?;
         Ok(())
     }
@@ -162,5 +169,27 @@ mod tests {
         let now = 1_000_000;
         let warm_window_secs = 6 * 3600;
         assert!(!entry(now - warm_window_secs - 1).is_warm(now, warm_window_secs));
+    }
+
+    /// Regression test for issue #32: `save` used to `fs::write` the temp
+    /// file directly, inheriting the process umask.
+    #[test]
+    #[cfg(unix)]
+    fn save_writes_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "nexuscontext-registry-test-{:?}-{}",
+            std::thread::current().id(),
+            std::process::id()
+        ));
+
+        let registry = Registry::default();
+        registry.save(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        std::fs::remove_file(&path).ok();
     }
 }
