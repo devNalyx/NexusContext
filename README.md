@@ -436,6 +436,8 @@ Also fixed a real related bug found while in there: `nexus install`'s Claude Des
 
 Verified: `cargo build --workspace --release`/`test --workspace` clean workspace-wide (`nexus-cli` went from 0 tests to 1, covering the new cross-platform config-path join), `clippy --all-targets -D warnings`/`fmt --check` clean on the Linux build this was developed against; `release.yml` YAML-validated and its runner labels checked against GitHub's own arm64-runner announcement before use. **Not yet verified**: `release.yml` is tag-triggered only (`on: push: tags: ["v*"]`), so merging this PR doesn't itself exercise the new Windows/Linux-arm64/macOS-x86_64 build legs - `ci.yml`'s regular fmt/clippy/test-linux/test-macos jobs (which do run on this PR) only cover the source change, not the release matrix. Real confirmation needs the next version tag actually pushed.
 
+**Follow-up, same phase**: the gap above pointed at something worth closing on its own, not just waiting out - `ci.yml` (every push/PR to `main`) had no Windows job at all, only `release.yml` (tag-only) did. A PR that broke the new `cfg(unix)` split wouldn't have been caught until the next version tag, potentially weeks later. Added `test-windows` to `ci.yml` (`windows-latest`, x86_64 only - matching `test-macos`'s single-arch approach; arm64 stays release-matrix-only rather than doubling every PR's Windows CI time for a target that shares the same source), so Windows compilation is checked on every PR going forward, not just at release time.
+
 ## 5. Why This Counts as "Full-Fledged"
 
 A daemon alone is a backend, not a tool. What makes this complete for a Linux desktop user:
