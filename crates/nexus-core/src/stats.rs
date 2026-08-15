@@ -57,13 +57,17 @@ impl UsageStats {
 
     /// Temp file + rename, same reasoning as Registry::save: a stats write
     /// racing another writer must never leave the file truncated or
-    /// unparseable.
+    /// unparseable. Owner-only (0600) for the same reason as config.toml -
+    /// see issue #32.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            // Same directory-name-leak fix as Registry::save - see its
+            // comment.
+            crate::paths::harden_dir_owner_only(parent);
         }
         let tmp_path = path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, serde_json::to_string_pretty(self)?)?;
+        crate::paths::write_owner_only(&tmp_path, serde_json::to_string_pretty(self)?.as_bytes())?;
         std::fs::rename(&tmp_path, path)?;
         Ok(())
     }
@@ -133,4 +137,36 @@ pub fn record_control_call(
         output_bytes,
         is_error,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for issue #32: `save` used to `fs::write` the temp
+    /// file directly, inheriting the process umask - same fix and same
+    /// test shape as `Registry::save`.
+    #[test]
+    #[cfg(unix)]
+    fn save_writes_owner_only_file_and_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "nexuscontext-usage-stats-test-{:?}-{}",
+            std::thread::current().id(),
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("usage_stats.json");
+
+        let stats = UsageStats::default();
+        stats.save(&path).unwrap();
+
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600);
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

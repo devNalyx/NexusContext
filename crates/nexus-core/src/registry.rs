@@ -73,9 +73,21 @@ impl Registry {
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            // File-level 0600 protects *content*; the directory itself was
+            // still left at the umask (commonly 0755), leaking *names* -
+            // which projects exist - to any other local user even though
+            // they can't read the files. A PR reviewer on #32 caught this.
+            crate::paths::harden_dir_owner_only(parent);
         }
         let tmp_path = path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, serde_json::to_string_pretty(self)?)?;
+        // Owner-only (0600), same reasoning as config.toml's own fix - this
+        // used to be a plain `fs::write`, inheriting the process umask
+        // (commonly 0644). Writing the *temp* file owner-only and then
+        // renaming keeps both properties at once: the rename is still
+        // atomic (same filesystem), and the permission is set before any
+        // reader could see the file at all, not chmod'd afterward. See
+        // issue #32.
+        crate::paths::write_owner_only(&tmp_path, serde_json::to_string_pretty(self)?.as_bytes())?;
         std::fs::rename(&tmp_path, path)?;
         Ok(())
     }
@@ -162,5 +174,34 @@ mod tests {
         let now = 1_000_000;
         let warm_window_secs = 6 * 3600;
         assert!(!entry(now - warm_window_secs - 1).is_warm(now, warm_window_secs));
+    }
+
+    /// Regression test for issue #32: `save` used to `fs::write` the temp
+    /// file directly, inheriting the process umask. Saves into a dedicated
+    /// scratch subdirectory, not directly under the shared system temp
+    /// root - `save` now also hardens its parent directory (see
+    /// `harden_dir_owner_only`), and that must never be the actual `/tmp`.
+    #[test]
+    #[cfg(unix)]
+    fn save_writes_owner_only_file_and_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "nexuscontext-registry-test-{:?}-{}",
+            std::thread::current().id(),
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("projects.json");
+
+        let registry = Registry::default();
+        registry.save(&path).unwrap();
+
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600);
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
