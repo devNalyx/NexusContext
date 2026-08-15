@@ -684,8 +684,12 @@ mod index_markdown_file_tests {
             chunk_text.len(),
             content.len()
         );
+        // `truncate_chunk` caps by *chars* (`chars().take(MAX_CHUNK_CHARS)`),
+        // not bytes - comparing `.len()` (bytes) against a char limit would
+        // silently pass for this ASCII-only input but be off by a factor
+        // for multibyte text, per a PR reviewer's catch.
         assert!(
-            chunk_text.len() <= crate::embeddings::MAX_CHUNK_CHARS,
+            chunk_text.chars().count() <= crate::embeddings::MAX_CHUNK_CHARS,
             "chunk must be capped at the same limit the code path already enforces"
         );
 
