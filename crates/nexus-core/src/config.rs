@@ -17,6 +17,8 @@ pub struct Config {
     pub watcher: WatcherConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
+    #[serde(default)]
+    pub lsp: LspConfig,
 }
 
 /// Governs which registered projects the background file watcher actively
@@ -62,6 +64,62 @@ pub enum ToolsPreset {
     #[default]
     Standard,
     Full,
+}
+
+/// Optional LSP-resolved-symbol enrichment (issue #10) - strictly
+/// enrichment, never load-bearing: default-off, and a missing/failing
+/// server always degrades to the static tree-sitter-only index rather than
+/// failing the reindex. Rust-only pilot (`rust-analyzer`); per the issue's
+/// own scope-narrowing (one language proves the shape - provenance and the
+/// warm/cold split are the hard, language-agnostic decisions, not the
+/// server integration itself), a multi-language matrix is explicitly not
+/// this pilot's job. Never runs on a normal reindex - only on an explicit
+/// `deep` request (`index_repository`'s `deep` argument / `nexus reindex
+/// --deep`), so enabling this never adds latency to the watcher's ordinary
+/// auto-reindex-on-file-change loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Override if `rust-analyzer` isn't on PATH under its default name.
+    #[serde(default = "default_lsp_server_command")]
+    pub server_command: String,
+    /// Caps how many LSP server child processes `nexusd serve` keeps
+    /// resident at once (reused across repeated `--deep` reindexes of the
+    /// same project rather than respawned each time) - the daemon evicts
+    /// the least-recently-used server once a new project would exceed this.
+    /// A per-project rust-analyzer instance is the "memory-heavy, needs a
+    /// cap" cost the issue's own risk section flagged; this is that cap.
+    #[serde(default = "default_lsp_max_concurrent_servers")]
+    pub max_concurrent_servers: usize,
+    /// Per-request timeout talking to the server - a hung/slow server
+    /// degrades enrichment to "whatever resolved before the timeout,"
+    /// never blocks the reindex indefinitely.
+    #[serde(default = "default_lsp_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+}
+
+fn default_lsp_server_command() -> String {
+    "rust-analyzer".to_string()
+}
+
+fn default_lsp_max_concurrent_servers() -> usize {
+    2
+}
+
+fn default_lsp_request_timeout_secs() -> u64 {
+    10
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server_command: default_lsp_server_command(),
+            max_concurrent_servers: default_lsp_max_concurrent_servers(),
+            request_timeout_secs: default_lsp_request_timeout_secs(),
+        }
+    }
 }
 
 /// Embeddings are an optional layer: the knowledge graph covers structural
@@ -258,6 +316,7 @@ mod tests {
             allowed_roots: vec![],
             watcher: WatcherConfig::default(),
             tools: ToolsConfig::default(),
+            lsp: LspConfig::default(),
         }
     }
 

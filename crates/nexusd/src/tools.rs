@@ -139,10 +139,13 @@ pub fn tool_definitions() -> Value {
     json!([
         {
             "name": "index_repository",
-            "description": "Build or rebuild the knowledge graph for a directory. Run this before other tools on a project you haven't indexed yet.",
+            "description": "Build or rebuild the knowledge graph for a directory. Run this before other tools on a project you haven't indexed yet. `deep: true` also runs LSP-resolved-symbol enrichment if configured - see README.md.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "repo_path": { "type": "string" } },
+                "properties": {
+                    "repo_path": { "type": "string" },
+                    "deep": { "type": "boolean", "default": false }
+                },
                 "required": ["repo_path"]
             }
         },
@@ -564,13 +567,23 @@ fn records_to_json(records: &[NodeRecord]) -> Value {
 
 fn index_repository(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
-    let stats = index_project(&repo_path)?;
+    // #10: opt-in only, and only via this explicit argument - the
+    // watcher's ordinary auto-reindex-on-file-change loop always calls the
+    // plain (non-deep) path regardless of this config, so enabling
+    // `[lsp]` never adds latency there.
+    let deep = args.get("deep").and_then(|v| v.as_bool()).unwrap_or(false);
+    let stats = if deep {
+        index::index_project_deep(&repo_path)?
+    } else {
+        index_project(&repo_path)?
+    };
     Ok(serde_json::to_string_pretty(&json!({
         "status": "indexed",
         "files_indexed": stats.files_indexed,
         "nodes": stats.nodes,
         "edges": stats.edges,
-        "embeddings_status": stats.embeddings_status
+        "embeddings_status": stats.embeddings_status,
+        "lsp_enrichment": stats.lsp_enrichment,
     }))?)
 }
 

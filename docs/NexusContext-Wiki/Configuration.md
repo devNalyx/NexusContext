@@ -23,6 +23,12 @@ warm_window_secs = 21600   # 6h default - see Watcher-and-Freshness
 [tools]
 preset = "standard"   # "minimal" (5) | "standard" (default, 10) | "full" (14)
 # enabled = ["search_code", "get_architecture"]   # explicit list, overrides preset
+
+[lsp]
+enabled = false                  # opt-in - see Security-Model for what turning this on means
+server_command = "rust-analyzer" # Rust only for now - see below
+max_concurrent_servers = 2
+request_timeout_secs = 10
 ```
 
 ## Field-by-field
@@ -38,6 +44,14 @@ preset = "standard"   # "minimal" (5) | "standard" (default, 10) | "full" (14)
   See [[Watcher-and-Freshness]].
 - **`[tools]`** — which of the 14 MCP tools get advertised to a calling
   agent. See [[MCP-Tools]] for the preset breakdown.
+- **`[lsp]`** — off by default. When on, `index_repository`'s `deep`
+  argument (or `nexus reindex --deep`) spawns `server_command` to resolve
+  cross-file references `rust-analyzer`-side, adding `CALLS_RESOLVED`
+  edges alongside the static graph - never on the ordinary auto-reindex
+  path, never load-bearing for any tool. Rust-only pilot; see
+  [[Storage-and-Data-Model]] for the edge kind and [[Security-Model]] for
+  why this is the one config section that runs an external binary rather
+  than just connecting to one.
 
 ## Env var overrides
 

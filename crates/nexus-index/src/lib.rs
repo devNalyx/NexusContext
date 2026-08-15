@@ -1,14 +1,17 @@
 pub mod cypher;
 pub mod docs;
 pub mod embeddings;
+pub mod enrich;
 pub mod graph;
 pub mod ingest;
 pub mod language;
+pub mod lsp;
 pub mod obsidian;
 pub mod project;
 pub mod queries;
 
 pub use cypher::run_query as run_cypher_query;
+pub use enrich::{enrich_with_lsp, EnrichmentReport};
 pub use graph::{
     CodeSearchHit, Direction, EdgeKind, EmbeddingsSnapshot, GraphStore, NodeKind, NodeRecord,
 };
@@ -17,7 +20,7 @@ pub use language::Language;
 pub use obsidian::export_obsidian;
 pub use project::{
     artifact_path, delete_project, export_project, graph_db_path, import_project, index_project,
-    project_disk_usage, record_auto_reindex, touch_and_catchup, touch_queried,
+    index_project_deep, project_disk_usage, record_auto_reindex, touch_and_catchup, touch_queried,
 };
 pub use queries::{
     call_graph_dot, detect_changes, detect_dead_code, get_architecture, get_file_context,

@@ -65,6 +65,21 @@ fixed by a dedicated review pass rather than designed in from the start.
   comparing, closing a `..`-traversal bypass a raw prefix check would miss
   — see below.
 - **Semantic search** — see [[Embeddings-and-Semantic-Search]].
+- **LSP-resolved-symbol enrichment (`[lsp]`, issue #10)** — default
+  `enabled = false`. When on, a `deep` reindex (`index_repository`'s `deep`
+  argument / `nexus reindex --deep` — never the ordinary auto-reindex path)
+  spawns `lsp.server_command` (default `rust-analyzer`) as a child process
+  and talks LSP over its stdio to resolve cross-file references. Worth
+  naming plainly: this is the one place `config.toml` controls what
+  external binary the daemon executes, not just what it connects to — same
+  trust model as `embeddings.endpoint` (you're trusting your own config),
+  but the failure mode is "runs a program" rather than "sends a network
+  request." Strictly enrichment: a missing/crashing/timed-out server
+  degrades to the static tree-sitter-only index, never fails the reindex
+  or blocks any other tool — see `crates/nexus-index/src/enrich.rs`'s own
+  degrade-cleanly tests. Capped concurrency (`max_concurrent_servers`,
+  default 2) bounds how many server processes can be alive at once within
+  one `nexusd`/`nexus` process.
 
 ## What a dedicated review pass found and fixed (v0.1.13/v0.1.14)
 

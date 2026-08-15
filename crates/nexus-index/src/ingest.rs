@@ -18,6 +18,14 @@ pub struct IndexStats {
     /// present so a caller never has to guess why semantic search may or
     /// may not work after this reindex.
     pub embeddings_status: String,
+    /// `None` for an ordinary reindex - LSP enrichment (issue #10) only
+    /// ever runs on an explicit `deep` request, never the default path, so
+    /// most reindexes never touch this. `Some` (even a `ran: false` one)
+    /// once a deep reindex was actually requested, logged here rather than
+    /// only to stderr so #40's own follow-up ("log how much indexing time/
+    /// edges LSP enrichment adds") gets real data through the same
+    /// response path every other stat already flows through.
+    pub lsp_enrichment: Option<crate::enrich::EnrichmentReport>,
 }
 
 /// A call site whose callee wasn't found in its own file, carried past the
@@ -286,6 +294,7 @@ fn index_directory_inner(
         nodes,
         edges,
         embeddings_status,
+        lsp_enrichment: None,
     })
 }
 
