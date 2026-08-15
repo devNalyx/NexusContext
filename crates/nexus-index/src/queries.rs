@@ -673,3 +673,62 @@ mod get_file_context_tests {
         let _ = fs::remove_dir_all(&dir);
     }
 }
+
+/// Regression tests for #40 follow-up 2 ("make query_planner skip itself"):
+/// the study that opened #40 worried a `query_planner` call might just
+/// return a routing decision, requiring a second call (e.g.
+/// `get_file_context`) to actually get the answer - a real two-round-trip
+/// cost for a tool meant to save one. `plan_query`'s `file` path already
+/// doesn't do that (it calls `get_file_context` itself and returns the
+/// content in-band), so this locks that in as tested behavior rather than
+/// leaving it as an unverified claim in an issue writeup.
+#[cfg(test)]
+mod plan_query_tests {
+    use super::plan_query;
+    use std::fs;
+
+    fn temp_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_plan_query_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_named_file_returns_its_content_in_band_not_just_a_routing_decision() {
+        let dir = temp_project("named_file");
+        fs::write(dir.join("f.txt"), "fn main() {}").unwrap();
+
+        // No second call (e.g. get_file_context) needed to get the actual
+        // answer - the plan already carried it.
+        let plan = plan_query(&dir, "anything", Some("f.txt"), None, None).unwrap();
+        assert_eq!(plan.strategy, "file_read");
+        assert_eq!(plan.file_content.as_deref(), Some("fn main() {}"));
+        assert!(
+            plan.records.is_empty(),
+            "file_read strategy shouldn't also carry graph records - the file_content is the whole answer"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_in_band_answer_matches_a_direct_get_file_context_call_byte_for_byte() {
+        // The "strictly cheaper than two calls" bar from the #40 review:
+        // this asserts the in-band answer *is* the same payload
+        // get_file_context would return on its own, not an approximation of
+        // it - so a caller genuinely never needs the second call.
+        let dir = temp_project("byte_parity");
+        let content = "line one\nline two\nline three\n";
+        fs::write(dir.join("f.txt"), content).unwrap();
+
+        let plan = plan_query(&dir, "q", Some("f.txt"), None, None).unwrap();
+        let direct = super::get_file_context(&dir, "f.txt", None, None, false).unwrap();
+        assert_eq!(plan.file_content.as_deref(), Some(direct.as_str()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
