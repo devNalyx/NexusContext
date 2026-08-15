@@ -1,7 +1,19 @@
 mod cache;
+// Unix-domain-socket-only (control.rs uses std::os::unix::net directly, with
+// no cross-platform abstraction) - see issue #16. Gating the whole module
+// out on non-Unix targets, rather than trying to make control.rs itself
+// conditionally compile, keeps the "no serve mode on Windows yet" boundary
+// in one place (this file) instead of threading cfg(unix) through every
+// function in a module that's entirely about the socket. `watcher` is
+// gated alongside it - it's serve-mode's background auto-reindex-on-change
+// watcher specifically (its only two callers are main.rs's Serve branch
+// and control.rs), not something `mcp` mode ever touches, so on a non-unix
+// build it would otherwise be unreachable dead code.
+#[cfg(unix)]
 mod control;
 mod mcp;
 mod tools;
+#[cfg(unix)]
 mod watcher;
 
 use anyhow::Result;
@@ -33,6 +45,7 @@ fn main() -> Result<()> {
             tracing::info!("nexusd starting as MCP stdio server");
             mcp::serve_stdio()
         }
+        #[cfg(unix)]
         Command::Serve => {
             let paths = nexus_core::Paths::resolve();
             std::fs::create_dir_all(&paths.data_dir)?;
@@ -43,6 +56,22 @@ fn main() -> Result<()> {
             tracing::info!("nexusd starting as background daemon (control API + file watcher)");
             watcher::spawn();
             control::serve(paths.control_socket())
+        }
+        // `serve` (the control API, GUI target, background auto-sync
+        // watcher) needs a real cross-platform replacement for the
+        // Unix-domain-socket control API before it can run here - see
+        // issue #16. `mcp` (this binary's actual product surface - every
+        // MCP tool works fully) has no such dependency and isn't affected.
+        // A clear, immediate error beats a confusing failure partway
+        // through startup.
+        #[cfg(not(unix))]
+        Command::Serve => {
+            anyhow::bail!(
+                "`nexusd serve` (the background daemon / control API / GUI target) isn't \
+                 supported on this platform yet - see \
+                 https://github.com/devNalyx/NexusContext/issues/16. Use `nexusd mcp` instead; \
+                 every MCP tool works fully without it."
+            )
         }
     }
 }

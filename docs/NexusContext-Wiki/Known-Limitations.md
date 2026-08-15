@@ -63,11 +63,17 @@ to fix — see [[GUI-and-Extension]].
 
 ## Platform scope
 
-Linux x86_64 has full parity (daemon/CLI/GUI). macOS Apple Silicon gets
-CLI + daemon only (`nexus-gui` is Linux/GNOME-first, not portable).
-Windows isn't published — the control API's `std::os::unix::net` usage has
-zero platform gating yet, a real prerequisite fix tracked as a distinct
-follow-up rather than attempted.
+Released for x86_64 and arm64 on all three platforms as of Phase 33.
+Linux has full parity (daemon `mcp` + `serve`, CLI, GUI). macOS gets CLI +
+full daemon (`serve`/the control API works too — Unix domain sockets are
+native there) but no GUI (`nexus-gui` is Linux/GNOME-first, not portable).
+Windows gets `nexus` CLI + `nexusd mcp` only — `serve` (the control API,
+background watcher, GUI target) isn't supported there yet, since it's
+built entirely on Unix domain sockets with no cross-platform abstraction
+(`crates/nexusd/src/control.rs`) — see [issue #16](https://github.com/devNalyx/NexusContext/issues/16)
+for the real blocker and what a future port would need. Every MCP tool
+works fully on Windows regardless; the only thing missing is the
+persistent background daemon that keeps a project warm automatically.
 
 ## Related
 
