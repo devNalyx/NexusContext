@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use nexus_core::{project_hash, truncate_to_byte_boundary, Config, Paths, Registry};
+use nexus_core::{project_hash, truncate_to_byte_boundary, Config, Paths, Registry, WatcherConfig};
 use nexus_index::{self as index, index_project, Direction, NodeRecord};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -50,6 +50,33 @@ struct SessionToolStats {
     output_bytes: u64,
 }
 
+/// Static allow-list backing `get_session_usage`'s "reads avoided"
+/// counterfactual (issues #11, #40 follow-up 1) - a tool counts here only
+/// if a successful call plausibly substituted for a manual file
+/// read/grep the calling agent would otherwise have done. Deliberately
+/// conservative and name-based rather than inspecting each call's
+/// args/result for a finer-grained split (e.g. `get_file_context` ranged
+/// vs full) - a full-file `get_file_context` still substitutes a manual
+/// read, so it counts too; the false-positive-prone or scan-shaped tools
+/// below are excluded outright instead of trying to weight them.
+///
+/// Deliberately excluded, with the caller left to judge each themselves:
+/// `search_code`/`search_codebase`/`query_memory` (a scan's hits still
+/// typically need a real read afterward - the hit isn't the substitute),
+/// `detect_dead_code` (own tool description documents a high false-positive
+/// rate - not a confident "avoided" signal), `query_graph` (an ad-hoc power
+/// query, not a stand-in for a plain read), `index_repository` (setup cost,
+/// not a saving), `delete_project`/`get_session_usage` (admin/meta, not
+/// reads at all).
+const READS_AVOIDED_TOOLS: &[&str] = &[
+    "get_file_context",
+    "trace_call_path",
+    "search_graph",
+    "get_architecture",
+    "detect_changes",
+    "query_planner",
+];
+
 static SESSION_USAGE: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, SessionToolStats>>,
 > = std::sync::OnceLock::new();
@@ -79,6 +106,24 @@ fn record_session_call(name: &str, output_bytes: u64, is_error: bool) {
         entry.error_count += 1;
     }
     entry.output_bytes += output_bytes;
+}
+
+/// Pure summary over an already-collected stats map, factored out of
+/// `get_session_usage` so it's testable against a small local map instead of
+/// the process-wide `SESSION_USAGE` singleton (which real tool dispatch also
+/// writes to, making exact-count assertions against it flaky across the rest
+/// of this module's tests). See `READS_AVOIDED_TOOLS` for the allow-list and
+/// `get_session_usage` for why only successful calls count.
+fn reads_avoided_summary(map: &std::collections::HashMap<String, SessionToolStats>) -> (u64, u64) {
+    let qualifying = || {
+        map.iter()
+            .filter(|(name, _)| READS_AVOIDED_TOOLS.contains(&name.as_str()))
+    };
+    let count = qualifying()
+        .map(|(_, s)| s.call_count - s.error_count)
+        .sum();
+    let bytes = qualifying().map(|(_, s)| s.output_bytes).sum();
+    (count, bytes)
 }
 
 /// A plain character-count heuristic (roughly 4 bytes/token for English-ish
@@ -625,12 +670,35 @@ fn get_session_usage(_args: Value) -> Result<String> {
     let total_calls: u64 = map.values().map(|s| s.call_count).sum();
     let total_output_bytes: u64 = map.values().map(|s| s.output_bytes).sum();
 
+    let (reads_avoided, bytes_avoided) = reads_avoided_summary(&map);
+
+    // #40 follow-up 1: the fixed per-session cost every tool schema (name +
+    // description + params) adds to the context regardless of whether any
+    // tool is ever called - previously acknowledged in README's Phase 21/22
+    // notes but never actually measured. `enabled_tool_definitions` isn't
+    // reachable from here without the resolved config/preset this call
+    // doesn't have, so this reports the unfiltered `tool_definitions()` size
+    // (the ceiling every preset is a subset of), noted as such below.
+    let schema_tax_bytes = tool_definitions().to_string().len() as u64;
+
     Ok(serde_json::to_string_pretty(&json!({
         "session_started_unix": session_started_unix(),
         "total_calls": total_calls,
         "total_output_bytes": total_output_bytes,
         "total_estimated_tokens": estimate_tokens(total_output_bytes),
         "by_tool": by_tool,
+        "schema_tax": {
+            "bytes": schema_tax_bytes,
+            "estimated_tokens": estimate_tokens(schema_tax_bytes),
+            "note": "Fixed cost of every tool's name+description+params schema, paid once per session regardless of tool usage - this is the full unfiltered tool_definitions() size (config.tools.preset/enabled trims what's actually sent, so a Minimal/Standard session's real tax is <= this number, not exactly it).",
+        },
+        "reads_avoided": {
+            "count": reads_avoided,
+            "bytes": bytes_avoided,
+            "estimated_tokens": estimate_tokens(bytes_avoided),
+            "counted_tools": READS_AVOIDED_TOOLS,
+            "note": "Successful calls to tools that plausibly substituted a manual file read/grep, per an explicit, conservative allow-list (see READS_AVOIDED_TOOLS in source) - excludes raw scans (search_code/search_codebase/query_memory, whose hits still typically need a real read afterward), detect_dead_code (documented high false-positive rate), and admin/meta tools. 'bytes'/'count' are measured facts about what NexusContext returned, not a token or dollar estimate of what reading the files by hand would have cost - treat this as a floor on savings, not a precise counterfactual.",
+        },
         "note": "Scoped to this session only (this MCP connection, since it started) - not lifetime totals. Counts only NexusContext's own MCP response bytes, not your system prompt, conversation history, or any other tool's output, and NexusContext doesn't know your model's actual context limit or real tokenizer - estimated_tokens is a bytes/4 approximation, not an exact count.",
     }))?)
 }
@@ -643,6 +711,50 @@ fn last_indexed_unix(repo_path: &std::path::Path) -> u64 {
         .into_iter()
         .find(|p| p.hash == hash)
         .map(|p| p.last_indexed_unix)
+        .unwrap_or(0)
+}
+
+/// #40 follow-up 3: a cheap, in-band staleness signal so an agent can
+/// decide reindex-vs-trust without a separate call - reuses the same
+/// warm/cold gate the background watcher already computes
+/// (`ProjectEntry::is_warm`), rather than inventing a second notion of
+/// freshness. Does the real `Paths::resolve()`/`Registry::load` I/O; the
+/// actual shaping logic is factored into `index_freshness_json_from` below
+/// so it's testable without a real registry file.
+fn index_freshness_json(repo_path: &std::path::Path, now_unix: u64) -> Value {
+    let paths = Paths::resolve();
+    let hash = project_hash(repo_path);
+    let entry = Registry::load(&paths.registry_file())
+        .projects
+        .into_iter()
+        .find(|p| p.hash == hash);
+    let warm_window_secs = Config::load(&paths.config_file())
+        .map(|c| c.watcher.warm_window_secs)
+        .unwrap_or_else(|_| WatcherConfig::default().warm_window_secs);
+    index_freshness_json_from(entry.as_ref(), now_unix, warm_window_secs)
+}
+
+fn index_freshness_json_from(
+    entry: Option<&nexus_core::ProjectEntry>,
+    now_unix: u64,
+    warm_window_secs: u64,
+) -> Value {
+    let Some(entry) = entry else {
+        return json!({ "indexed": false });
+    };
+    json!({
+        "indexed": true,
+        "last_indexed_unix": entry.last_indexed_unix,
+        "seconds_since_indexed": now_unix.saturating_sub(entry.last_indexed_unix),
+        "warm": entry.is_warm(now_unix, warm_window_secs),
+        "note": "warm means the background watcher is actively keeping this project's graph in sync with the working tree; cold means it isn't (yet) and the graph may be behind - a tool result under a cold project is worth verifying, not treating as ground truth",
+    })
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
         .unwrap_or(0)
 }
 
@@ -663,6 +775,19 @@ fn get_architecture(args: Value) -> Result<String> {
                 .collect::<Vec<_>>()
         }))
     })?;
+
+    // Freshness is merged in *after* the cache lookup, not inside the cached
+    // closure above - `warm`/`seconds_since_indexed` both move with wall-clock
+    // time independent of a reindex, and the cache is keyed (and only
+    // invalidated) on `last_indexed_unix`, so baking either into the cached
+    // value would freeze them at whatever they were on the first cache miss.
+    let mut value = value;
+    if let Value::Object(ref mut map) = value {
+        map.insert(
+            "index_freshness".to_string(),
+            index_freshness_json(&repo_path, now_unix()),
+        );
+    }
 
     Ok(serde_json::to_string_pretty(&value)?)
 }
@@ -695,7 +820,8 @@ fn query_planner(args: Value) -> Result<String> {
         "strategy": plan.strategy,
         "note": plan.note,
         "embeddings_policy": plan.embeddings_policy.map(|p| format!("{p:?}")),
-        "result": result
+        "result": result,
+        "index_freshness": index_freshness_json(&repo_path, now_unix()),
     }))?)
 }
 
@@ -800,6 +926,76 @@ mod tests {
             .expect("just-recorded tool missing from get_session_usage output");
         assert_eq!(entry["output_bytes"], 40);
         assert_eq!(entry["estimated_tokens"], 10);
+    }
+
+    #[test]
+    fn reads_avoided_summary_counts_only_qualifying_tools_and_only_successful_calls() {
+        let mut map = std::collections::HashMap::new();
+        // Qualifies: 3 calls, 1 error - only the 2 successful ones count.
+        map.insert(
+            "trace_call_path".to_string(),
+            SessionToolStats {
+                call_count: 3,
+                error_count: 1,
+                output_bytes: 900,
+            },
+        );
+        // Doesn't qualify (a raw scan, per READS_AVOIDED_TOOLS's doc
+        // comment) - must not contribute even though it has real calls.
+        map.insert(
+            "search_code".to_string(),
+            SessionToolStats {
+                call_count: 5,
+                error_count: 0,
+                output_bytes: 5000,
+            },
+        );
+
+        let (count, bytes) = reads_avoided_summary(&map);
+        assert_eq!(count, 2);
+        assert_eq!(bytes, 900);
+    }
+
+    #[test]
+    fn get_session_usage_reports_a_nonzero_schema_tax() {
+        // Not asserting an exact byte count - that would just re-encode
+        // tool_definitions()'s current size and break on every schema edit.
+        // The property that matters here (#40 follow-up 1) is that the tax
+        // is actually measured and reported, not left implied.
+        let output = get_session_usage(Value::Null).unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert!(parsed["schema_tax"]["bytes"].as_u64().unwrap() > 0);
+        assert!(parsed["reads_avoided"]["counted_tools"].is_array());
+    }
+
+    #[test]
+    fn index_freshness_reports_unindexed_when_no_registry_entry() {
+        let value = index_freshness_json_from(None, 1000, 3600);
+        assert_eq!(value["indexed"], false);
+    }
+
+    #[test]
+    fn index_freshness_reports_warm_within_the_window_and_cold_beyond_it() {
+        let entry = nexus_core::ProjectEntry {
+            root_path: "/tmp/whatever".to_string(),
+            hash: "deadbeef".to_string(),
+            last_indexed_unix: 1000,
+            nodes: 0,
+            edges: 0,
+            last_queried_unix: 1000,
+            auto_reindex_count: 0,
+            auto_reindex_fail_count: 0,
+            auto_reindex_total_ms: 0,
+            last_auto_reindex_ms: 0,
+            last_auto_reindex_unix: 0,
+        };
+
+        let warm = index_freshness_json_from(Some(&entry), 1000 + 3600, 3600);
+        assert_eq!(warm["warm"], true);
+        assert_eq!(warm["seconds_since_indexed"], 3600);
+
+        let cold = index_freshness_json_from(Some(&entry), 1000 + 3601, 3600);
+        assert_eq!(cold["warm"], false);
     }
 
     #[test]
