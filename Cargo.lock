@@ -1051,6 +1051,7 @@ version = "0.1.16"
 dependencies = [
  "anyhow",
  "clap",
+ "directories",
  "nexus-core",
  "nexus-index",
  "serde_json",

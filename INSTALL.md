@@ -2,9 +2,13 @@
 
 This covers what's actually built and working today (see the full phase-by-phase roadmap in `README.md`). It assumes Ubuntu/GNOME.
 
-## 0. Download a release (Linux/macOS)
+## 0. Download a release (Linux/macOS/Windows)
 
-Tagged releases publish real binaries via GitHub Actions - no toolchain needed. Grab the latest from the [Releases page](https://github.com/devNalyx/NexusContext/releases): a `.deb` or `.rpm` for Linux (full daemon/CLI/GUI), a plain `nexuscontext-linux-x86_64.tar.gz` for other distros, or `nexuscontext-macos-aarch64.tar.gz` for macOS (Apple Silicon; Intel Macs run this fine under Rosetta 2, and this is CLI + daemon only - no native GUI build for macOS). Unsigned macOS binaries need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since they aren't notarized. Windows isn't published yet - see `README.md`'s Phase 13 for why.
+Tagged releases publish real binaries via GitHub Actions - no toolchain needed. Grab the latest from the [Releases page](https://github.com/devNalyx/NexusContext/releases), for either architecture on each platform (x86_64 and arm64):
+
+- **Linux**: a `.deb` or `.rpm`, or a plain `nexuscontext-linux-<arch>.tar.gz` for other distros - full daemon/CLI/GUI either way.
+- **macOS**: `nexuscontext-macos-<aarch64|x86_64>.tar.gz` - CLI + full daemon (`nexusd mcp` and `nexusd serve` both work), no native GUI build for macOS. Unsigned binaries need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since they aren't notarized.
+- **Windows**: `nexuscontext-windows-<x86_64|arm64>.zip` - `nexus` CLI + `nexusd mcp` only. `nexusd serve` (the control API, background watcher, GUI target) isn't supported yet - see [issue #16](https://github.com/devNalyx/NexusContext/issues/16). Every MCP tool works fully without it; reindex manually (`nexus reindex`) rather than relying on the background watcher to keep a project warm.
 
 Otherwise, build from source:
 
@@ -31,14 +35,14 @@ This installs `nexusd` and `nexus` to `/usr/bin/`, and the systemd user unit to 
 
 ## 3. Run the daemon
 
-**As a background service** (for the GUI/GNOME extension to talk to):
+**As a background service** (for the GUI/GNOME extension to talk to) - the packaged systemd unit is Linux-only. `nexusd serve` itself also runs on macOS (just start it directly, e.g. `nexusd serve &`, or wire up your own `launchd` agent - no packaged one is shipped yet) but isn't supported on Windows at all yet (see [issue #16](https://github.com/devNalyx/NexusContext/issues/16)):
 
 ```bash
 systemctl --user enable --now nexuscontext.service
 systemctl --user status nexuscontext.service
 ```
 
-**As an MCP server** (what your IDE/agent should launch, *not* what you run by hand): configure your MCP client to run `nexusd mcp` as a subprocess. For Claude Code, add to `.mcp.json`:
+**As an MCP server** (what your IDE/agent should launch, *not* what you run by hand) - works identically on every platform, Windows included: configure your MCP client to run `nexusd mcp` as a subprocess. For Claude Code, add to `.mcp.json`:
 
 ```json
 {

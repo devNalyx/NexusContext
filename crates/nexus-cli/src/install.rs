@@ -75,16 +75,19 @@ fn configure_claude_code() -> Result<()> {
     Ok(())
 }
 
-/// Linux-only path (`~/.config/Claude/claude_desktop_config.json`) -
-/// consistent with this project's overall Linux/GNOME scope.
+/// Cross-platform: `directories::BaseDirs::config_dir()` already resolves
+/// to exactly the base Claude Desktop itself uses on each OS - `~/.config`
+/// (respecting `$XDG_CONFIG_HOME`) on Linux, `~/Library/Application
+/// Support` on macOS, `%APPDATA%` on Windows - so this is the same
+/// `Claude/claude_desktop_config.json` join on all three, not three
+/// separately-maintained hand-rolled paths. Previously Linux-only (a
+/// hardcoded `$HOME/.config` join) - real bug on both other platforms,
+/// not just an unimplemented one, since it silently resolved to a path
+/// Claude Desktop never reads there.
 fn claude_desktop_config_path() -> Option<PathBuf> {
-    let config_home = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg)
-    } else {
-        PathBuf::from(std::env::var("HOME").ok()?).join(".config")
-    };
     Some(
-        config_home
+        directories::BaseDirs::new()?
+            .config_dir()
             .join("Claude")
             .join("claude_desktop_config.json"),
     )
@@ -132,4 +135,24 @@ fn print_generic_snippet() {
   }}
 }}"#
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `BaseDirs::config_dir()`'s own per-OS correctness is `directories`'
+    /// job, already documented upstream, not re-verified here (and not
+    /// mockable - it reads real env/OS state, not a parameter). What this
+    /// project's own code controls, and is worth locking in, is the join:
+    /// every platform ends up pointed at the same relative
+    /// `Claude/claude_desktop_config.json`, not three separately-typed
+    /// path literals that could drift apart again.
+    #[test]
+    fn resolves_to_the_same_claude_desktop_relative_path_on_this_platform() {
+        let path = claude_desktop_config_path().expect("a home directory exists in test envs");
+        // Path::ends_with compares components, not raw string separators,
+        // so this holds regardless of the platform's own separator.
+        assert!(path.ends_with(std::path::Path::new("Claude").join("claude_desktop_config.json")));
+    }
 }

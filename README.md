@@ -418,6 +418,24 @@ Verified: `cargo build`/`test --workspace` clean (127/127), `clippy`/`fmt --chec
 
 Verified: `cargo build`/`test --workspace` clean (all passing, 1 `#[ignore]`d), `clippy --all-targets -D warnings`/`fmt --check` clean. The real-server regression test passes against a real downloaded `rust-analyzer` binary (see above); the degrade-cleanly and disabled-config paths run in every normal `cargo test`.
 
+**Phase 33 — Windows Support and a Full Architecture Release Matrix** ✅ *([issue #16](https://github.com/devNalyx/NexusContext/issues/16), [PR #50](https://github.com/devNalyx/NexusContext/pull/50))*
+
+#16 had already investigated and scoped this precisely (from an earlier session, unbuilt until now): the actual Windows blocker isn't "needs a platform split," it's one unconditional import - `crates/nexusd/src/control.rs` uses `std::os::unix::net::{UnixListener, UnixStream}` with no `#[cfg(unix)]` gate, which fails the *whole* `nexusd` binary's compilation on Windows regardless of which subcommand would run. Everything else (every permission-hardening `PermissionsExt` call from the earlier audit rounds) was already properly `#[cfg(unix)]`-gated.
+
+**Fix, exactly as scoped**: `mod control;` in `crates/nexusd/src/main.rs` is now `#[cfg(unix)]` - and `mod watcher;` alongside it, since `watcher::spawn`'s only two callers are `Command::Serve` and `control.rs` itself, making it equally unreachable (and so equally dead-code-on-Windows) without `serve`. `Command::Serve` gets a `#[cfg(not(unix))]` branch that prints a clear "not supported yet, use `nexusd mcp`, see issue #16" error instead of trying to compile socket code. `nexusd mcp` - the actual product surface, every MCP tool - has zero dependency on any of this and is completely unaffected.
+
+Also fixed a real related bug found while in there: `nexus install`'s Claude Desktop auto-config hardcoded the *Linux* config path (`$HOME/.config/Claude/...`) even when compiled for macOS, where Claude Desktop actually reads `~/Library/Application Support/Claude/...`. Replaced the hand-rolled per-OS path logic with `directories::BaseDirs::config_dir()` (already a workspace dependency, used elsewhere in `nexus-core::paths`), which resolves to the correct base on all three platforms - Linux, macOS, and now Windows (`%APPDATA%`) - from one code path instead of three to keep in sync.
+
+**Release matrix**, tiered honestly by what actually works on each platform, now covering both x86_64 and arm64 per tier via GitHub's native-hardware hosted runners (`ubuntu-24.04-arm`, `windows-11-arm` - both real, free-tier as of the last year, no cross-compilation involved):
+
+- **Linux (x86_64, arm64)** - unchanged tier, full parity (daemon `mcp` + `serve`, CLI, GUI), now built natively for both architectures instead of x86_64 only.
+- **macOS (Apple Silicon, Intel)** - CLI + full daemon, no GUI (same tier as before). Intel (`macos-13`) is back in the matrix on the chance the GitHub runner-queue problem that got it dropped once already (documented in Phase 13) has since improved; if it reproduces, the plan is to drop that one matrix entry again, not the whole tier - Rosetta 2 on the arm64 build stays the fallback either way.
+- **Windows (x86_64, arm64)** - new. `nexus` CLI + `nexusd mcp` only, packaged as `.zip` (not a tarball - Windows convention), matching #16's own proposed v1 scope exactly.
+
+**Honest gap**: this is genuinely first-run-on-real-CI territory, and further off than "this PR's CI run" - no Windows machine or cross-compilation toolchain was available to verify locally (matches #16's own stated reason for not attempting this blind), and `release.yml` only runs on a pushed version tag, not on a PR. Whether `rusqlite`'s bundled SQLite and every tree-sitter grammar actually build clean on the MSVC toolchain (x86_64 and, more speculatively, arm64) stays unconfirmed until the next tag push, not this merge.
+
+Verified: `cargo build --workspace --release`/`test --workspace` clean workspace-wide (`nexus-cli` went from 0 tests to 1, covering the new cross-platform config-path join), `clippy --all-targets -D warnings`/`fmt --check` clean on the Linux build this was developed against; `release.yml` YAML-validated and its runner labels checked against GitHub's own arm64-runner announcement before use. **Not yet verified**: `release.yml` is tag-triggered only (`on: push: tags: ["v*"]`), so merging this PR doesn't itself exercise the new Windows/Linux-arm64/macOS-x86_64 build legs - `ci.yml`'s regular fmt/clippy/test-linux/test-macos jobs (which do run on this PR) only cover the source change, not the release matrix. Real confirmation needs the next version tag actually pushed.
+
 ## 5. Why This Counts as "Full-Fledged"
 
 A daemon alone is a backend, not a tool. What makes this complete for a Linux desktop user:
