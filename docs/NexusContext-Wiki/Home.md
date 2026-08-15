@@ -9,11 +9,13 @@ does all the reasoning.
 
 This is a real, working product (not a proposal), currently at **v0.1.15**.
 This vault documents its *current state* by topic, cross-linked. For the
-blow-by-blow build history (27 phases, every bug found and how it was
+blow-by-blow build history (29 phases, every bug found and how it was
 actually fixed, verified against a real dogfooded daemon rather than just
 code review), see `README.md` at the repo root — this vault deliberately
 doesn't duplicate that; it's the "what is true right now" layer on top of
-"how we got here."
+"how we got here." [[ADRs/README|ADRs]] is a third layer on top of both:
+the compressed "why we decided this, and what it commits future work to"
+for the handful of decisions worth defending later.
 
 ## Start here
 
@@ -43,6 +45,8 @@ doesn't duplicate that; it's the "what is true right now" layer on top of
 - [[GUI-and-Extension]] — the GTK4 Manager app and the GNOME Shell
   indicator.
 - [[Known-Limitations]] — stated plainly, not smoothed over.
+- [[ADRs/README|ADRs]] — the architectural decisions that shaped the above,
+  why each was made, and what it commits future work to.
 
 ## The one-sentence pitch, held to honestly
 
