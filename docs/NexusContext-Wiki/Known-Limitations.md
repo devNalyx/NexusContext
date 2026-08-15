@@ -63,7 +63,11 @@ to fix — see [[GUI-and-Extension]].
 
 ## Platform scope
 
-Released for x86_64 and arm64 on all three platforms as of Phase 33.
+Released as of Phase 33: Linux and Windows on both x86_64 and arm64,
+macOS on Apple Silicon (arm64) - a native macOS x86_64 build was attempted
+but dropped when GitHub's own runner class for it never assigned a
+runner (a real capacity constraint, not a workflow bug); Intel Mac users
+run the arm64 build under Rosetta 2 instead.
 Linux has full parity (daemon `mcp` + `serve`, CLI, GUI). macOS gets CLI +
 full daemon (`serve`/the control API works too — Unix domain sockets are
 native there) but no GUI (`nexus-gui` is Linux/GNOME-first, not portable).

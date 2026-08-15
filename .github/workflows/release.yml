@@ -85,13 +85,16 @@ jobs:
   # Tier 2: CLI + full daemon (mcp + serve both work - Unix domain sockets
   # are native on macOS), no GTK/libadwaita attempt at all (nexus-gui is
   # Linux/GNOME-first by design, with no cfg gating to make it portable).
-  # x86_64 (macos-13, Intel) was dropped once before after that runner
-  # class hit an extended GitHub-side queue with no runner ever assigned
-  # (~20min, confirmed via the API showing no runner_name at all) - back
-  # in the matrix on the chance that's since improved; if it reproduces,
-  # drop that one entry again rather than the whole tier (Rosetta 2 is
-  # still a real fallback for Intel Mac users on the arm64 build either
-  # way).
+  # Apple Silicon only (macos-14) - x86_64 (macos-13, Intel) was retried in
+  # the v0.1.17 matrix and hit the exact same GitHub-side runner-queue
+  # problem that dropped it the first time (confirmed via the Actions API:
+  # runner_name empty, still queued past 50+ minutes with zero runner ever
+  # assigned - well past the ~20min that confirmed it as real before, not
+  # a fluke this time either). Dropped again; Intel Mac users run the
+  # arm64 binary under Rosetta 2 instead - a real, supported path, not a
+  # workaround. Worth trying again at some point, but not on every
+  # release - GitHub's own capacity for that specific runner class is the
+  # constraint, not anything in this workflow.
   # Unsigned/unnotarized binaries will hit Gatekeeper's quarantine flag on
   # download - real code-signing needs an Apple Developer ID and is its own
   # follow-up, not attempted here; documented in the release notes instead.
@@ -103,8 +106,6 @@ jobs:
         include:
           - arch: aarch64
             runner: macos-14
-          - arch: x86_64
-            runner: macos-13
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -186,6 +187,6 @@ jobs:
           body: |
             **Linux (x86_64, arm64)**: full parity - daemon (`mcp` + `serve`), CLI, GUI, GNOME extension support, systemd packaging. Choose `.deb`, `.rpm`, or the plain tarball depending on your distro.
 
-            **macOS (Apple Silicon, Intel)**: CLI + full daemon (`nexus`, `nexusd` - both `mcp` and `serve`/control API work, Unix domain sockets are native here) - no GUI build for macOS. Unsigned binaries will need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since these aren't notarized.
+            **macOS (Apple Silicon)**: CLI + full daemon (`nexus`, `nexusd` - both `mcp` and `serve`/control API work, Unix domain sockets are native here) - no GUI build for macOS. Intel Macs run this fine under Rosetta 2 - a native `x86_64` build was attempted for this release but dropped after GitHub's own Intel-macOS runner class never assigned a runner (~50+ min queued, zero assignment - a real capacity constraint on that runner class, not a workflow bug). Unsigned binaries will need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since these aren't notarized.
 
             **Windows (x86_64, arm64)**: new this release. `nexus` CLI + `nexusd mcp` only - every MCP tool works fully. `nexusd serve` (the control API, background watcher, GUI target) isn't supported yet on Windows; running it prints a clear error instead of failing to start. See [issue #16](https://github.com/devNalyx/NexusContext/issues/16) for why, and what a future `serve` port would need.
