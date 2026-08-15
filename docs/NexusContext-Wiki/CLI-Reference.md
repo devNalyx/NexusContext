@@ -10,6 +10,7 @@ agent session does.
 
 ```bash
 nexus reindex /path/to/project              # build or rebuild the graph
+nexus reindex /path/to/project --deep       # + LSP-resolved-symbol enrichment (Rust, opt-in)
 nexus search-graph SomeFunction --project /path/to/project
 nexus trace SomeFunction --project /path/to/project --direction inbound
 nexus architecture --project /path/to/project
@@ -61,8 +62,16 @@ nexus install
 
 Detects Claude Code (via its own `claude mcp add` CLI) and Claude Desktop
 (merges into `claude_desktop_config.json` without touching anything else
-already there). Prints a generic `mcpServers` snippet for anything else,
-rather than guessing at a config format it can't verify.
+already there). Resolves Claude Desktop's config path correctly on all
+three platforms (`~/.config`, `~/Library/Application Support`, `%APPDATA%`
+via `directories::BaseDirs` — previously hardcoded to the Linux path only).
+Prints a generic `mcpServers` snippet for anything else, rather than
+guessing at a config format it can't verify.
+
+The CLI itself runs identically everywhere - Linux, macOS, and Windows,
+x86_64 and arm64 - since none of it depends on `nexusd serve`. See
+[[Known-Limitations]] for what's platform-tiered (the daemon/control API,
+not the CLI or MCP tools).
 
 ## Related
 

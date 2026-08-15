@@ -35,7 +35,12 @@ sharing a transport across purposes.
   as the MCP transport but a distinct method namespace (`status.*`,
   `config.*`, `projects.*`, `search.adhoc`, `viz.call_graph`, `stats.get`).
   This is what the GTK4 Manager app and the GNOME Shell extension talk to —
-  never MCP, never stdio.
+  never MCP, never stdio. **Linux and macOS only** — the control API is
+  Unix-domain-socket-only with no cross-platform abstraction, so `mod
+  control` (and `mod watcher` alongside it, since the background watcher is
+  a `serve`-only concern) are compiled out entirely on Windows; running
+  `nexusd serve` there prints a clear error instead. See
+  [[Known-Limitations]] and [issue #16](https://github.com/devNalyx/NexusContext/issues/16).
 - **`nexus` (the CLI)** — a separate binary for humans: manual
   reindex/search/trace/etc. Goes through the exact same shared code path as
   the MCP tools and the control API (`nexus_index::touch_and_catchup` and
@@ -53,12 +58,17 @@ never competes with a GUI session on the control socket, and vice versa.
 - **Knowledge graph** — SQLite (WAL mode) at
   `~/.local/share/nexuscontext/<project-hash>/graph.db`. Nodes
   (`File`/`Function`/`Type`/`Section`) and edges (`Defines`/`Calls`/
-  `Contains`), full-text search via FTS5, a minimal Cypher-lite query
-  layer. No dedicated vector database — see [[Storage-and-Data-Model]].
+  `Contains`/`CallsResolved`), full-text search via FTS5, a minimal
+  Cypher-lite query layer. No dedicated vector database — see
+  [[Storage-and-Data-Model]].
+- **LSP enrichment pipeline** *(optional, Rust-only pilot)* — a minimal
+  hand-rolled LSP client that talks to `rust-analyzer` on an explicit
+  `deep` reindex, adding `CallsResolved` edges alongside the static
+  `Calls` ones. Off by default; see [[Storage-and-Data-Model]].
 - **Embeddings pipeline** *(optional)* — an OpenAI-compatible
   `/v1/embeddings` HTTP client. Off by default; see
   [[Embeddings-and-Semantic-Search]].
-- **Control API** — the `serve`-mode Unix socket described above.
+- **Control API** — the `serve`-mode Unix socket described above. Linux/macOS only.
 - **Desktop GUI** — "NexusContext Manager", GTK4 + libadwaita. See
   [[GUI-and-Extension]].
 - **GNOME Shell extension** — a thin top-bar status indicator, GJS. Also in
