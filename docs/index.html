@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NexusContext — Local codebase intelligence for AI agents</title>
-<meta name="description" content="A self-hosted MCP daemon that gives AI coding agents a knowledge-graph view of your codebase — structural search, call tracing, and architecture summaries, with zero embeddings required.">
+<meta name="description" content="A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and now LSP-resolved symbols. Zero embeddings required.">
 <link rel="canonical" href="https://nc.nalyx.dev/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="NexusContext">
 <meta property="og:url" content="https://nc.nalyx.dev/">
 <meta property="og:title" content="NexusContext — Local codebase intelligence for AI agents">
-<meta property="og:description" content="A self-hosted MCP daemon that gives AI coding agents a knowledge-graph view of your codebase — structural search, call tracing, and architecture summaries, with zero embeddings required.">
+<meta property="og:description" content="A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and now LSP-resolved symbols. Zero embeddings required.">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="NexusContext — Local codebase intelligence for AI agents">
-<meta name="twitter:description" content="A self-hosted MCP daemon that gives AI coding agents a knowledge-graph view of your codebase — structural search, call tracing, and architecture summaries, with zero embeddings required.">
+<meta name="twitter:description" content="A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and now LSP-resolved symbols. Zero embeddings required.">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -21,447 +21,606 @@
   "name": "NexusContext",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Linux, macOS",
-  "description": "A self-hosted MCP daemon that gives AI coding agents a knowledge-graph view of your codebase — structural search, call tracing, and architecture summaries, with zero embeddings required.",
+  "softwareVersion": "0.1.16",
+  "description": "A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and LSP-resolved symbols. Zero embeddings required.",
   "url": "https://nc.nalyx.dev/",
   "codeRepository": "https://github.com/devNalyx/NexusContext",
   "license": "https://github.com/devNalyx/NexusContext/blob/main/LICENSE",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
 }
 </script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&family=Source+Code+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  /* ---- Tokens: light palette lives on bare :root; dark redefines the
+     same names, once for prefers-color-scheme, once for the explicit
+     [data-theme="dark"] toggle so it wins either direction. Every
+     component reads a token, never a literal. ---- */
   :root {
-    --bg: #0b0d12;
-    --bg-elevated: #12151c;
-    --bg-card: #151923;
-    --border: #232838;
-    --text: #e7e9ee;
-    --text-dim: #9aa2b1;
-    --text-faint: #5f6779;
-    --accent: #7c8cff;
-    --accent-2: #4dd6c4;
-    --accent-glow: rgba(124, 140, 255, 0.25);
-    --warn: #e0a95c;
-    --mono: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", Menlo, monospace;
-    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    --ink: #f6f2e7;
+    --ink-raised: #fffdf7;
+    --ink-sunken: #ece5d3;
+    --line: #ddd3ba;
+    --line-strong: #c9bc9c;
+    --paper: #211c12;
+    --paper-dim: #5e5439;
+    --paper-faint: #8d8064;
+    --accent: #2f7d68;
+    --accent-ink: #f6f2e7;
+    --accent-glow: rgba(47, 125, 104, 0.14);
+    --copper: #a1592a;
+    --copper-glow: rgba(161, 89, 42, 0.14);
+    --good: #3f7d4a;
+    --warn: #a1592a;
+    --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --mono: "Source Code Pro", "SF Mono", Consolas, monospace;
+    --grid-line: rgba(33, 28, 18, 0.055);
   }
-  :root[data-theme="light"] {
-    --bg: #f6f7fb;
-    --bg-elevated: #ffffff;
-    --bg-card: #ffffff;
-    --border: #e3e6ee;
-    --text: #191c24;
-    --text-dim: #565f72;
-    --text-faint: #8892a3;
-    --accent: #4d5edb;
-    --accent-2: #0f9e8c;
-    --accent-glow: rgba(77, 94, 219, 0.15);
-    --warn: #b5791f;
-  }
-  @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) {
-      --bg: #f6f7fb;
-      --bg-elevated: #ffffff;
-      --bg-card: #ffffff;
-      --border: #e3e6ee;
-      --text: #191c24;
-      --text-dim: #565f72;
-      --text-faint: #8892a3;
-      --accent: #4d5edb;
-      --accent-2: #0f9e8c;
-      --accent-glow: rgba(77, 94, 219, 0.15);
-      --warn: #b5791f;
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #161309;
+      --ink-raised: #1e1a0f;
+      --ink-sunken: #100e07;
+      --line: #33291a;
+      --line-strong: #4a3d26;
+      --paper: #ece4d0;
+      --paper-dim: #a89876;
+      --paper-faint: #746650;
+      --accent: #6fb89c;
+      --accent-ink: #10160f;
+      --accent-glow: rgba(111, 184, 156, 0.16);
+      --copper: #d68a4e;
+      --copper-glow: rgba(214, 138, 78, 0.16);
+      --good: #7cb87f;
+      --warn: #d68a4e;
+      --grid-line: rgba(236, 228, 208, 0.05);
     }
+  }
+  :root[data-theme="dark"] {
+    --ink: #161309;
+    --ink-raised: #1e1a0f;
+    --ink-sunken: #100e07;
+    --line: #33291a;
+    --line-strong: #4a3d26;
+    --paper: #ece4d0;
+    --paper-dim: #a89876;
+    --paper-faint: #746650;
+    --accent: #6fb89c;
+    --accent-ink: #10160f;
+    --accent-glow: rgba(111, 184, 156, 0.16);
+    --copper: #d68a4e;
+    --copper-glow: rgba(214, 138, 78, 0.16);
+    --good: #7cb87f;
+    --warn: #d68a4e;
+    --grid-line: rgba(236, 228, 208, 0.05);
   }
 
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
   body {
     margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    line-height: 1.6;
+    background:
+      linear-gradient(var(--grid-line) 1px, transparent 1px) 0 0 / 44px 44px,
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px) 0 0 / 44px 44px,
+      var(--ink);
+    color: var(--paper);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.65;
     overflow-x: hidden;
   }
   a { color: inherit; }
+  ::selection { background: var(--accent); color: var(--accent-ink); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
-  .glow {
-    position: fixed;
-    top: -20%;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 1200px;
-    height: 800px;
-    background: radial-gradient(circle, var(--accent-glow) 0%, transparent 65%);
-    pointer-events: none;
-    z-index: 0;
-  }
+  code, .mono { font-family: var(--mono); }
 
+  h1, h2, h3 { font-family: var(--mono); font-weight: 700; text-wrap: balance; letter-spacing: -0.01em; }
+
+  /* ---- Header ---- */
   header {
     position: sticky;
     top: 0;
-    z-index: 10;
-    backdrop-filter: blur(12px);
-    background: color-mix(in srgb, var(--bg) 80%, transparent);
-    border-bottom: 1px solid var(--border);
+    z-index: 20;
+    backdrop-filter: blur(10px);
+    background: color-mix(in srgb, var(--ink) 82%, transparent);
+    border-bottom: 1px solid var(--line);
   }
   .nav {
-    max-width: 1080px;
+    max-width: 1120px;
     margin: 0 auto;
-    padding: 16px 24px;
+    padding: 16px 28px;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 24px;
   }
   .brand {
     display: flex;
     align-items: center;
     gap: 10px;
+    font-family: var(--mono);
     font-weight: 700;
-    font-size: 16px;
+    font-size: 15px;
     text-decoration: none;
     letter-spacing: -0.01em;
   }
-  .brand .dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    box-shadow: 0 0 12px var(--accent-glow);
+  .brand svg { flex: none; }
+  .nav-links { display: flex; align-items: center; gap: 26px; font-size: 13.5px; font-family: var(--mono); }
+  .nav-links a { text-decoration: none; color: var(--paper-dim); transition: color .15s; }
+  .nav-links a:hover { color: var(--paper); }
+  .theme-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px; height: 30px;
+    border-radius: 5px;
+    border: 1px solid var(--line);
+    background: var(--ink-raised);
+    color: var(--paper-dim);
+    cursor: pointer;
   }
-  .nav-links { display: flex; gap: 26px; font-size: 14px; }
-  .nav-links a { text-decoration: none; color: var(--text-dim); transition: color .15s; }
-  .nav-links a:hover { color: var(--text); }
+  .theme-btn:hover { color: var(--paper); border-color: var(--line-strong); }
+  .theme-btn svg { width: 15px; height: 15px; }
+  /* Icon shows the theme currently active: sun in dark mode (click for
+     daylight), moon in light mode (click for dark) - moon is the
+     unmarked default, sun opts in via the same three-state pattern as
+     the color tokens above. */
+  .theme-btn .sun { display: none; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .theme-btn .sun { display: inline-flex; }
+    :root:not([data-theme="light"]) .theme-btn .moon { display: none; }
+  }
+  :root[data-theme="dark"] .theme-btn .sun { display: inline-flex; }
+  :root[data-theme="dark"] .theme-btn .moon { display: none; }
 
   main { position: relative; z-index: 1; }
 
+  /* ---- Hero ---- */
   .hero {
     max-width: 860px;
     margin: 0 auto;
-    padding: 96px 24px 64px;
+    padding: 88px 28px 56px;
     text-align: center;
   }
   .badge {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-size: 12.5px;
+    font-size: 12px;
     font-family: var(--mono);
-    color: var(--accent-2);
-    background: color-mix(in srgb, var(--accent-2) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent-2) 30%, transparent);
-    padding: 5px 12px;
-    border-radius: 100px;
-    margin-bottom: 28px;
+    color: var(--accent);
+    background: var(--accent-glow);
+    border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+    padding: 5px 12px 5px 10px;
+    border-radius: 3px;
+    margin-bottom: 30px;
   }
-  h1 {
-    font-size: clamp(2.4rem, 5.5vw, 3.8rem);
-    line-height: 1.08;
-    letter-spacing: -0.03em;
-    margin: 0 0 20px;
-    font-weight: 700;
+  .badge .node { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  h1.hero-title {
+    font-size: clamp(2rem, 5vw, 3.3rem);
+    line-height: 1.12;
+    letter-spacing: -0.02em;
+    margin: 0 0 22px;
   }
-  h1 .grad {
-    background: linear-gradient(120deg, var(--accent), var(--accent-2));
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-  }
+  h1.hero-title .accent-word { color: var(--accent); }
   .lede {
-    font-size: clamp(1.05rem, 2vw, 1.25rem);
-    color: var(--text-dim);
-    max-width: 640px;
-    margin: 0 auto 40px;
+    font-family: var(--serif);
+    font-size: clamp(1.05rem, 1.8vw, 1.2rem);
+    color: var(--paper-dim);
+    max-width: 620px;
+    margin: 0 auto 36px;
   }
-  .lede code { font-family: var(--mono); color: var(--text); }
+  .lede code { font-family: var(--mono); color: var(--paper); font-size: 0.92em; }
 
-  .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
   .btn {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    padding: 12px 22px;
-    border-radius: 10px;
-    font-size: 14.5px;
+    padding: 11px 20px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 13.5px;
     font-weight: 600;
     text-decoration: none;
     border: 1px solid transparent;
-    transition: transform .15s, box-shadow .15s, background .15s;
+    transition: transform .12s, box-shadow .12s, border-color .12s, background .12s;
   }
   .btn-primary {
-    background: linear-gradient(120deg, var(--accent), var(--accent-2));
-    color: #0b0d12;
+    background: var(--accent);
+    color: var(--accent-ink);
   }
-  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 24px var(--accent-glow); }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px var(--accent-glow); }
   .btn-ghost {
-    background: var(--bg-card);
-    border-color: var(--border);
-    color: var(--text);
+    background: transparent;
+    border-color: var(--line-strong);
+    color: var(--paper);
   }
-  .btn-ghost:hover { border-color: var(--accent); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
 
   .stat-row {
-    display: flex;
-    justify-content: center;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
     gap: 0;
-    flex-wrap: wrap;
     margin-top: 56px;
-    border-top: 1px solid var(--border);
-    padding-top: 32px;
+    border-top: 1px solid var(--line);
   }
   .stat {
-    padding: 0 28px;
+    padding: 22px 14px 0;
     text-align: center;
-    border-right: 1px solid var(--border);
+    border-right: 1px solid var(--line);
   }
   .stat:last-child { border-right: none; }
   .stat .n {
     font-family: var(--mono);
-    font-size: 1.6rem;
+    font-size: 1.7rem;
     font-weight: 700;
-    color: var(--text);
+    color: var(--paper);
     letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
   }
   .stat .l {
-    font-size: 12px;
-    color: var(--text-faint);
-    margin-top: 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--paper-faint);
+    margin-top: 5px;
     text-transform: uppercase;
-    letter-spacing: .06em;
+    letter-spacing: .07em;
   }
 
-  section { max-width: 1080px; margin: 0 auto; padding: 48px 24px; }
-  .section-head { text-align: center; margin-bottom: 44px; }
+  /* ---- Sections ---- */
+  section { max-width: 1120px; margin: 0 auto; padding: 64px 28px; }
+  .rule { border: none; border-top: 1px solid var(--line); max-width: 1120px; margin: 0 auto; }
+  .section-head { max-width: 660px; margin: 0 0 40px; }
   .section-head .kicker {
     font-family: var(--mono);
-    font-size: 12.5px;
-    color: var(--text-faint);
+    font-size: 12px;
+    color: var(--copper);
     text-transform: uppercase;
-    letter-spacing: .12em;
+    letter-spacing: .1em;
     margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
+  .section-head .kicker::before { content: ""; width: 16px; height: 1px; background: var(--copper); }
   .section-head h2 {
-    font-size: clamp(1.6rem, 3vw, 2.1rem);
-    letter-spacing: -0.02em;
+    font-size: clamp(1.4rem, 2.6vw, 1.9rem);
+    letter-spacing: -0.015em;
     margin: 0;
+    line-height: 1.25;
   }
-  .section-head p { color: var(--text-dim); max-width: 580px; margin: 12px auto 0; }
+  .section-head p { font-family: var(--serif); color: var(--paper-dim); margin: 14px 0 0; font-size: 1.02rem; }
+  .section-head.center { margin-left: auto; margin-right: auto; text-align: center; }
+  .section-head.center .kicker { justify-content: center; }
+  .section-head.center .kicker::before { display: none; }
 
-  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+  /* Exactly 4 benchmark cards - a fixed 2x2 divides evenly, where the
+     general auto-fit above would strand the 4th card alone in a row of
+     empty cells at this section's own content width. */
+  .grid-2col { grid-template-columns: repeat(2, 1fr); }
+  @media (max-width: 640px) { .grid-2col { grid-template-columns: 1fr; } }
   .card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 26px;
-    transition: border-color .15s, transform .15s;
+    background: var(--ink-raised);
+    padding: 26px 24px;
   }
-  .card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); transform: translateY(-2px); }
-  .card .icon {
-    width: 34px; height: 34px;
-    display: flex; align-items: center; justify-content: center;
-    border-radius: 9px;
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
-    color: var(--accent);
-    margin-bottom: 16px;
-    font-size: 17px;
+  .card .node-mark {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-bottom: 18px;
+    position: relative;
   }
-  .card h3 { font-size: 15.5px; margin: 0 0 8px; letter-spacing: -0.01em; }
-  .card p { font-size: 13.5px; color: var(--text-dim); margin: 0; }
+  .card .node-mark::after {
+    content: "";
+    position: absolute;
+    left: 50%; top: 100%;
+    width: 1px; height: 12px;
+    background: var(--line-strong);
+    transform: translateX(-50%);
+  }
+  .card h3 { font-size: 14.5px; margin: 0 0 9px; letter-spacing: -0.005em; font-weight: 600; }
+  .card p { font-family: var(--serif); font-size: 14.5px; color: var(--paper-dim); margin: 0; line-height: 1.6; }
+  .card code { font-family: var(--mono); font-size: 0.86em; color: var(--paper); }
 
-  /* MCP tool reference */
+  /* ---- Benchmark ---- */
+  .bench-card p.figure {
+    font-family: var(--mono);
+    margin-top: 14px !important;
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .bench-win { color: var(--accent); }
+  .bench-loss { color: var(--copper); }
+  .bench-note {
+    font-family: var(--serif);
+    color: var(--paper-dim);
+    font-size: 14.5px;
+    max-width: 680px;
+    margin: 28px 0 0;
+    padding: 18px 20px;
+    border-left: 2px solid var(--line-strong);
+  }
+  .bench-note strong { color: var(--paper); font-family: var(--mono); font-weight: 600; }
+
+  /* ---- Capabilities / tool reference ---- */
+  /* Exactly 4 groups - a fixed column count (not auto-fit) that halves
+     cleanly at each breakpoint, so no width ever strands a lone card in
+     a row of otherwise-empty grid cells. */
   .tool-groups {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 18px;
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
   }
-  .tool-group {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 22px 24px;
-  }
+  @media (max-width: 900px) { .tool-groups { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 560px) { .tool-groups { grid-template-columns: 1fr; } }
+  .tool-group { background: var(--ink-raised); padding: 22px 22px 6px; }
   .tool-group .group-label {
     font-family: var(--mono);
-    font-size: 11.5px;
-    color: var(--accent);
+    font-size: 11px;
+    color: var(--copper);
     text-transform: uppercase;
     letter-spacing: .08em;
     margin-bottom: 14px;
   }
-  .tool-row { padding: 10px 0; border-top: 1px solid var(--border); }
+  .tool-row { padding: 12px 0; border-top: 1px solid var(--line); }
   .tool-row:first-of-type { border-top: none; }
   .tool-row .name {
     font-family: var(--mono);
     font-size: 13px;
-    color: var(--text);
+    color: var(--paper);
     font-weight: 600;
   }
   .tool-row .desc {
-    font-size: 12.5px;
-    color: var(--text-dim);
-    margin-top: 3px;
+    font-family: var(--serif);
+    font-size: 13.5px;
+    color: var(--paper-dim);
+    margin-top: 4px;
+    line-height: 1.55;
   }
+  .tool-row .desc code { font-family: var(--mono); font-size: 0.92em; color: var(--paper); }
   .tool-row .tag {
     display: inline-block;
     font-family: var(--mono);
-    font-size: 10.5px;
+    font-size: 10px;
     color: var(--warn);
-    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
-    background: color-mix(in srgb, var(--warn) 10%, transparent);
-    border-radius: 5px;
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+    background: var(--copper-glow);
+    border-radius: 3px;
     padding: 1px 6px;
-    margin-left: 8px;
+    margin-left: 7px;
     vertical-align: middle;
   }
+  .tool-row .tag.new {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    background: var(--accent-glow);
+  }
 
-  .diagram {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 32px 24px;
-    font-family: var(--mono);
-    font-size: 13px;
-    color: var(--text-dim);
+  /* ---- Architecture diagram (SVG) ---- */
+  .diagram-wrap {
+    background: var(--ink-sunken);
+    border: 1px solid var(--line);
+    padding: 8px;
     overflow-x: auto;
   }
-  .diagram pre { margin: 0; white-space: pre; }
-  .diagram .hl { color: var(--accent); }
-  .diagram .hl2 { color: var(--accent-2); }
+  .diagram-wrap svg { display: block; min-width: 640px; width: 100%; height: auto; }
+  .diagram-wrap text { font-family: var(--mono); }
 
+  /* 6 specs - fixed 3 columns divides evenly into 2 clean rows, instead
+     of auto-fit's 4+2 remainder at this section's content width. */
   .specs {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 14px;
-    margin-top: 18px;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    margin-top: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-top: none;
   }
-  .spec {
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 16px 18px;
-    background: var(--bg-card);
-  }
-  .spec .k { font-size: 12px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .06em; }
-  .spec .v { font-family: var(--mono); font-size: 13.5px; color: var(--text); margin-top: 6px; }
+  @media (max-width: 760px) { .specs { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 500px) { .specs { grid-template-columns: 1fr; } }
+  .spec { padding: 16px 18px; background: var(--ink-raised); }
+  .spec .k { font-family: var(--mono); font-size: 11px; color: var(--paper-faint); text-transform: uppercase; letter-spacing: .06em; }
+  .spec .v { font-family: var(--mono); font-size: 13px; color: var(--paper); margin-top: 6px; }
 
-  .code-block {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
+  /* ---- Trace / spine layout (audit + hardening) ---- */
+  .trace { position: relative; padding-left: 28px; }
+  .trace::before {
+    content: "";
+    position: absolute;
+    left: 4px; top: 6px; bottom: 6px;
+    width: 1px;
+    background: var(--line-strong);
   }
-  .code-block .code-head {
+  .trace-item { position: relative; padding-bottom: 30px; }
+  .trace-item:last-child { padding-bottom: 0; }
+  .trace-item::before {
+    content: "";
+    position: absolute;
+    left: -28px; top: 4px;
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: var(--ink);
+    border: 2px solid var(--accent);
+  }
+  .trace-item.warn::before { border-color: var(--copper); }
+  .trace-item.critical::before { border-color: #c0392b; }
+  .trace-item .t-head {
     display: flex;
-    gap: 6px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-  }
-  .code-block .code-head span {
-    width: 10px; height: 10px; border-radius: 50%; background: var(--border);
-  }
-  .code-block pre {
-    margin: 0;
-    padding: 18px 20px;
-    font-family: var(--mono);
-    font-size: 13px;
-    line-height: 1.7;
-    overflow-x: auto;
-    color: var(--text);
-  }
-  .code-block .cmt { color: var(--text-faint); }
-  .code-block .dim { color: var(--text-dim); }
-
-  /* Language support grid */
-  .lang-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    align-items: baseline;
     gap: 10px;
+    flex-wrap: wrap;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--paper);
+  }
+  .trace-item .t-head .sev {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    padding: 1px 7px;
+    border-radius: 3px;
+    font-weight: 700;
+  }
+  .sev.critical { color: #c0392b; background: rgba(192,57,43,.13); border: 1px solid rgba(192,57,43,.4); }
+  .sev.high { color: var(--warn); background: var(--copper-glow); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+  .sev.fixed { color: var(--accent); background: var(--accent-glow); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
+  .trace-item p {
+    font-family: var(--serif);
+    font-size: 14px;
+    color: var(--paper-dim);
+    margin: 7px 0 0;
+    max-width: 620px;
+  }
+  .trace-item p code { font-family: var(--mono); font-size: 0.9em; color: var(--paper); }
+
+  /* ---- Language grid ---- */
+  /* 11 languages - a prime count, so no fixed column grid divides it
+     evenly. flex-wrap instead of grid: the last row just has fewer
+     chips, rather than grid's phantom empty trailing cells. */
+  .lang-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
   }
   .lang-chip {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent-2);
-    border-radius: 10px;
-    padding: 12px 14px;
+    flex: 1 1 170px;
+    background: var(--ink-raised);
+    padding: 14px 16px;
   }
-  .lang-chip.partial { border-left-color: var(--warn); }
-  .lang-chip .lang-name { font-size: 13.5px; font-weight: 600; }
+  .lang-chip .lang-name { font-family: var(--mono); font-size: 13.5px; font-weight: 600; }
   .lang-chip .lang-tier {
     font-family: var(--mono);
     font-size: 10.5px;
-    color: var(--accent-2);
+    color: var(--accent);
     text-transform: uppercase;
     letter-spacing: .04em;
   }
   .lang-chip.partial .lang-tier { color: var(--warn); }
+  .lang-chip .lang-extra { font-family: var(--mono); font-size: 10px; color: var(--paper-faint); }
   .lang-legend {
     display: flex;
-    gap: 24px;
-    justify-content: center;
-    margin-top: 20px;
-    font-size: 12.5px;
-    color: var(--text-dim);
+    gap: 26px;
+    margin-top: 18px;
+    font-family: var(--serif);
+    font-size: 13px;
+    color: var(--paper-dim);
     flex-wrap: wrap;
   }
   .lang-legend .sw { display: inline-flex; align-items: center; gap: 7px; }
-  .lang-legend .dot { width: 8px; height: 8px; border-radius: 50%; }
-  .lang-legend .dot.full { background: var(--accent-2); }
+  .lang-legend .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .lang-legend .dot.full { background: var(--accent); }
   .lang-legend .dot.partial { background: var(--warn); }
 
-  footer {
-    border-top: 1px solid var(--border);
-    padding: 40px 24px;
+  /* ---- Install ---- */
+  .code-block {
+    background: var(--ink-sunken);
+    border: 1px solid var(--line);
+  }
+  .code-block .code-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--paper-faint);
+  }
+  .code-block pre {
+    margin: 0;
+    padding: 20px 22px;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    line-height: 1.75;
+    overflow-x: auto;
+    color: var(--paper);
+  }
+  .code-block .cmt { color: var(--paper-faint); }
+  .install-note {
+    font-family: var(--serif);
     text-align: center;
-    color: var(--text-faint);
-    font-size: 13px;
+    margin-top: 22px;
+    color: var(--paper-dim);
+    font-size: 14px;
   }
-  footer a { color: var(--text-dim); text-decoration: none; }
-  footer a:hover { color: var(--text); }
-  .footer-links { display: flex; gap: 20px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .install-note a { color: var(--accent); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
+  .install-note a:hover { border-color: var(--accent); }
 
-  @media (max-width: 1000px) {
-    .grid, .tool-groups { grid-template-columns: repeat(2, 1fr); }
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 44px 28px;
+    text-align: center;
+    color: var(--paper-faint);
+    font-family: var(--mono);
+    font-size: 12.5px;
   }
+  footer a { color: var(--paper-dim); text-decoration: none; }
+  footer a:hover { color: var(--paper); }
+  .footer-links { display: flex; gap: 22px; justify-content: center; margin-bottom: 18px; flex-wrap: wrap; }
 
   @media (max-width: 640px) {
-    .nav-links { display: none; }
-    .stat-row { padding-top: 24px; }
-    .stat { border-right: none; padding: 8px 20px; }
-    .grid, .tool-groups { grid-template-columns: 1fr; }
+    .nav-links a:not(.always-show) { display: none; }
+    .stat-row { grid-template-columns: repeat(2, 1fr); }
+    .stat:nth-child(2) { border-right: none; }
+    .stat:nth-child(3), .stat:nth-child(4) { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 4px; }
+    section { padding: 48px 20px; }
   }
 </style>
 </head>
 <body>
 
-<div class="glow"></div>
-
 <header>
   <div class="nav">
     <a class="brand" href="#">
-      <span class="dot"></span>
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+        <circle cx="4" cy="4" r="2.4" fill="var(--accent)"/>
+        <circle cx="14" cy="4" r="2.4" fill="var(--copper)"/>
+        <circle cx="9" cy="14" r="2.4" fill="var(--accent)"/>
+        <path d="M6.1 4.9L11.9 4.9M5.2 6.1L8.1 12.1M12.8 6.1L9.9 12.1" stroke="var(--line-strong)" stroke-width="1"/>
+      </svg>
       NexusContext
     </a>
     <nav class="nav-links">
       <a href="#why">Why</a>
-      <a href="#benchmark">Benchmark</a>
       <a href="#capabilities">Capabilities</a>
       <a href="#architecture">Architecture</a>
-      <a href="#languages">Languages</a>
+      <a href="#hardened">Hardened</a>
       <a href="#install">Install</a>
-      <a href="https://github.com/devNalyx/NexusContext">GitHub</a>
+      <a class="always-show" href="https://github.com/devNalyx/NexusContext">GitHub</a>
+      <button class="theme-btn" id="theme-toggle" type="button" aria-label="Toggle color theme">
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.5M12 19v2.5M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M2.5 12h2.5M19 12h2.5M4.6 19.4l1.8-1.8M17.6 6.4l1.8-1.8"/></svg>
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"/></svg>
+      </button>
     </nav>
   </div>
 </header>
 
 <main>
   <section class="hero">
-    <div class="badge">● Self-hosted &middot; MCP-native &middot; zero embeddings required</div>
-    <h1>Give your AI agent a <span class="grad">knowledge graph</span> of your codebase</h1>
+    <div class="badge"><span class="node"></span>v0.1.16 &middot; self-hosted &middot; MCP-native</div>
+    <h1 class="hero-title">Your agent stops grepping blind and starts tracing a <span class="accent-word">real graph</span></h1>
     <p class="lede">
-      NexusContext indexes your code into a structural graph of functions, types, and call
-      edges — then answers <code>search_graph</code>, <code>trace_call_path</code>, and
-      <code>get_architecture</code> queries over a local MCP connection. Your agent stops
-      grepping blind and starts reasoning over structure it can actually trust.
+      NexusContext parses your codebase into functions, types, and call edges — resolved
+      across file boundaries, now optionally sharpened by a real language server — and
+      answers <code>search_graph</code>, <code>trace_call_path</code>, and <code>get_architecture</code>
+      over a local MCP connection. No embeddings required to get started.
     </p>
     <div class="cta-row">
       <a class="btn btn-primary" href="https://github.com/devNalyx/NexusContext">View on GitHub</a>
@@ -471,9 +630,11 @@
       <div class="stat"><div class="n">14</div><div class="l">MCP tools</div></div>
       <div class="stat"><div class="n">11</div><div class="l">Languages parsed</div></div>
       <div class="stat"><div class="n">0</div><div class="l">Embeddings required</div></div>
-      <div class="stat"><div class="n">2</div><div class="l">Transports, one daemon</div></div>
+      <div class="stat"><div class="n">12</div><div class="l">Audit findings, fixed</div></div>
     </div>
   </section>
+
+  <hr class="rule">
 
   <section id="why">
     <div class="section-head">
@@ -483,74 +644,83 @@
     </div>
     <div class="grid">
       <div class="card">
-        <div class="icon">◈</div>
-        <h3>Knowledge graph, not just vectors</h3>
-        <p>Tree-sitter parses 11 languages into a SQLite graph of functions, types, and call edges, resolved across file boundaries — plus full-text search and dead-code detection on the same graph, all with zero embeddings.</p>
+        <div class="node-mark"></div>
+        <h3>A graph, not just vectors</h3>
+        <p>Tree-sitter parses 11 languages into a SQLite graph of functions, types, and call edges, resolved across file boundaries — plus full-text search and dead-code detection on the same graph, zero embeddings required.</p>
       </div>
       <div class="card">
-        <div class="icon">⌁</div>
+        <div class="node-mark"></div>
+        <h3>Resolution you can verify</h3>
+        <p>An optional LSP enrichment pass (<code>rust-analyzer</code> today) adds real reference-resolved call edges alongside the static ones — kept as a distinct, auditable edge kind, never silently merged in.</p>
+      </div>
+      <div class="card">
+        <div class="node-mark"></div>
         <h3>MCP-native</h3>
         <p>A real JSON-RPC 2.0 stdio server with 14 tools, verified against real IDE-style sessions — drop it into any MCP-compatible agent, or auto-configure Claude Code/Desktop with one command.</p>
       </div>
       <div class="card">
-        <div class="icon">▣</div>
+        <div class="node-mark"></div>
         <h3>Desktop-first on Linux</h3>
-        <p>A native GTK4 + libadwaita manager app and a thin GNOME Shell status indicator — not a web dashboard bolted on afterward. Includes a call-graph visualizer that renders a function's neighborhood as an image via Graphviz, scoped and bounded rather than an unreadable whole-project hairball.</p>
+        <p>A native GTK4 + libadwaita manager app and a thin GNOME Shell status indicator — not a web dashboard bolted on afterward. Call-graph visualization renders a bounded neighborhood, not an unreadable whole-project hairball.</p>
       </div>
       <div class="card">
-        <div class="icon">◆</div>
-        <h3>Safe by default</h3>
-        <p>Embeddings endpoints are blocked unless loopback/private or explicitly allowed. Indexing can be scoped to an allowlist. Opt-in, not implicit.</p>
+        <div class="node-mark"></div>
+        <h3>Safe by construction</h3>
+        <p>Embeddings endpoints are blocked unless loopback/private or explicitly allowed. Path traversal, decompression bombs, and permission leaks are closed at the check itself, not just at the call sites that found them.</p>
       </div>
       <div class="card">
-        <div class="icon">⇄</div>
+        <div class="node-mark"></div>
         <h3>Team-shareable index</h3>
-        <p>Export a compressed graph snapshot next to your source so teammates skip the first reindex on clone — never committed unless you choose to. Available from the CLI or a button in the GUI.</p>
-      </div>
-      <div class="card">
-        <div class="icon">✦</div>
-        <h3>Obsidian-ready export</h3>
-        <p>Turn the call graph into a folder of markdown files with <code>[[wikilinks]]</code> — browse your codebase's structure in a vault, for free.</p>
+        <p>Export a compressed, size-capped graph snapshot next to your source so teammates skip the first reindex on clone — never committed unless you choose to.</p>
       </div>
     </div>
   </section>
+
+  <hr class="rule">
 
   <section id="benchmark">
     <div class="section-head">
       <div class="kicker">Measured, not promised</div>
       <h2>Four real questions, tokenized, not estimated</h2>
-      <p>Run live against v0.1.4 on a real 2,414-node production Go monorepo, counted with <code>tiktoken</code>. Two questions win big. Two don't - shown here anyway.</p>
+      <p>Run live against v0.1.4 on a real 2,414-node production Go monorepo, counted with <code>tiktoken</code>. Two questions win big. Two don't — shown here anyway.</p>
     </div>
-    <div class="grid">
-      <div class="card">
-        <div class="icon">◈</div>
+    <div class="grid grid-2col">
+      <div class="card bench-card">
+        <div class="node-mark"></div>
         <h3>Find real callers, with code</h3>
-        <p><code>trace_call_path</code> + two scoped <code>get_file_context</code> calls return exactly 2 real callers with line ranges - and correctly skip a same-named test file that plain <code>grep</code> flagged as a false positive.</p>
-        <p style="margin-top:12px; color:var(--accent-2); font-weight:600;">8,096 → 551 tokens · −93%</p>
+        <p><code>trace_call_path</code> plus two scoped <code>get_file_context</code> calls return exactly 2 real callers with line ranges — and correctly skip a same-named test file that plain <code>grep</code> flagged as a false positive.</p>
+        <p class="figure bench-win">8,096 → 551 tokens · −93%</p>
       </div>
-      <div class="card">
-        <div class="icon">◐</div>
+      <div class="card bench-card">
+        <div class="node-mark"></div>
         <h3>"How does this actually work?"</h3>
-        <p>One <code>query_memory</code> semantic call over the indexed docs beats reading the two most relevant files in full - and the specifics it surfaced (an env var, a cache field name) checked out against the real source.</p>
-        <p style="margin-top:12px; color:var(--accent-2); font-weight:600;">4,797 → 1,785 tokens · −63%</p>
+        <p>One <code>query_memory</code> semantic call over the indexed docs beats reading the two most relevant files in full — the specifics it surfaced (an env var, a cache field name) checked out against the real source.</p>
+        <p class="figure bench-win">4,797 → 1,785 tokens · −63%</p>
       </div>
-      <div class="card">
-        <div class="icon">◇</div>
+      <div class="card bench-card">
+        <div class="node-mark"></div>
         <h3>Every symbol tied to a concept</h3>
-        <p><code>search_graph</code> found 37 real declarations against grep's 79 raw text hits (comments included) - fewer results, but each one is structured, so it costs slightly more, not less.</p>
-        <p style="margin-top:12px; color:var(--warn); font-weight:600;">2,338 → 2,647 tokens · +13%</p>
+        <p><code>search_graph</code> found 37 real declarations against grep's 79 raw text hits (comments included) — fewer results, but each one is structured, so it costs slightly more, not less.</p>
+        <p class="figure bench-loss">2,338 → 2,647 tokens · +13%</p>
       </div>
-      <div class="card">
-        <div class="icon">◱</div>
+      <div class="card bench-card">
+        <div class="node-mark"></div>
         <h3>Cold-start architecture read</h3>
-        <p><code>get_architecture</code> ranks files by real definition density and adds a language breakdown - <code>wc -l</code> is cheaper, but only measures line count, and a naive version of it silently swept in <code>node_modules</code>.</p>
-        <p style="margin-top:12px; color:var(--warn); font-weight:600;">127 → 340 tokens · +168%</p>
+        <p><code>get_architecture</code> ranks files by real definition density and adds a language breakdown — <code>wc -l</code> is cheaper, but only measures line count, and a naive version of it silently swept in <code>node_modules</code>.</p>
+        <p class="figure bench-loss">127 → 340 tokens · +168%</p>
       </div>
     </div>
-    <p style="text-align:center; margin-top:28px; color:var(--text-dim); font-size:13.5px; max-width:640px; margin-left:auto; margin-right:auto;">
-      Combined across all four: <strong style="color:var(--text);">15,358 → 5,323 tokens (−65%)</strong> - but that average blends two clear wins with two honest losses, not four wins. Navigation and conceptual questions are where the graph pays for itself; a plain-text or line-count answer can still be cheaper when the question itself is shallow enough that a shallow answer is fine.
+    <p class="bench-note">
+      Combined across all four: <strong>15,358 → 5,323 tokens (−65%)</strong> — but that average
+      blends two clear wins with two honest losses, not four wins. Navigation and conceptual
+      questions are where the graph pays for itself; a plain-text or line-count answer can still
+      be cheaper when the question itself is shallow enough that a shallow answer is fine. A
+      newer, in-daemon accounting of this same tradeoff — <code>get_session_usage</code>'s
+      <code>reads_avoided</code> counterfactual — is covered below.
     </p>
   </section>
+
+  <hr class="rule">
 
   <section id="capabilities">
     <div class="section-head">
@@ -562,8 +732,8 @@
       <div class="tool-group">
         <div class="group-label">Index &amp; read</div>
         <div class="tool-row">
-          <div class="name">index_repository</div>
-          <div class="desc">Build or rebuild the knowledge graph for a directory.</div>
+          <div class="name">index_repository<span class="tag new">deep</span></div>
+          <div class="desc">Build or rebuild the knowledge graph. <code>deep: true</code> also runs LSP-resolved-symbol enrichment, if configured.</div>
         </div>
         <div class="tool-row">
           <div class="name">get_file_context</div>
@@ -571,29 +741,29 @@
         </div>
         <div class="tool-row">
           <div class="name">get_architecture</div>
-          <div class="desc">Node/edge counts, busiest files, and language breakdown for a project.</div>
+          <div class="desc">Node/edge counts, busiest files, language breakdown — plus an <code>index_freshness</code> field.</div>
         </div>
       </div>
       <div class="tool-group">
         <div class="group-label">Search &amp; trace</div>
         <div class="tool-row">
           <div class="name">search_graph</div>
-          <div class="desc">Structural search over indexed symbols by name substring - no embeddings required.</div>
+          <div class="desc">Structural search over indexed symbols by name substring — no embeddings required.</div>
         </div>
         <div class="tool-row">
           <div class="name">search_code</div>
-          <div class="desc">Grep-like full-text search over indexed file content via SQLite FTS5 - code and markdown docs alike.</div>
+          <div class="desc">Grep-like full-text search over indexed file content via SQLite FTS5 — code and markdown alike.</div>
         </div>
         <div class="tool-row">
           <div class="name">trace_call_path</div>
-          <div class="desc">BFS over the CALLS graph to find callers/callees of a function, resolved across file boundaries.</div>
+          <div class="desc">BFS over the CALLS graph — now unioned with LSP-resolved edges when a <code>deep</code> reindex has run.</div>
         </div>
       </div>
       <div class="tool-group">
-        <div class="group-label">Quality &amp; change</div>
+        <div class="group-label">Quality &amp; usage</div>
         <div class="tool-row">
           <div class="name">detect_dead_code</div>
-          <div class="desc">Functions with no inbound CALLS edge - candidates worth a second look.</div>
+          <div class="desc">Functions with no inbound call edge — candidates worth a second look.</div>
         </div>
         <div class="tool-row">
           <div class="name">detect_changes</div>
@@ -601,14 +771,11 @@
         </div>
         <div class="tool-row">
           <div class="name">query_planner</div>
-          <div class="desc">Picks the cheapest retrieval strategy for a query instead of the agent guessing.</div>
+          <div class="desc">Picks the cheapest retrieval strategy and returns the answer in-band, plus <code>index_freshness</code>.</div>
         </div>
-      </div>
-      <div class="tool-group">
-        <div class="group-label">Observability</div>
         <div class="tool-row">
-          <div class="name">get_session_usage</div>
-          <div class="desc">Per-tool call/error/output-byte counters for this session only, with a rough token estimate - keep an eye on your own context budget.</div>
+          <div class="name">get_session_usage<span class="tag new">richer</span></div>
+          <div class="desc">This session's usage, plus <code>schema_tax</code> and <code>reads_avoided</code> — an auditable counterfactual for tokens this daemon actually saved.</div>
         </div>
       </div>
       <div class="tool-group">
@@ -623,52 +790,113 @@
         </div>
         <div class="tool-row">
           <div class="name">search_codebase / query_memory<span class="tag">opt-in</span></div>
-          <div class="desc">Real cosine-similarity semantic search against any OpenAI-compatible embeddings endpoint (Ollama, LM Studio, vLLM), covering code and markdown doc sections in one ranked result set - off by default, one toggle to enable.</div>
+          <div class="desc">Cosine-similarity semantic search against any OpenAI-compatible endpoint (Ollama, LM Studio, vLLM) — off by default.</div>
         </div>
       </div>
     </div>
   </section>
 
+  <hr class="rule">
+
   <section id="architecture">
     <div class="section-head">
       <div class="kicker">How it fits together</div>
-      <h2>One daemon, two transports, three clients</h2>
-      <p>stdio is reserved for MCP agents; a Unix socket serves the GUI and Shell extension — they never compete for the same pipe.</p>
+      <h2>One daemon, two transports, one optional resolver</h2>
+      <p>stdio is reserved for MCP agents; a Unix socket serves the GUI and Shell extension — they never compete for the same pipe. LSP enrichment runs only inside an explicit <code>deep</code> reindex.</p>
     </div>
-    <div class="diagram">
-<pre>                    ┌──────────────────────────────┐
-   MCP clients ──────► <span class="hl">nexusd mcp</span>  (stdio, per-session) │
- (Claude Code, etc.)  │   listTools / callTool        │
-                    │   search_graph · trace_call_path│
-                    │   get_architecture · query_planner│
-                    └──────────────────────────────┘
-                               │
-                               ▼  shared SQLite graph.db (WAL mode)
-                               ▲
-                    ┌──────────────────────────────┐
-    GUI + Shell ext ──► <span class="hl2">nexusd serve</span> (Unix socket, systemd)│
-                    │   status · projects · config    │
-                    │   search.adhoc · reindex         │
-                    └──────────────────────────────┘</pre>
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 730 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Architecture diagram: MCP clients connect to nexusd mcp over stdio, GUI and Shell extension connect to nexusd serve over a Unix socket, both share graph.db, and an explicit deep reindex spawns an optional rust-analyzer process feeding resolved edges back into graph.db.">
+        <defs>
+          <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L8,4 L0,8 z" fill="var(--line-strong)"></path>
+          </marker>
+        </defs>
+        <style>
+          .lbl { font-size: 12px; fill: var(--paper); font-weight: 600; }
+          .sub { font-size: 10.5px; fill: var(--paper-dim); }
+          .box { fill: var(--ink-raised); stroke: var(--line-strong); stroke-width: 1; }
+          .box.accent { stroke: var(--accent); }
+          .box.copper { stroke: var(--copper); stroke-dasharray: 3 3; }
+          .edge { stroke: var(--line-strong); stroke-width: 1.2; fill: none; }
+        </style>
+
+        <text x="18" y="30" class="sub">MCP clients</text>
+        <text x="18" y="44" class="sub">(Claude Code, etc.)</text>
+        <rect x="150" y="14" width="230" height="58" rx="2" class="box accent"></rect>
+        <text x="165" y="38" class="lbl">nexusd mcp</text>
+        <text x="165" y="55" class="sub">stdio · per-session</text>
+
+        <text x="18" y="256" class="sub">GUI + Shell ext</text>
+        <rect x="150" y="228" width="230" height="58" rx="2" class="box"></rect>
+        <text x="165" y="252" class="lbl">nexusd serve</text>
+        <text x="165" y="269" class="sub">Unix socket · systemd</text>
+
+        <rect x="470" y="14" width="230" height="58" rx="2" class="box copper"></rect>
+        <text x="485" y="38" class="lbl">rust-analyzer</text>
+        <text x="485" y="55" class="sub">spawned on deep reindex only</text>
+
+        <rect x="470" y="141" width="230" height="78" rx="2" class="box"></rect>
+        <text x="485" y="165" class="lbl">graph.db</text>
+        <text x="485" y="182" class="sub">SQLite, WAL mode</text>
+        <text x="485" y="199" class="sub">CALLS + CALLS_RESOLVED</text>
+
+        <path class="edge" d="M380,43 L470,43" marker-end="url(#arrow)" style="stroke-dasharray:3 3;"></path>
+        <path class="edge" d="M585,72 C585,105 585,105 585,141" marker-end="url(#arrow)" style="stroke-dasharray:3 3;"></path>
+        <path class="edge" d="M380,55 C430,55 430,180 470,180" marker-end="url(#arrow)"></path>
+        <path class="edge" d="M380,257 C430,257 430,180 470,180" marker-end="url(#arrow)"></path>
+      </svg>
     </div>
     <div class="specs">
       <div class="spec"><div class="k">Storage</div><div class="v">SQLite, WAL journal mode</div></div>
       <div class="spec"><div class="k">Indexing</div><div class="v">Two-pass: per-file, then project-wide call resolution</div></div>
+      <div class="spec"><div class="k">Enrichment</div><div class="v">Optional LSP pass, opt-in, deep reindex only</div></div>
       <div class="spec"><div class="k">Concurrency</div><div class="v">BEGIN IMMEDIATE + busy_timeout, safe under concurrent reindex</div></div>
-      <div class="spec"><div class="k">Live sync</div><div class="v">Debounced file watcher, 2s debounce / 30s registry resync</div></div>
-      <div class="spec"><div class="k">Full-text</div><div class="v">SQLite FTS5 over indexed file content</div></div>
-      <div class="spec"><div class="k">Packaging</div><div class="v">.deb + hardened systemd --user unit</div></div>
+      <div class="spec"><div class="k">Live sync</div><div class="v">Debounced file watcher, warm/cold gated by real usage</div></div>
+      <div class="spec"><div class="k">Packaging</div><div class="v">.deb, .rpm, tarball + hardened user-mode systemd unit</div></div>
     </div>
   </section>
+
+  <hr class="rule">
+
+  <section id="hardened">
+    <div class="section-head">
+      <div class="kicker">Two review rounds, findings public</div>
+      <h2>Hardened against its own audits, not just designed safe</h2>
+      <p>Every finding below was filed as a GitHub issue before it was fixed, and stayed open until a regression test proved the fix — not just a description of it.</p>
+    </div>
+    <div class="trace">
+      <div class="trace-item critical">
+        <div class="t-head">allowed_roots path traversal <span class="sev critical">critical</span></div>
+        <p>A raw, not-yet-canonicalized path let <code>..</code> escape an opt-in directory allowlist. Fixed at the check itself, not just the call sites that found it — so a future caller getting the ordering wrong is still protected.</p>
+      </div>
+      <div class="trace-item warn">
+        <div class="t-head">Markdown OOM path <span class="sev high">high</span></div>
+        <p>A large flat markdown file with no headings could balloon into one untruncated multi-MB chunk during embedding. Routed through the same cap the code path already had.</p>
+      </div>
+      <div class="trace-item">
+        <div class="t-head">Decompression-bomb import, data-dir permissions <span class="sev fixed">fixed</span></div>
+        <p>Team-shareable index import is now streamed and capped at 2GiB with cleanup on any error; every data file is owner-only (0600), directories owner-only (0700) — closing a file-name-listing leak a reviewer caught on top of the file-level fix.</p>
+      </div>
+      <div class="trace-item">
+        <div class="t-head">Query batching, panic isolation, O(n²) fixes <span class="sev fixed">fixed</span></div>
+        <p>Call-graph BFS batched into one query per level instead of one per node; a panic in MCP tool dispatch is now isolated to that one call instead of killing the session; heading-range computation dropped a redundant O(n²) pass.</p>
+      </div>
+    </div>
+    <p class="install-note" style="text-align:left; margin-top:32px; max-width:640px;">
+      Full writeup, every issue and PR linked, in the <a href="https://github.com/devNalyx/NexusContext/blob/main/docs/NexusContext-Wiki/Security-Model.md">Security Model</a> doc.
+    </p>
+  </section>
+
+  <hr class="rule">
 
   <section id="languages">
     <div class="section-head">
       <div class="kicker">Parsing, honestly tiered</div>
-      <h2>11 languages - call-graph quality stated plainly, not smoothed over</h2>
-      <p>Definitions, types, and architecture summaries are solid for all 11. Full call-graph resolution depends on how complete each language's own tree-sitter tagging convention is - so it's shown, not hidden.</p>
+      <h2>11 languages — call-graph quality stated plainly, not smoothed over</h2>
+      <p>Definitions, types, and architecture summaries are solid for all 11. Full call-graph resolution depends on how complete each language's own tree-sitter tagging convention is, so it's shown, not hidden.</p>
     </div>
     <div class="lang-grid">
-      <div class="lang-chip"><div class="lang-name">Rust</div><div class="lang-tier">Full call graph</div></div>
+      <div class="lang-chip"><div class="lang-name">Rust</div><div class="lang-tier">Full call graph</div><div class="lang-extra">+ LSP resolution</div></div>
       <div class="lang-chip"><div class="lang-name">Python</div><div class="lang-tier">Full call graph</div></div>
       <div class="lang-chip"><div class="lang-name">JavaScript</div><div class="lang-tier">Full call graph</div></div>
       <div class="lang-chip"><div class="lang-name">TypeScript / TSX</div><div class="lang-tier">Full call graph</div></div>
@@ -681,18 +909,20 @@
       <div class="lang-chip partial"><div class="lang-name">PHP</div><div class="lang-tier">Structural only</div></div>
     </div>
     <div class="lang-legend">
-      <span class="sw"><span class="dot full"></span> Full - functions, types, and call edges all resolve, verified against real multi-file projects</span>
-      <span class="sw"><span class="dot partial"></span> Structural only - functions and types are correct; call edges are incomplete or absent in that language's own tagging convention</span>
+      <span class="sw"><span class="dot full"></span> Full — functions, types, and call edges all resolve, verified against real multi-file projects</span>
+      <span class="sw"><span class="dot partial"></span> Structural only — functions and types are correct; call edges are incomplete or absent in that language's own tagging convention</span>
     </div>
   </section>
 
+  <hr class="rule">
+
   <section id="install">
-    <div class="section-head">
+    <div class="section-head center">
       <div class="kicker">Get running in a minute</div>
       <h2>Install, index, ask</h2>
     </div>
     <div class="code-block">
-      <div class="code-head"><span></span><span></span><span></span></div>
+      <div class="code-head"><span>v0.1.16</span><span>bash</span></div>
       <pre><span class="cmt"># build &amp; package</span>
 cargo build --release
 cargo deb -p nexusd --no-build
@@ -701,17 +931,17 @@ sudo dpkg -i target/debian/nexuscontext_*.deb
 <span class="cmt"># run the daemon persistently</span>
 systemctl --user enable --now nexuscontext.service
 
-<span class="cmt"># index a project and query it</span>
-nexus reindex /path/to/your/project
+<span class="cmt"># index a project, try LSP-resolved calls (Rust, opt-in)</span>
+nexus reindex /path/to/your/project --deep
 nexus search-graph SomeFunction --project /path/to/your/project
 
 <span class="cmt"># auto-configure Claude Code / Claude Desktop</span>
 nexus install</pre>
     </div>
-    <p style="text-align:center; margin-top:20px; color:var(--text-dim); font-size:13.5px;">
+    <p class="install-note">
       Prefer a prebuilt binary? Grab a <code>.deb</code>, <code>.rpm</code>, or tarball (Linux + macOS Apple Silicon) from
-      <a href="https://github.com/devNalyx/NexusContext/releases" style="color:var(--accent);">Releases</a> instead. Full walkthrough — GUI, GNOME extension, config, packaging — in
-      <a href="https://github.com/devNalyx/NexusContext/blob/main/INSTALL.md" style="color:var(--accent);">INSTALL.md</a>.
+      <a href="https://github.com/devNalyx/NexusContext/releases/latest">the latest release</a> instead. Full walkthrough — GUI, GNOME extension, config, packaging — in
+      <a href="https://github.com/devNalyx/NexusContext/blob/main/INSTALL.md">INSTALL.md</a>.
     </p>
   </section>
 </main>
@@ -719,13 +949,30 @@ nexus install</pre>
 <footer>
   <div class="footer-links">
     <a href="https://github.com/devNalyx/NexusContext">GitHub</a>
-    <a href="https://github.com/devNalyx/NexusContext/releases">Releases</a>
+    <a href="https://github.com/devNalyx/NexusContext/releases/latest">Releases</a>
     <a href="https://github.com/devNalyx/NexusContext/blob/main/README.md">Documentation</a>
+    <a href="https://github.com/devNalyx/NexusContext/blob/main/docs/NexusContext-Wiki/Home.md">Wiki</a>
     <a href="https://github.com/devNalyx/NexusContext/blob/main/INSTALL.md">Install guide</a>
     <a href="https://github.com/devNalyx/NexusContext/blob/main/LICENSE">MIT License</a>
   </div>
   NexusContext — self-hosted, local-first codebase intelligence.
 </footer>
 
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById('theme-toggle');
+    var stored = null;
+    try { stored = localStorage.getItem('nc-theme'); } catch (e) {}
+    if (stored === 'light' || stored === 'dark') { root.setAttribute('data-theme', stored); }
+    btn.addEventListener('click', function () {
+      var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var current = root.getAttribute('data-theme') || (prefersDark ? 'dark' : 'light');
+      var next = current === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('nc-theme', next); } catch (e) {}
+    });
+  })();
+</script>
 </body>
 </html>
