@@ -742,12 +742,16 @@ mod embeddings_snapshot_tests {
     use super::*;
 
     fn temp_store(name: &str) -> GraphStore {
-        let path = std::env::temp_dir().join(format!(
-            "nexus_embeddings_snapshot_test_{name}_{}.db",
+        // A dedicated per-test subdirectory, not a file directly under the
+        // shared system temp root - GraphStore::open now hardens its
+        // parent directory's mode (see issue #32), and that must never be
+        // the actual `/tmp`.
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_embeddings_snapshot_test_{name}_{}",
             std::process::id()
         ));
-        let _ = std::fs::remove_file(&path);
-        GraphStore::open(&path).unwrap()
+        let _ = std::fs::remove_dir_all(&dir);
+        GraphStore::open(&dir.join("graph.db")).unwrap()
     }
 
     #[test]
@@ -891,12 +895,16 @@ mod trace_calls_tests {
     use super::*;
 
     fn temp_store(name: &str) -> GraphStore {
-        let path = std::env::temp_dir().join(format!(
-            "nexus_trace_calls_test_{name}_{}.db",
+        // A dedicated per-test subdirectory, not a file directly under the
+        // shared system temp root - GraphStore::open now hardens its
+        // parent directory's mode (see issue #32), and that must never be
+        // the actual `/tmp`.
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_trace_calls_test_{name}_{}",
             std::process::id()
         ));
-        let _ = std::fs::remove_file(&path);
-        GraphStore::open(&path).unwrap()
+        let _ = std::fs::remove_dir_all(&dir);
+        GraphStore::open(&dir.join("graph.db")).unwrap()
     }
 
     fn func(store: &GraphStore, name: &str) -> i64 {
