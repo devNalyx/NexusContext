@@ -107,10 +107,24 @@ MCP-reachable finding:
 
 Plus three local-operator-scoped hardening fixes (not MCP-reachable, but
 real on this project's own shared dogfooding box): the control socket and
-every file the daemon writes are now owner-only (see above), and
-`import_project` caps decompressed size against a decompression bomb (see
-above). Full detail, including every finding (including the ones judged
-low-severity/deferred) is in the GitHub issues from this pass.
+every file the daemon writes, directories included, are now owner-only
+(see above), and `import_project` caps decompressed size against a
+decompression bomb, cleaning up any partial output on rejection or a
+genuine mid-stream decode error alike (see above).
+
+**One reliability fix, not strictly a security one but from the same
+pass:** the MCP stdio dispatch loop (`nexusd mcp`) had no panic isolation
+— unlike the control API, which already gets this for free from its
+one-thread-per-connection design, a panic anywhere in tool dispatch used
+to unwind straight through and kill the whole session over a single bad
+tool call. Now wrapped in `catch_unwind`, isolated to one JSON-RPC error
+response per request. No currently-reachable panic-from-untrusted-input
+was found to pair with this during the audit — closes an architectural
+gap, not a demonstrated live bug.
+
+Full detail, including every finding (including the ones judged
+low-severity) is in the GitHub issues from this pass — all closed as of
+this writing.
 
 ## Trust boundary, stated plainly
 
