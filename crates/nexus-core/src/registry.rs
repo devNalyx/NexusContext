@@ -73,6 +73,11 @@ impl Registry {
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            // File-level 0600 protects *content*; the directory itself was
+            // still left at the umask (commonly 0755), leaking *names* -
+            // which projects exist - to any other local user even though
+            // they can't read the files. A PR reviewer on #32 caught this.
+            crate::paths::harden_dir_owner_only(parent);
         }
         let tmp_path = path.with_extension("json.tmp");
         // Owner-only (0600), same reasoning as config.toml's own fix - this
@@ -172,24 +177,31 @@ mod tests {
     }
 
     /// Regression test for issue #32: `save` used to `fs::write` the temp
-    /// file directly, inheriting the process umask.
+    /// file directly, inheriting the process umask. Saves into a dedicated
+    /// scratch subdirectory, not directly under the shared system temp
+    /// root - `save` now also hardens its parent directory (see
+    /// `harden_dir_owner_only`), and that must never be the actual `/tmp`.
     #[test]
     #[cfg(unix)]
-    fn save_writes_owner_only() {
+    fn save_writes_owner_only_file_and_dir() {
         use std::os::unix::fs::PermissionsExt;
 
-        let path = std::env::temp_dir().join(format!(
+        let dir = std::env::temp_dir().join(format!(
             "nexuscontext-registry-test-{:?}-{}",
             std::thread::current().id(),
             std::process::id()
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("projects.json");
 
         let registry = Registry::default();
         registry.save(&path).unwrap();
 
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600);
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
 
-        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

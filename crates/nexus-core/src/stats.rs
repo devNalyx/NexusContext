@@ -62,6 +62,9 @@ impl UsageStats {
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            // Same directory-name-leak fix as Registry::save - see its
+            // comment.
+            crate::paths::harden_dir_owner_only(parent);
         }
         let tmp_path = path.with_extension("json.tmp");
         crate::paths::write_owner_only(&tmp_path, serde_json::to_string_pretty(self)?.as_bytes())?;
@@ -145,21 +148,25 @@ mod tests {
     /// test shape as `Registry::save`.
     #[test]
     #[cfg(unix)]
-    fn save_writes_owner_only() {
+    fn save_writes_owner_only_file_and_dir() {
         use std::os::unix::fs::PermissionsExt;
 
-        let path = std::env::temp_dir().join(format!(
+        let dir = std::env::temp_dir().join(format!(
             "nexuscontext-usage-stats-test-{:?}-{}",
             std::thread::current().id(),
             std::process::id()
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("usage_stats.json");
 
         let stats = UsageStats::default();
         stats.save(&path).unwrap();
 
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600);
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
 
-        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

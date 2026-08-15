@@ -225,28 +225,43 @@ fn decode_bounded(artifact: &Path, db_path: &Path, max_bytes: u64) -> Result<()>
 
     let input = std::fs::File::open(artifact)?;
     let mut decoder = zstd::stream::read::Decoder::new(input)?;
+    // Errors above (missing/unreadable artifact, not a valid zstd stream)
+    // propagate via `?` without touching `db_path` at all, so a failed
+    // import can never delete a perfectly good pre-existing graph.db.
+    // `File::create` below is the actual point of no return: once it
+    // succeeds, `db_path`'s prior content is already truncated regardless
+    // of what happens next, so *any* error from here on cleans up the
+    // partial output rather than only the cap-exceeded case - a PR
+    // reviewer caught that a genuine mid-stream decode error (a corrupt,
+    // not just oversized, artifact) used to leave a partial file behind.
     let mut output = std::fs::File::create(db_path)?;
 
     let mut buf = [0u8; 64 * 1024];
     let mut total: u64 = 0;
-    loop {
-        let n = decoder.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
+    let result: Result<()> = loop {
+        let n = match decoder.read(&mut buf) {
+            Ok(0) => break Ok(()),
+            Ok(n) => n,
+            Err(err) => break Err(err.into()),
+        };
         total += n as u64;
         if total > max_bytes {
-            drop(output);
-            let _ = std::fs::remove_file(db_path);
-            bail!(
+            break Err(anyhow::anyhow!(
                 "shared index artifact decompresses past the {} MiB safety cap - refusing \
                  (possible decompression bomb, or a corrupted/oversized artifact)",
                 max_bytes / (1024 * 1024)
-            );
+            ));
         }
-        output.write_all(&buf[..n])?;
+        if let Err(err) = output.write_all(&buf[..n]) {
+            break Err(err.into());
+        }
+    };
+
+    if result.is_err() {
+        drop(output);
+        let _ = std::fs::remove_file(db_path);
     }
-    Ok(())
+    result
 }
 
 /// Decompresses a shared artifact directly into place instead of walking the
@@ -543,6 +558,55 @@ mod decode_bounded_tests {
         assert!(
             !out.exists(),
             "partial output must be removed when the cap is exceeded, not left on disk"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Regression test for a PR review nit on issue #31: the cap-exceeded
+    /// path always cleaned up its partial output, but a genuine mid-stream
+    /// decode error (a corrupt, not just oversized, artifact) used to leave
+    /// one behind - truncating a real zstd stream produces exactly that.
+    #[test]
+    fn cleans_up_partial_output_on_a_genuine_mid_stream_decode_error_too() {
+        let dir = scratch_dir("corrupt_stream");
+        let raw = vec![0u8; 1_000_000];
+        let good_artifact = zstd_artifact(&dir, &raw);
+        let corrupt_artifact = dir.join("corrupt.zst");
+        // A real zstd stream, cut off partway through - a valid header
+        // followed by a truncated frame, not a cap-exceeded case.
+        let full = fs::read(&good_artifact).unwrap();
+        fs::write(&corrupt_artifact, &full[..full.len() / 2]).unwrap();
+        let out = dir.join("out.db");
+
+        let err = decode_bounded(&corrupt_artifact, &out, 10_000_000).unwrap_err();
+        assert!(
+            !err.to_string().contains("safety cap"),
+            "this must be a genuine decode error, not the cap path: {err}"
+        );
+        assert!(
+            !out.exists(),
+            "partial output must be removed on a mid-stream decode error too, not just the cap path"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A missing/unreadable artifact fails before `db_path` is ever
+    /// touched (`File::create` is never reached) - must not delete
+    /// whatever already happens to be at `db_path`, e.g. a perfectly good
+    /// graph.db from a prior successful import.
+    #[test]
+    fn a_missing_artifact_does_not_touch_a_pre_existing_db_path() {
+        let dir = scratch_dir("missing_artifact");
+        let artifact = dir.join("does-not-exist.zst");
+        let out = dir.join("out.db");
+        fs::write(&out, b"pre-existing graph.db content, must survive").unwrap();
+
+        assert!(decode_bounded(&artifact, &out, 10_000).is_err());
+        assert_eq!(
+            fs::read(&out).unwrap(),
+            b"pre-existing graph.db content, must survive"
         );
 
         let _ = fs::remove_dir_all(&dir);

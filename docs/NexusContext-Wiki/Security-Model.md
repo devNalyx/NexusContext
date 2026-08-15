@@ -13,13 +13,17 @@ fixed by a dedicated review pass rather than designed in from the start.
   silently start sending code to it either — `enabled` is a separate
   switch. See [[Embeddings-and-Semantic-Search]].
 - **Everything the daemon writes under the data/config dirs is owner-only on
-  disk** — `config.toml` (`0600`, written atomically at creation time, not
-  write-then-chmod, which would leave a brief world-readable window; it can
-  hold `embeddings.api_key` in plaintext), `registry.json`/`usage_stats.json`
-  (`0600`), and `graph.db` plus its own project data directory (`0600`/
-  `0700`) — `graph.db` is the most sensitive of these, since it holds the
-  full indexed source text (FTS5) and embedding vectors for every project
-  ever indexed, not just metadata.
+  disk, directories included** — `config.toml` (`0600`, written atomically
+  at creation time, not write-then-chmod, which would leave a brief
+  world-readable window; it can hold `embeddings.api_key` in plaintext),
+  `registry.json`/`usage_stats.json` (`0600`, plus their containing data
+  directory itself hardened to `0700` right alongside them — file-level
+  `0600` alone still left directory *listing* open, leaking which projects
+  exist and that `usage_stats.json` exists at all, even though the file
+  contents themselves were already protected), and `graph.db` plus its own
+  per-project data directory (`0600`/`0700`) — `graph.db` is the most
+  sensitive of these, since it holds the full indexed source text (FTS5)
+  and embedding vectors for every project ever indexed, not just metadata.
 - **`embeddings.api_key` is never echoed back over the control API.**
   `config.get`/`config.set` both return `has_api_key: bool` instead of the
   raw value — the key never leaves the daemon process once set.

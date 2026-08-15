@@ -105,3 +105,23 @@ pub fn write_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 pub fn write_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, contents)
 }
+
+/// Owner-only (0700) on a directory, best-effort - a failure here must
+/// never fail whatever real operation (a save, an index open) is in
+/// progress. File-level `write_owner_only`/per-project `graph.db` hardening
+/// already protect *content*; a PR reviewer on #32 pointed out those alone
+/// still leave the top-level data directory itself at the process umask
+/// (commonly 0755), which leaks *file names* - which projects exist, that
+/// `usage_stats.json` exists at all - to any other local user even though
+/// they can't read the files themselves. Called from `Registry::save`/
+/// `UsageStats::save` right after their own `create_dir_all`, which is
+/// where the data dir would otherwise be silently created at the umask's
+/// mode for the first time.
+#[cfg(unix)]
+pub fn harden_dir_owner_only(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+}
+
+#[cfg(not(unix))]
+pub fn harden_dir_owner_only(_path: &Path) {}
