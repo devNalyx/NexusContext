@@ -176,6 +176,10 @@ pub fn artifact_path(repo_path: &Path) -> PathBuf {
 /// imported snapshot only saves the *first* reindex; anyone who wants fresh
 /// data after that still runs a normal full `index_project`.
 pub fn export_project(repo_path: &Path) -> Result<PathBuf> {
+    // Canonicalize *before* the allowed_roots check, not after - matches the
+    // fix in `queries.rs`'s `get_file_context`/`detect_changes` (issue #29).
+    let repo_path = canonicalize_for_registry(repo_path)?;
+    let repo_path = repo_path.as_path();
     require_path_allowed(&Paths::resolve(), repo_path)?;
 
     let db_path = graph_db_path(repo_path);
