@@ -6,6 +6,7 @@ use nexus_index::{
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
@@ -15,14 +16,7 @@ use std::path::PathBuf;
 /// different transport (Unix domain socket instead of stdio), so a GUI
 /// session never competes with whatever MCP client is attached to stdio.
 pub fn serve(socket_path: PathBuf) -> Result<()> {
-    if socket_path.exists() {
-        std::fs::remove_file(&socket_path)?;
-    }
-    if let Some(parent) = socket_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let listener = UnixListener::bind(&socket_path)?;
+    let listener = bind_socket(&socket_path)?;
     tracing::info!(socket = %socket_path.display(), "control API listening");
 
     for stream in listener.incoming() {
@@ -38,6 +32,35 @@ pub fn serve(socket_path: PathBuf) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Removes a stale socket file, ensures the parent directory exists, binds,
+/// then locks the socket file itself down to owner-only.
+///
+/// The control API has no authentication of its own (see `redact_config`'s
+/// doc comment) - today's only real protection is that `socket_path`'s
+/// parent directory (`$XDG_RUNTIME_DIR/nexuscontext` under the systemd user
+/// service default) is itself 0700, owner-only. `UnixListener::bind` has no
+/// way to create the socket file with a restrictive mode atomically, so the
+/// `set_permissions` call below is a second, explicit layer rather than
+/// relying solely on an inherited directory-permission convention - defends
+/// the case where `socket_path` ever lives somewhere that convention doesn't
+/// hold (a custom `NEXUS_CACHE_DIR`, a non-systemd init). There's a small
+/// unavoidable race between `bind` and `set_permissions` where the socket is
+/// briefly at the process umask's mode instead - acceptable since the
+/// directory permission already covers that window in the default
+/// deployment. See issue #23.
+fn bind_socket(socket_path: &std::path::Path) -> Result<UnixListener> {
+    if socket_path.exists() {
+        std::fs::remove_file(socket_path)?;
+    }
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let listener = UnixListener::bind(socket_path)?;
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
 }
 
 fn handle_connection(stream: UnixStream) -> Result<()> {
@@ -512,5 +535,58 @@ mod tests {
             redacted_empty.pointer("/embeddings/has_api_key"),
             Some(&json!(false))
         );
+    }
+
+    /// A unique scratch directory per test - mirrors the pattern already
+    /// established in `nexus_core::config`'s own permission test, since this
+    /// crate doesn't otherwise depend on a temp-dir crate.
+    fn scratch_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "nexuscontext-control-test-{label}-{:?}-{}",
+            std::thread::current().id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn bind_socket_locks_the_socket_file_to_owner_only() {
+        let dir = scratch_dir("owner-only");
+        let socket_path = dir.join("nested").join("test.sock");
+
+        let _listener = bind_socket(&socket_path).unwrap();
+
+        let mode = std::fs::metadata(&socket_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bind_socket_removes_a_stale_socket_file_left_over_from_a_previous_run() {
+        let dir = scratch_dir("stale-file");
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket_path = dir.join("test.sock");
+        // A plain file standing in for a stale socket from a prior process -
+        // `bind_socket` must remove it before binding, not error on it
+        // already existing.
+        std::fs::write(&socket_path, b"stale").unwrap();
+
+        let _listener = bind_socket(&socket_path).unwrap();
+
+        let mode = std::fs::metadata(&socket_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

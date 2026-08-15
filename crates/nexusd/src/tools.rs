@@ -962,4 +962,86 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert!(filtered.contains("search_code"));
     }
+
+    /// Guards against exactly the drift that cost two review rounds this
+    /// week: `get_session_usage` shipped in PR #19 without any doc update
+    /// (caught in PR #21), and the landing page was then missed by that very
+    /// fix and had to be caught in a follow-up commit to #21. See issue #24.
+    ///
+    /// Deliberately scoped to "live reference" docs only - `README.md` (and
+    /// `change_proposal.md`) are phase-by-phase historical logs by design
+    /// and legitimately contain frozen old counts (Phase 21's "13 total"
+    /// stays 13 forever, recording what was true at that phase; Phase 29's
+    /// "9 → 10" likewise). A generic check there would false-positive on
+    /// intentional history rather than catch real drift - that's reviewed
+    /// by a human PR reviewer instead (as it already was, for #21).
+    #[test]
+    fn doc_prose_tool_counts_match_the_real_tool_set() {
+        let total = ALL_TOOL_NAMES.len();
+        let minimal = MINIMAL_TOOLS.len();
+        let standard = minimal + STANDARD_EXTRA_TOOLS.len();
+        assert_eq!(total, standard + FULL_EXTRA_TOOLS.len());
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let read = |rel: &str| -> String {
+            std::fs::read_to_string(root.join(rel))
+                .unwrap_or_else(|e| panic!("failed to read {rel} for doc-drift check: {e}"))
+        };
+
+        let mcp_tools = read("docs/NexusContext-Wiki/MCP-Tools.md");
+        assert!(
+            mcp_tools.contains(&format!("{total} tools total")),
+            "MCP-Tools.md's tool-count intro is stale - expected \"{total} tools total\""
+        );
+        assert!(
+            mcp_tools.contains(&format!("all {total} are advertised")),
+            "MCP-Tools.md's preset-rationale heading is stale - expected \"all {total} are advertised\""
+        );
+
+        let configuration = read("docs/NexusContext-Wiki/Configuration.md");
+        assert!(
+            configuration.contains(&format!(
+                "\"minimal\" ({minimal}) | \"standard\" (default, {standard}) | \"full\" ({total})"
+            )),
+            "Configuration.md's preset comment line is stale"
+        );
+        assert!(
+            configuration.contains(&format!("which of the {total} MCP tools")),
+            "Configuration.md's [tools] field description is stale"
+        );
+
+        let home = read("docs/NexusContext-Wiki/Home.md");
+        assert!(
+            home.contains(&format!("the {total} tools an agent can call")),
+            "Home.md's tool count is stale"
+        );
+
+        let install = read("INSTALL.md");
+        assert!(
+            install.contains(&format!(
+                "only {standard} of these {total} are actually advertised"
+            )),
+            "INSTALL.md's tool count is stale"
+        );
+        assert!(
+            install.contains(&format!(
+                "\"minimal\" ({minimal} core read tools) | \"standard\" (default, {standard}) | \"full\" (all {total})"
+            )),
+            "INSTALL.md's preset comment line is stale"
+        );
+
+        let landing_page = read("docs/index.html");
+        assert!(
+            landing_page.contains(&format!("\"n\">{total}</div><div class=\"l\">MCP tools")),
+            "docs/index.html's hero stat is stale"
+        );
+        assert!(
+            landing_page.contains(&format!("stdio server with {total} tools")),
+            "docs/index.html's subhead paragraph is stale"
+        );
+        assert!(
+            landing_page.contains(&format!("{total} MCP tools, grouped by what they answer")),
+            "docs/index.html's capabilities heading is stale"
+        );
+    }
 }
