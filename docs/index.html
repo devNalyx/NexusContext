@@ -445,7 +445,7 @@
       <a class="btn btn-ghost" href="#install">Quick install</a>
     </div>
     <div class="stat-row">
-      <div class="stat"><div class="n">13</div><div class="l">MCP tools</div></div>
+      <div class="stat"><div class="n">14</div><div class="l">MCP tools</div></div>
       <div class="stat"><div class="n">11</div><div class="l">Languages parsed</div></div>
       <div class="stat"><div class="n">0</div><div class="l">Embeddings required</div></div>
       <div class="stat"><div class="n">2</div><div class="l">Transports, one daemon</div></div>
@@ -467,7 +467,7 @@
       <div class="card">
         <div class="icon">⌁</div>
         <h3>MCP-native</h3>
-        <p>A real JSON-RPC 2.0 stdio server with 13 tools, verified against real IDE-style sessions — drop it into any MCP-compatible agent, or auto-configure Claude Code/Desktop with one command.</p>
+        <p>A real JSON-RPC 2.0 stdio server with 14 tools, verified against real IDE-style sessions — drop it into any MCP-compatible agent, or auto-configure Claude Code/Desktop with one command.</p>
       </div>
       <div class="card">
         <div class="icon">▣</div>
@@ -532,7 +532,7 @@
   <section id="capabilities">
     <div class="section-head">
       <div class="kicker">What your agent can actually call</div>
-      <h2>13 MCP tools, grouped by what they answer</h2>
+      <h2>14 MCP tools, grouped by what they answer</h2>
       <p>Every tool is backed by the same SQLite graph — no separate index to keep in sync, no silent fallback that hides what actually ran.</p>
     </div>
     <div class="tool-groups">
@@ -579,6 +579,13 @@
         <div class="tool-row">
           <div class="name">query_planner</div>
           <div class="desc">Picks the cheapest retrieval strategy for a query instead of the agent guessing.</div>
+        </div>
+      </div>
+      <div class="tool-group">
+        <div class="group-label">Observability</div>
+        <div class="tool-row">
+          <div class="name">get_session_usage</div>
+          <div class="desc">Per-tool call/error/output-byte counters for this session only, with a rough token estimate - keep an eye on your own context budget.</div>
         </div>
       </div>
       <div class="tool-group">
