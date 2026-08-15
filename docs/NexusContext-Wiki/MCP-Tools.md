@@ -1,6 +1,6 @@
 # MCP Tools
 
-13 tools total, backed by the same SQLite graph — no separate index to keep
+14 tools total, backed by the same SQLite graph — no separate index to keep
 in sync, no silent fallback that hides what actually ran. Every tool caps
 its response somehow; see [[Security-Model]] for why that became a
 deliberate, tested property rather than an assumption.
@@ -29,6 +29,12 @@ deliberate, tested property rather than an assumption.
 | `detect_changes` | Maps uncommitted git changes to the graph symbols whose line range overlaps a diff hunk. |
 | `query_planner` | Picks the cheapest retrieval strategy (file read / symbol search / semantic-or-keyword fallback) instead of the agent guessing. Returns which strategy it used. |
 
+## Observability
+
+| Tool | What it does |
+|---|---|
+| `get_session_usage` | Per-tool call/error/output-byte counters (plus a rough bytes/4 token estimate) for *this* MCP session only — in-memory, resets when the `nexusd mcp` process does. Not the lifetime totals `stats.get`/the GUI Usage tab show — see [[Storage-and-Data-Model]] for those. |
+
 ## Query & manage
 
 | Tool | What it does |
@@ -37,7 +43,7 @@ deliberate, tested property rather than an assumption.
 | `delete_project` | Removes a project's indexed data (graph + registry entry). Never touches the source directory. Destructive — gated behind the `full` preset. |
 | `search_codebase` / `query_memory` | Real cosine-similarity semantic search over embedded chunks. Requires `embeddings.enabled = true` and a reachable endpoint — see [[Embeddings-and-Semantic-Search]]. `query_memory` is currently the same ranked search as `search_codebase`; richer RAG-style retrieval is a future enhancement, not built yet. |
 
-## Why not all 13 are advertised by default
+## Why not all 14 are advertised by default
 
 Every MCP session pays a fixed token cost just to load `tools/list`'s
 schemas, regardless of whether that session ever calls most of them. A
@@ -45,19 +51,20 @@ schemas, regardless of whether that session ever calls most of them. A
 
 ```toml
 [tools]
-preset = "standard"   # "minimal" (5) | "standard" (default, 9) | "full" (13)
+preset = "standard"   # "minimal" (5) | "standard" (default, 10) | "full" (14)
 # enabled = ["search_code", "get_architecture"]   # explicit list, overrides preset
 ```
 
 - **`minimal`** (5): `index_repository`, `search_code`, `get_file_context`,
   `get_architecture`, `trace_call_path` — the read-heavy core loop.
-- **`standard`** (9, the default): adds `search_graph`, `detect_changes`,
-  `detect_dead_code`, `query_planner`.
-- **`full`** (13): adds `delete_project` (destructive), `query_graph`
+- **`standard`** (10, the default): adds `search_graph`, `detect_changes`,
+  `detect_dead_code`, `query_planner`, `get_session_usage`.
+- **`full`** (14): adds `delete_project` (destructive), `query_graph`
   (niche DSL), `search_codebase`/`query_memory` (embeddings-gated).
 
 This was a deliberate fix, not the original design — see `README.md`
-Phase 21/22 for the token-cost measurement that drove it.
+Phase 21/22 for the token-cost measurement that drove it, and Phase 29
+for `get_session_usage` joining `standard`.
 
 ## Related
 

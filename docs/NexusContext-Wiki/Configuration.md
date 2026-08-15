@@ -21,7 +21,7 @@ allow_remote = false  # must be true to use a non-loopback/private endpoint
 warm_window_secs = 21600   # 6h default - see Watcher-and-Freshness
 
 [tools]
-preset = "standard"   # "minimal" (5) | "standard" (default, 9) | "full" (13)
+preset = "standard"   # "minimal" (5) | "standard" (default, 10) | "full" (14)
 # enabled = ["search_code", "get_architecture"]   # explicit list, overrides preset
 ```
 
@@ -36,7 +36,7 @@ preset = "standard"   # "minimal" (5) | "standard" (default, 9) | "full" (13)
 - **`[watcher].warm_window_secs`** — how long a project stays "warm"
   (actively watched, auto-reindexed on change) after it was last queried.
   See [[Watcher-and-Freshness]].
-- **`[tools]`** — which of the 13 MCP tools get advertised to a calling
+- **`[tools]`** — which of the 14 MCP tools get advertised to a calling
   agent. See [[MCP-Tools]] for the preset breakdown.
 
 ## Env var overrides

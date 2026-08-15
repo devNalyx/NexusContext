@@ -19,7 +19,7 @@ doesn't duplicate that; it's the "what is true right now" layer on top of
 
 - [[Architecture]] — the daemon, its two transports, and how the pieces fit
   together.
-- [[MCP-Tools]] — the 13 tools an agent can call, grouped, and why they're
+- [[MCP-Tools]] — the 14 tools an agent can call, grouped, and why they're
   gated behind presets.
 - [[Indexing-Pipeline]] — how a codebase becomes a graph: tree-sitter,
   two-pass call resolution, per-language quality tiers.
