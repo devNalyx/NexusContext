@@ -11,6 +11,12 @@ correct on review, didn't hold up live."
 A `notify`-backed file watcher (`notify-debouncer-mini`, 2s debounce)
 watches every **warm** registered project and triggers a full reindex on
 real changes. `mcp`-mode sessions don't own this — it's `serve`-mode only.
+`serve` (and so this whole subsystem) is Linux/macOS only as of Phase 33 —
+Windows doesn't have it yet, `mod watcher` is compiled out there entirely
+alongside the control API it's paired with. See [[Known-Limitations]].
+`touch_and_catchup`'s cold-project catch-up reindex below still applies
+everywhere, `mcp` mode included — it's the one piece of freshness handling
+that doesn't depend on the watcher being present at all.
 
 ## Warm vs. cold: not every registered project stays watched
 

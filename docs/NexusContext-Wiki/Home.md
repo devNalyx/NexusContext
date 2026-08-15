@@ -7,9 +7,11 @@ and optional real semantic search layered on top. No LLM runs inside the
 daemon: it builds structure and answers queries; the calling agent still
 does all the reasoning.
 
-This is a real, working product (not a proposal), currently at **v0.1.15**.
+This is a real, working product (not a proposal), currently at **v0.1.17**,
+released for Linux, macOS, and Windows (x86_64 + arm64 each — see
+[[Known-Limitations]] for what's tiered by platform).
 This vault documents its *current state* by topic, cross-linked. For the
-blow-by-blow build history (29 phases, every bug found and how it was
+blow-by-blow build history (33 phases, every bug found and how it was
 actually fixed, verified against a real dogfooded daemon rather than just
 code review), see `README.md` at the repo root — this vault deliberately
 doesn't duplicate that; it's the "what is true right now" layer on top of

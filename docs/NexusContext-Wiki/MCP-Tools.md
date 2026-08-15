@@ -9,9 +9,9 @@ deliberate, tested property rather than an assumption.
 
 | Tool | What it does |
 |---|---|
-| `index_repository` | Build or rebuild the knowledge graph for a directory. Run this before anything else on a project you haven't indexed yet. |
+| `index_repository` | Build or rebuild the knowledge graph for a directory. Run this before anything else on a project you haven't indexed yet. `deep: true` also runs LSP-resolved-symbol enrichment (Rust only, opt-in via `[lsp]`) — see [[Storage-and-Data-Model]]. |
 | `get_file_context` | Read a file, or a bounded line range, from an indexed project. No range + `full=false` (default) returns the first 300 lines with a truncation note. Every branch is now byte-capped, not just line-capped — see [[Security-Model]]. |
-| `get_architecture` | Node/edge counts, busiest files by definition density, language breakdown. Cached, keyed on the project's `last_indexed_unix`, so repeated calls against an unchanged index skip SQLite entirely. |
+| `get_architecture` | Node/edge counts, busiest files by definition density, language breakdown, plus an `index_freshness` field (last-indexed time, whether the project is currently "warm"). Cached, keyed on the project's `last_indexed_unix`, so repeated calls against an unchanged index skip SQLite entirely — freshness is computed fresh on every call regardless, so it never reads stale from the cache. |
 
 ## Search & trace
 
@@ -19,21 +19,21 @@ deliberate, tested property rather than an assumption.
 |---|---|
 | `search_graph` | Structural search over indexed symbols by name substring — functions/types and markdown heading `Section`s. No embeddings required. |
 | `search_code` | Grep-like full-text search over indexed file content via SQLite FTS5 — code and markdown alike, matched as a literal phrase. |
-| `trace_call_path` | BFS over the `CALLS` graph to find callers/callees. Name-based resolution, not import-aware — see [[Known-Limitations]]. Response is capped; check `total_nodes` vs. `shown`. |
+| `trace_call_path` | BFS over the `CALLS` graph (unioned with `CALLS_RESOLVED` when a `deep` reindex has run) to find callers/callees. Name-based resolution, not import-aware — see [[Known-Limitations]]. Response is capped; check `total_nodes` vs. `shown`. |
 
 ## Quality & change
 
 | Tool | What it does |
 |---|---|
-| `detect_dead_code` | Functions with no inbound `CALLS` edge (excluding `main`). High false-positive rate is expected and stated in the tool's own description — treat hits as leads, not conclusions. |
+| `detect_dead_code` | Functions with no inbound `CALLS`/`CALLS_RESOLVED` edge (excluding `main`). High false-positive rate is expected and stated in the tool's own description — treat hits as leads, not conclusions. |
 | `detect_changes` | Maps uncommitted git changes to the graph symbols whose line range overlaps a diff hunk. |
-| `query_planner` | Picks the cheapest retrieval strategy (file read / symbol search / semantic-or-keyword fallback) instead of the agent guessing. Returns which strategy it used. |
+| `query_planner` | Picks the cheapest retrieval strategy (file read / symbol search / semantic-or-keyword fallback) instead of the agent guessing, and returns the actual answer in-band alongside which strategy it used — no second call needed. Also carries `index_freshness`. |
 
 ## Observability
 
 | Tool | What it does |
 |---|---|
-| `get_session_usage` | Per-tool call/error/output-byte counters (plus a rough bytes/4 token estimate) for *this* MCP session only — in-memory, resets when the `nexusd mcp` process does. Not the lifetime totals `stats.get`/the GUI Usage tab show — see [[Storage-and-Data-Model]] for those. |
+| `get_session_usage` | Per-tool call/error/output-byte counters (plus a rough bytes/4 token estimate) for *this* MCP session only — in-memory, resets when the `nexusd mcp` process does. Also reports `schema_tax` (the fixed per-session cost of every tool's own schema) and `reads_avoided` (an auditable, conservative counterfactual — successful calls to an explicit tool allow-list that plausibly substituted a manual read/grep). Not the lifetime totals `stats.get`/the GUI Usage tab show — see [[Storage-and-Data-Model]] for those. |
 
 ## Query & manage
 
@@ -63,8 +63,14 @@ preset = "standard"   # "minimal" (5) | "standard" (default, 10) | "full" (14)
   (niche DSL), `search_codebase`/`query_memory` (embeddings-gated).
 
 This was a deliberate fix, not the original design — see `README.md`
-Phase 21/22 for the token-cost measurement that drove it, and Phase 29
-for `get_session_usage` joining `standard`.
+Phase 21/22 for the token-cost measurement that drove it, Phase 29
+for `get_session_usage` joining `standard`, and Phase 31 for its
+`schema_tax`/`reads_avoided` fields.
+
+Every tool here works identically on Linux, macOS, and Windows — none of
+them depend on `nexusd serve` (the control API, background watcher, GUI
+target), which is the one piece not yet ported to Windows. See
+[[Known-Limitations]].
 
 ## Related
 

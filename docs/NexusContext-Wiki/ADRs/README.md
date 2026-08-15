@@ -57,6 +57,8 @@ history stays legible.
 | [0005](0005-mcp-tool-presets.md) | MCP tools are gated behind presets (`minimal`/`standard`/`full`), not always-on | Accepted |
 | [0006](0006-full-rebuild-reindexing.md) | Reindexing is a full rebuild, not incremental diffing | Accepted |
 | [0007](0007-embeddings-safe-by-default.md) | Embeddings endpoints are loopback/private by default, remote is opt-in | Accepted |
+| [0008](0008-lsp-resolved-edges-are-a-distinct-kind.md) | LSP-resolved call edges are a distinct kind, never merged into the static ones | Accepted |
+| [0009](0009-windows-gets-mcp-and-cli-only.md) | Windows ships `nexusd mcp` + `nexus` CLI only, via `cfg(unix)` module gating | Accepted |
 
 ## Related
 
