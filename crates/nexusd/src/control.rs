@@ -50,6 +50,12 @@ pub fn serve(socket_path: PathBuf) -> Result<()> {
 /// briefly at the process umask's mode instead - acceptable since the
 /// directory permission already covers that window in the default
 /// deployment. See issue #23.
+///
+/// If `set_permissions` itself fails, the socket is already bound and
+/// `?` propagates the error up through `serve()` without unbinding it -
+/// harmless in practice (the process is exiting on that error path anyway,
+/// and the next `serve()` call's stale-file removal above cleans it up),
+/// just not a fully symmetric rollback.
 fn bind_socket(socket_path: &std::path::Path) -> Result<UnixListener> {
     if socket_path.exists() {
         std::fs::remove_file(socket_path)?;
@@ -537,18 +543,19 @@ mod tests {
         );
     }
 
-    /// A unique scratch directory per test - mirrors the pattern already
-    /// established in `nexus_core::config`'s own permission test, since this
-    /// crate doesn't otherwise depend on a temp-dir crate.
+    /// A scratch directory per test - unlike `nexus_core::config`'s own
+    /// permission test (which this originally copied the long
+    /// thread-id+nanos naming from), the path here ends up inside a real
+    /// `AF_UNIX` socket address, not just a regular file path: `sun_path` is
+    /// capped at 108 bytes on Linux and only 104 on macOS, and CI's macOS
+    /// runner's `$TMPDIR` is already a long `/private/var/folders/...`
+    /// prefix - the long name blew that budget and failed with `path must
+    /// be shorter than SUN_LEN` there while passing on Linux (caught by a
+    /// PR reviewer, not caught locally). Kept short and pid-only instead -
+    /// distinct `label`s already avoid collisions between the two tests
+    /// below sharing one process id.
     fn scratch_dir(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "nexuscontext-control-test-{label}-{:?}-{}",
-            std::thread::current().id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
+        std::env::temp_dir().join(format!("ncsock-{label}-{}", std::process::id()))
     }
 
     #[test]
@@ -573,10 +580,12 @@ mod tests {
         let dir = scratch_dir("stale-file");
         std::fs::create_dir_all(&dir).unwrap();
         let socket_path = dir.join("test.sock");
-        // A plain file standing in for a stale socket from a prior process -
-        // `bind_socket` must remove it before binding, not error on it
-        // already existing.
-        std::fs::write(&socket_path, b"stale").unwrap();
+        // A genuine leftover socket, not just a proxy file: bind once and
+        // drop the listener without removing it - the same shape a
+        // not-cleanly-shut-down daemon leaves behind. `bind_socket` must
+        // remove it before re-binding, not error on it already existing.
+        drop(UnixListener::bind(&socket_path).unwrap());
+        assert!(socket_path.exists());
 
         let _listener = bind_socket(&socket_path).unwrap();
 
