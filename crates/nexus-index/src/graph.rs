@@ -623,6 +623,20 @@ impl GraphStore {
         // A wide fan-in/fan-out function (a common "hub") used to turn each
         // level into dozens-to-hundreds of individual round trips. See
         // issue #33.
+        //
+        // Two things a PR reviewer flagged worth knowing, neither a
+        // correctness bug: the result *set* per level is identical to the
+        // old per-node loop (verified by 3 new tests, including a diamond
+        // shape asserting no duplication), but rows now come back in
+        // edges-table scan order rather than frontier-node order - if a
+        // level is large enough to hit `trace_call_path`'s `limit`
+        // truncation, which specific nodes get cut could differ from
+        // before (harmless; `total_nodes` stays exact either way). And the
+        // IN-list is unbounded per level - bundled SQLite caps bound
+        // variables around 32766, so a single BFS level wider than that
+        // would fail outright rather than degrade; `subgraph_edges` already
+        // carries this same unbounded-IN-list shape, and real call-graph
+        // fan-out is nowhere near that width today.
         for _ in 0..max_depth {
             if frontier.is_empty() {
                 break;
