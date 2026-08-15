@@ -62,3 +62,22 @@ jobs:
       # entirely here rather than attempted, matching the release
       # pipeline's Tier 2 scope (CLI + daemon only on macOS).
       - run: cargo test --workspace --exclude nexus-gui --locked
+
+  # Added alongside issue #16's Windows support - before this, Windows
+  # compilation was only ever checked by release.yml, which is
+  # tag-triggered, so a PR that broke the cfg(unix) split wouldn't be
+  # caught until the next version tag (potentially weeks later, or never
+  # between infrequent releases). One arch here (x86_64) for fast per-PR
+  # signal, matching test-macos's single-arch approach - arm64 gets its
+  # real test from release.yml's full matrix instead of doubling every
+  # PR's Windows CI time for a target that shares the same source.
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # No serve/GUI on Windows yet (issue #16) - same exclusion as macOS,
+      # plus control.rs/watcher.rs are cfg(unix)-gated out entirely so
+      # there's nothing extra to skip at the cargo-invocation level here.
+      - run: cargo test --workspace --exclude nexus-gui --locked
