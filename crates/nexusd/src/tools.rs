@@ -38,6 +38,58 @@ fn clamp_semantic_limit(requested: u32) -> u32 {
 /// duplication).
 const RESPONSE_CHUNK_TEXT_MAX_BYTES: usize = 1000;
 
+/// Per-tool call/error/byte counters for `get_session_usage`, scoped to
+/// *this process* rather than persisted like `nexus_core::stats`'s
+/// lifetime-aggregate `usage_stats.json` - `nexusd mcp` is spawned fresh
+/// per agent session, so in-memory-only naturally gives "this session"
+/// instead of "ever" without needing an explicit session id or a reset
+/// call anywhere.
+struct SessionToolStats {
+    call_count: u64,
+    error_count: u64,
+    output_bytes: u64,
+}
+
+static SESSION_USAGE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, SessionToolStats>>,
+> = std::sync::OnceLock::new();
+static SESSION_STARTED_UNIX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+/// First call in this process wins and is cheap to be a second or two off -
+/// this is "roughly when did this session start," not an audit timestamp.
+fn session_started_unix() -> u64 {
+    *SESSION_STARTED_UNIX.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    })
+}
+
+fn record_session_call(name: &str, output_bytes: u64, is_error: bool) {
+    let map = SESSION_USAGE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut map = map.lock().unwrap();
+    let entry = map.entry(name.to_string()).or_insert(SessionToolStats {
+        call_count: 0,
+        error_count: 0,
+        output_bytes: 0,
+    });
+    entry.call_count += 1;
+    if is_error {
+        entry.error_count += 1;
+    }
+    entry.output_bytes += output_bytes;
+}
+
+/// A plain character-count heuristic (roughly 4 bytes/token for English-ish
+/// code and prose), not a real tokenizer - nexusd has no reason to carry a
+/// tokenizer dependency just for a ballpark. Good enough for "roughly how
+/// much of my budget did this cost," not for anything that needs to match a
+/// specific model's actual count.
+fn estimate_tokens(bytes: u64) -> u64 {
+    bytes / 4
+}
+
 pub fn tool_definitions() -> Value {
     json!([
         {
@@ -189,6 +241,14 @@ pub fn tool_definitions() -> Value {
                 "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer", "default": 10, "maximum": 30 } },
                 "required": ["repo_path", "query"]
             }
+        },
+        {
+            "name": "get_session_usage",
+            "description": "How much data NexusContext has sent back in this session so far, per tool, with a rough token estimate - useful for keeping an eye on your own context budget. Scoped to this session only (since this MCP connection started, not lifetime totals across every session), and counts only NexusContext's own MCP responses - not your system prompt, conversation history, or any other tool's output.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
         }
     ])
 }
@@ -211,6 +271,7 @@ const ALL_TOOL_NAMES: &[&str] = &[
     "query_graph",
     "search_codebase",
     "query_memory",
+    "get_session_usage",
 ];
 
 /// A read-heavy coding session's core loop: bootstrap the index, then read
@@ -230,6 +291,7 @@ const STANDARD_EXTRA_TOOLS: &[&str] = &[
     "detect_changes",
     "detect_dead_code",
     "query_planner",
+    "get_session_usage",
 ];
 
 /// Admin/destructive (`delete_project`) or embeddings-gated
@@ -327,6 +389,7 @@ pub fn call(params: Value) -> Result<Value> {
         "query_graph" => query_graph(args),
         "query_planner" => query_planner(args),
         "search_codebase" | "query_memory" => semantic_search_tool(args),
+        "get_session_usage" => get_session_usage(args),
         _ => bail!("unknown tool: {name}"),
     };
 
@@ -346,6 +409,13 @@ pub fn call(params: Value) -> Result<Value> {
             output_bytes,
             is_error,
         );
+        // Session-scoped counterpart to the lifetime file above - lives only
+        // in this process's memory, so it naturally resets every time
+        // `nexusd mcp` is spawned fresh for a new session. Backs
+        // `get_session_usage`: "how much has NexusContext sent me this
+        // session" is a different, agent-relevant question from "how much
+        // has it ever sent anyone," which is all the persisted file answers.
+        record_session_call(name, output_bytes, is_error);
     }
 
     match result {
@@ -526,6 +596,45 @@ fn get_file_context(args: Value) -> Result<String> {
     index::get_file_context(&repo_path, file, start, end, full)
 }
 
+/// Takes no arguments deliberately - this reports on the session itself,
+/// not on any one project, so there's nothing to scope it by.
+fn get_session_usage(_args: Value) -> Result<String> {
+    let map = SESSION_USAGE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let map = map.lock().unwrap();
+
+    let mut by_tool: Vec<Value> = map
+        .iter()
+        .map(|(name, s)| {
+            json!({
+                "name": name,
+                "call_count": s.call_count,
+                "error_count": s.error_count,
+                "output_bytes": s.output_bytes,
+                "estimated_tokens": estimate_tokens(s.output_bytes),
+            })
+        })
+        .collect();
+    // Biggest contributor first - that's the one worth knowing about.
+    by_tool.sort_by(|a, b| {
+        b["output_bytes"]
+            .as_u64()
+            .unwrap_or(0)
+            .cmp(&a["output_bytes"].as_u64().unwrap_or(0))
+    });
+
+    let total_calls: u64 = map.values().map(|s| s.call_count).sum();
+    let total_output_bytes: u64 = map.values().map(|s| s.output_bytes).sum();
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "session_started_unix": session_started_unix(),
+        "total_calls": total_calls,
+        "total_output_bytes": total_output_bytes,
+        "total_estimated_tokens": estimate_tokens(total_output_bytes),
+        "by_tool": by_tool,
+        "note": "Scoped to this session only (this MCP connection, since it started) - not lifetime totals. Counts only NexusContext's own MCP response bytes, not your system prompt, conversation history, or any other tool's output, and NexusContext doesn't know your model's actual context limit or real tokenizer - estimated_tokens is a bytes/4 approximation, not an exact count.",
+    }))?)
+}
+
 fn last_indexed_unix(repo_path: &std::path::Path) -> u64 {
     let paths = Paths::resolve();
     let hash = project_hash(repo_path);
@@ -658,6 +767,42 @@ mod tests {
     }
 
     #[test]
+    fn estimate_tokens_is_bytes_over_four() {
+        assert_eq!(estimate_tokens(4000), 1000);
+        assert_eq!(estimate_tokens(3), 0);
+    }
+
+    #[test]
+    fn session_usage_accumulates_calls_errors_and_bytes_per_tool() {
+        // A name no real tool ever uses, so this stays isolated from
+        // whatever other tests do to the same process-wide SESSION_USAGE
+        // map (it's deliberately a singleton - see its own doc comment).
+        record_session_call("__test_only_tool_a__", 100, false);
+        record_session_call("__test_only_tool_a__", 300, true);
+
+        let map = SESSION_USAGE.get().unwrap().lock().unwrap();
+        let entry = map.get("__test_only_tool_a__").unwrap();
+        assert_eq!(entry.call_count, 2);
+        assert_eq!(entry.error_count, 1);
+        assert_eq!(entry.output_bytes, 400);
+    }
+
+    #[test]
+    fn get_session_usage_reports_a_recorded_call_with_its_token_estimate() {
+        record_session_call("__test_only_tool_b__", 40, false);
+
+        let output = get_session_usage(Value::Null).unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        let by_tool = parsed["by_tool"].as_array().unwrap();
+        let entry = by_tool
+            .iter()
+            .find(|t| t["name"] == "__test_only_tool_b__")
+            .expect("just-recorded tool missing from get_session_usage output");
+        assert_eq!(entry["output_bytes"], 40);
+        assert_eq!(entry["estimated_tokens"], 10);
+    }
+
+    #[test]
     fn clamp_limit_passes_through_requests_at_or_below_the_max() {
         assert_eq!(clamp_limit(1), 1);
         assert_eq!(clamp_limit(SERVER_MAX_LIMIT), SERVER_MAX_LIMIT);
@@ -752,11 +897,12 @@ mod tests {
     }
 
     #[test]
-    fn default_config_resolves_to_standard_nine_tools() {
+    fn default_config_resolves_to_standard_ten_tools() {
         let config = Config::default();
         let filtered = tool_names(&enabled_tool_definitions(&config));
-        assert_eq!(filtered.len(), 9);
+        assert_eq!(filtered.len(), 10);
         assert!(filtered.contains("search_code"));
+        assert!(filtered.contains("get_session_usage"));
         assert!(!filtered.contains("delete_project"));
         assert!(!filtered.contains("search_codebase"));
     }
