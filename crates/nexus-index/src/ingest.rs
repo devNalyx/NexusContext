@@ -616,7 +616,16 @@ fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<F
 
         let start = (section.start_line as usize - 1).min(lines.len().saturating_sub(1));
         let end = (section.end_line as usize - 1).min(lines.len().saturating_sub(1));
-        pending_embeddings.push((id, qualified_name, lines[start..=end].join("\n")));
+        // Truncate eagerly, same reason and same fix as the code path's
+        // `chunk_text_for` above: a section with no interior headings (a
+        // flat changelog, a generated doc page dumped as one file) spans
+        // start..=end all the way to EOF, and an untruncated chunk here is
+        // held in `pending_embeddings` for the rest of the whole-project
+        // walk regardless of whether embeddings even end up enabled - the
+        // same #17 OOM mechanism, just on the markdown path that fix didn't
+        // touch. See issue #30.
+        let chunk_text = crate::embeddings::truncate_chunk(&lines[start..=end].join("\n"));
+        pending_embeddings.push((id, qualified_name, chunk_text));
 
         node_ids.push(id);
     }
@@ -626,6 +635,79 @@ fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<F
         pending_calls: Vec::new(),
         pending_embeddings,
     })
+}
+
+/// Regression tests for issue #30: a flat markdown file with no interior
+/// headings used to produce one untruncated `Section` chunk spanning the
+/// whole file - the same #17 OOM mechanism, on the one path Phase 28's
+/// truncation fix didn't reach.
+#[cfg(test)]
+mod index_markdown_file_tests {
+    use super::index_markdown_file;
+    use crate::graph::GraphStore;
+    use std::fs;
+
+    fn temp_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_index_markdown_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn open_store(dir: &std::path::Path) -> GraphStore {
+        GraphStore::open(&dir.join("graph.db")).unwrap()
+    }
+
+    #[test]
+    fn a_flat_markdown_file_with_no_headings_is_truncated_not_held_whole() {
+        let dir = temp_project("flat");
+        // No headings at all - `extract_sections` still produces one
+        // whole-file Section (this is the exact "vendored CHANGELOG.md",
+        // "generated doc page dumped as one file" shape from #30).
+        let huge_line = "x".repeat(10_000);
+        let content = format!("# Title\n\n{huge_line}\n");
+        let path = dir.join("FLAT.md");
+        fs::write(&path, &content).unwrap();
+
+        let store = open_store(&dir);
+        let result = index_markdown_file(&path, &dir, &store).unwrap();
+
+        assert_eq!(result.pending_embeddings.len(), 1);
+        let (_, _, chunk_text) = &result.pending_embeddings[0];
+        assert!(
+            chunk_text.len() < content.len(),
+            "a section spanning a huge line must be truncated, not held whole \
+             (chunk: {} bytes, source: {} bytes)",
+            chunk_text.len(),
+            content.len()
+        );
+        assert!(
+            chunk_text.len() <= crate::embeddings::MAX_CHUNK_CHARS,
+            "chunk must be capped at the same limit the code path already enforces"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_small_markdown_file_is_unaffected() {
+        let dir = temp_project("small");
+        let content = "# Title\n\nJust a short section, well under any cap.\n";
+        let path = dir.join("SMALL.md");
+        fs::write(&path, content).unwrap();
+
+        let store = open_store(&dir);
+        let result = index_markdown_file(&path, &dir, &store).unwrap();
+
+        assert_eq!(result.pending_embeddings.len(), 1);
+        let (_, _, chunk_text) = &result.pending_embeddings[0];
+        assert!(content.contains(chunk_text.trim()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

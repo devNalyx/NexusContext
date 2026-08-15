@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 /// ~2K tokens for embedding models), not be exact. What's stored as
 /// `chunk_text` afterward is this truncated text, not the original, so the
 /// two always match.
-const MAX_CHUNK_CHARS: usize = 6000;
+pub(crate) const MAX_CHUNK_CHARS: usize = 6000;
 
 /// How many chunks go into one HTTP request. A naive per-chunk loop against
 /// a down endpoint fails slow, not gracefully - up to `timeout_secs` per

@@ -191,6 +191,13 @@ pub fn semantic_search(
 }
 
 pub fn detect_changes(repo_path: &Path) -> Result<Vec<NodeRecord>> {
+    // Canonicalize *before* the allowed_roots check, not after - see the
+    // matching comment in `get_file_context` below for why the ordering
+    // itself is the bug (issue #29).
+    let repo_path = repo_path
+        .canonicalize()
+        .map_err(|_| anyhow::anyhow!("repo_path does not exist: {}", repo_path.display()))?;
+    let repo_path = repo_path.as_path();
     crate::project::require_path_allowed(&Paths::resolve(), repo_path)?;
     let store = open_store(repo_path)?;
 
@@ -259,10 +266,17 @@ pub fn get_file_context(
     end_line: Option<usize>,
     full: bool,
 ) -> Result<String> {
-    crate::project::require_path_allowed(&Paths::resolve(), repo_path)?;
+    // Canonicalize *before* the allowed_roots check, not after -
+    // `Path::starts_with` (what `is_path_allowed` uses) is a component-wise
+    // prefix check that does not resolve `..`, so a raw repo_path like
+    // "<allowed_root>/../../etc" passed the check as written here, then
+    // canonicalized to a root entirely outside allowed_roots afterward -
+    // an MCP-agent-reachable bypass of a safety feature a user opted into.
+    // See issue #29.
     let canonical_root = repo_path
         .canonicalize()
         .map_err(|_| anyhow::anyhow!("repo_path does not exist: {}", repo_path.display()))?;
+    crate::project::require_path_allowed(&Paths::resolve(), &canonical_root)?;
     let canonical_file = canonical_root
         .join(file)
         .canonicalize()

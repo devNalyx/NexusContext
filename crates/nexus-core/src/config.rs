@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -164,9 +164,29 @@ impl Config {
         }
     }
 
+    /// `Path::starts_with` is a component-wise prefix check, not a real
+    /// containment check - it does not resolve `..`, so a raw
+    /// `"<root>/../../etc"` starts-with-`<root>` even though it plainly
+    /// escapes it. Canonicalizing `path` here (not just trusting a caller to
+    /// have done it already) closes that at the source: every call site
+    /// that reaches this function is protected, not just the ones a
+    /// previous review happened to check by hand. `allowed_roots` entries
+    /// are canonicalized the same way for a fair comparison, in case one is
+    /// configured relative or behind a symlink. Falls back to the raw form
+    /// on a canonicalization failure (path/root doesn't exist yet) rather
+    /// than failing open - matches `nexus_core::paths::project_hash`'s
+    /// established fallback pattern. See issue #29.
     pub fn is_path_allowed(&self, path: &Path) -> bool {
-        self.allowed_roots.is_empty()
-            || self.allowed_roots.iter().any(|root| path.starts_with(root))
+        if self.allowed_roots.is_empty() {
+            return true;
+        }
+        let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.allowed_roots.iter().any(|root| {
+            let canonical_root = Path::new(root)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(root));
+            canonical_path.starts_with(&canonical_root)
+        })
     }
 }
 
@@ -390,5 +410,83 @@ mod tests {
         assert_eq!(mode, 0o600);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    fn scratch_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "nexuscontext-pathcheck-{label}-{}",
+            std::process::id()
+        ))
+    }
+
+    /// Regression test for issue #29: a `..`-laden path used to pass
+    /// `is_path_allowed` outright because `Path::starts_with` never
+    /// resolves `..`, only for a caller's *later* canonicalize to reveal it
+    /// had actually escaped `allowed_roots` all along.
+    #[test]
+    fn dot_dot_traversal_outside_an_allowed_root_is_rejected() {
+        let root = scratch_dir("root");
+        let outside = scratch_dir("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let config = Config {
+            allowed_roots: vec![root.to_string_lossy().to_string()],
+            ..Default::default()
+        };
+
+        // Escapes `root` via `..` into a directory that's a sibling, not a
+        // descendant - `Path::starts_with` alone would have said yes here.
+        let escaping = root.join("..").join(outside.file_name().unwrap());
+        assert!(
+            !config.is_path_allowed(&escaping),
+            "a `..`-traversal path that resolves outside allowed_roots must be rejected"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    #[test]
+    fn a_real_subdirectory_of_an_allowed_root_is_still_accepted() {
+        let root = scratch_dir("root-subdir");
+        let nested = root.join("nested").join("project");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let config = Config {
+            allowed_roots: vec![root.to_string_lossy().to_string()],
+            ..Default::default()
+        };
+
+        assert!(
+            config.is_path_allowed(&nested),
+            "a genuine descendant of an allowed root must still be accepted"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn empty_allowed_roots_permits_everything_unrestricted() {
+        let config = Config::default();
+        assert!(config.allowed_roots.is_empty());
+        assert!(config.is_path_allowed(std::path::Path::new("/anything/at/all")));
+    }
+
+    #[test]
+    fn a_nonexistent_path_falls_back_to_raw_comparison_rather_than_panicking() {
+        // Neither the checked path nor the configured root exist on disk -
+        // canonicalize() fails for both, and is_path_allowed must fall back
+        // to comparing the raw forms rather than erroring or panicking.
+        let config = Config {
+            allowed_roots: vec!["/nexuscontext-test-does-not-exist-root".to_string()],
+            ..Default::default()
+        };
+        assert!(config.is_path_allowed(std::path::Path::new(
+            "/nexuscontext-test-does-not-exist-root/child"
+        )));
+        assert!(!config.is_path_allowed(std::path::Path::new(
+            "/nexuscontext-test-does-not-exist-elsewhere"
+        )));
     }
 }
