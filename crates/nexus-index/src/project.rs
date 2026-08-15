@@ -88,10 +88,15 @@ pub fn record_auto_reindex(repo_path: &Path, duration_ms: u64, success: bool) {
 /// stopped watching it, per the same warm-window config it uses. An
 /// unregistered project (never indexed) isn't "cold", it's just untouched -
 /// nothing to catch up here, `index_project` is the entry point for that.
-fn is_cold(repo_path: &Path) -> bool {
-    let paths = Paths::resolve();
-    let hash = project_hash(repo_path);
-    let registry = Registry::load(&paths.registry_file());
+///
+/// Takes an already-loaded `Registry` rather than loading its own copy -
+/// `touch_and_catchup` calls this against a registry it already has in
+/// hand (see its own doc comment for why it's called twice, at two
+/// necessarily-different points in time); loading a fresh copy here too
+/// would be a second read for no reason on top of that. `Config::load` is
+/// still a separate, per-call read - `warm_window_secs` isn't something
+/// `touch_and_catchup` already has lying around the way the registry is.
+fn is_cold(registry: &Registry, hash: &str, paths: &Paths) -> bool {
     let Some(entry) = registry.projects.iter().find(|p| p.hash == hash) else {
         return false;
     };
@@ -130,16 +135,40 @@ fn is_cold(repo_path: &Path) -> bool {
 /// into ordinary double-checked locking: whichever caller loses the race to
 /// acquire the lock finds the project already warm by the time it's their
 /// turn and skips out instead of redoing the work.
+///
+/// Loads the registry once up front and threads that same copy through to
+/// the final `touch_queried`-equivalent update at the bottom, instead of
+/// `is_cold` and `touch_queried` each loading their own independent copy -
+/// on the common warm-project path (the vast majority of calls - most tool
+/// calls aren't the first one against a freshly-cold project), that used to
+/// mean two full `registry.json` reads for one logical operation. The two
+/// genuinely-necessary-not-redundant reloads stay: once right after
+/// acquiring `REINDEX_LOCK` (the recheck this doc comment already explains
+/// above - must see any racing caller's just-finished reindex, so it can't
+/// reuse the pre-lock copy), and once more after actually reindexing (to
+/// pick up `record_indexed`'s fresh write instead of clobbering it with a
+/// stale in-memory copy on the final save below). See issue #35.
 pub fn touch_and_catchup(repo_path: &Path) {
-    if is_cold(repo_path) {
+    let paths = Paths::resolve();
+    let hash = project_hash(repo_path);
+    let mut registry = Registry::load(&paths.registry_file());
+
+    if is_cold(&registry, &hash, &paths) {
         let _guard = REINDEX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        if is_cold(repo_path) {
+        registry = Registry::load(&paths.registry_file());
+        if is_cold(&registry, &hash, &paths) {
             let start = std::time::Instant::now();
             let success = index_project_locked(repo_path).is_ok();
             record_auto_reindex(repo_path, start.elapsed().as_millis() as u64, success);
+            registry = Registry::load(&paths.registry_file());
         }
     }
-    touch_queried(repo_path);
+
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return;
+    };
+    registry.touch_queried(&hash, now.as_secs());
+    let _ = registry.save(&paths.registry_file());
 }
 
 /// Total bytes on disk for a project's indexed data (graph.db plus its WAL

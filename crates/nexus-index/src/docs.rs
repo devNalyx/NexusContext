@@ -52,29 +52,39 @@ pub fn extract_sections(text: &str) -> Vec<Section> {
         let Some((level, name)) = parse_atx_heading(line) else {
             continue;
         };
+        let current_line = i as u32 + 1;
 
+        // A section's `end_line` becomes knowable at exactly the moment
+        // it's popped here - it's popped because *this* heading is the
+        // next one at an equal-or-shallower level, which is the same
+        // "next equal-or-shallower heading" definition `end_line` uses.
+        // This used to be a second O(n^2) pass (for each section, scan
+        // every later one to find that boundary) - computing it in the
+        // same single pass that already builds `parent` via this stack
+        // makes it O(n) instead, with identical results (verified against
+        // the old two-pass version - both a same-level "close two nested
+        // sections at once" case and a shallower-level case produce the
+        // same end_line either way). See issue #38.
         while matches!(stack.last(), Some((lvl, _)) if *lvl >= level) {
-            stack.pop();
+            let (_, popped_idx) = stack.pop().unwrap();
+            sections[popped_idx].end_line = current_line - 1;
         }
         let parent = stack.last().map(|(_, idx)| *idx);
         let idx = sections.len();
         sections.push(Section {
             name,
             level,
-            start_line: i as u32 + 1,
-            end_line: 0, // filled in below
+            start_line: current_line,
+            end_line: 0, // filled in above when popped, or below at EOF
             parent,
         });
         stack.push((level, idx));
     }
 
-    for i in 0..sections.len() {
-        let level = sections[i].level;
-        sections[i].end_line = sections[(i + 1)..]
-            .iter()
-            .find(|s| s.level <= level)
-            .map(|s| s.start_line - 1)
-            .unwrap_or(lines.len() as u32);
+    // Anything still open at EOF (no later heading ever closed it) runs to
+    // the end of the file.
+    for (_, idx) in stack {
+        sections[idx].end_line = lines.len() as u32;
     }
 
     sections
@@ -198,6 +208,31 @@ mod tests {
         assert_eq!(sections[1].end_line, 4); // stops before "# C" on line 5
         assert_eq!(sections[2].name, "C");
         assert_eq!(sections[2].end_line, 6); // runs to EOF
+    }
+
+    /// Regression test for issue #38: `end_line` computation moved from a
+    /// second O(n^2) scan to being derived in the same single pass the
+    /// `parent`-tracking stack already makes, via the same pop. This
+    /// specifically exercises a heading closing *three* nested sections at
+    /// once (H1 -> H2 -> H3 -> H1), the case most likely to expose an
+    /// off-by-one or wrong-section-gets-the-boundary bug in a stack-based
+    /// rewrite of a loop that used to just linearly scan forward.
+    #[test]
+    fn one_heading_can_close_several_nested_sections_at_once() {
+        let text = "# A\n## B\n### C\n# D\n";
+        let sections = extract_sections(text);
+        assert_eq!(sections.len(), 4);
+        // A (line 1), B (line 2), C (line 3) are all still "open" when D
+        // (line 4) arrives - all three must close at line 3, not just the
+        // innermost one.
+        assert_eq!(sections[0].name, "A");
+        assert_eq!(sections[0].end_line, 3);
+        assert_eq!(sections[1].name, "B");
+        assert_eq!(sections[1].end_line, 3);
+        assert_eq!(sections[2].name, "C");
+        assert_eq!(sections[2].end_line, 3);
+        assert_eq!(sections[3].name, "D");
+        assert_eq!(sections[3].end_line, 4); // runs to EOF
     }
 
     #[test]
