@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cli"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "anyhow",
  "clap",
@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-core"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "anyhow",
  "directories",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-gui"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "anyhow",
  "gtk4",
@@ -1082,7 +1082,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-index"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "anyhow",
  "ignore",
@@ -1112,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "nexusd"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "anyhow",
  "clap",
