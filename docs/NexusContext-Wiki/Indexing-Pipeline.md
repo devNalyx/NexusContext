@@ -49,6 +49,22 @@ languages) plus markdown. Query matched as a literal phrase via
 `search_code`. Other file types (plain `.txt`, config files, etc.) aren't
 indexed for full-text search yet.
 
+## Minified/bundled files are handled specially, so they can't OOM the daemon
+
+A single dense, single-line file (a vendored/minified JS bundle is the
+common case) used to be able to take the daemon down: every function's
+range spanned the same giant line, so per-function chunk text went
+untruncated and the cross-file call-resolution pass deep-cloned the
+whole same-file function map onto every pending call site — O(functions
+× calls) memory, growing superlinearly with file size (observed: 3x the
+bytes cost 11x the memory). Fixed on the ingest path itself, not by
+excluding such files: chunk text is truncated at build time, same-file
+calls resolve immediately per-file instead of cloning the map per call,
+and any line over 2000 characters skips call-site resolution entirely
+for that file (structural nodes/full-text search still cover it; only
+the call graph loses fidelity for that one file). See README Phase 28
+for the incident this was root-caused from.
+
 ## Reindexing is a full rebuild, not incremental — with one real exception
 
 Every reindex is `GraphStore::clear()` + a full re-walk. There's no
