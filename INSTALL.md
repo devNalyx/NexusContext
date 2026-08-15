@@ -4,10 +4,10 @@ This covers what's actually built and working today (see the full phase-by-phase
 
 ## 0. Download a release (Linux/macOS/Windows)
 
-Tagged releases publish real binaries via GitHub Actions - no toolchain needed. Grab the latest from the [Releases page](https://github.com/devNalyx/NexusContext/releases), for either architecture on each platform (x86_64 and arm64):
+Tagged releases publish real binaries via GitHub Actions - no toolchain needed. Grab the latest from the [Releases page](https://github.com/devNalyx/NexusContext/releases):
 
-- **Linux**: a `.deb` or `.rpm`, or a plain `nexuscontext-linux-<arch>.tar.gz` for other distros - full daemon/CLI/GUI either way.
-- **macOS**: `nexuscontext-macos-<aarch64|x86_64>.tar.gz` - CLI + full daemon (`nexusd mcp` and `nexusd serve` both work), no native GUI build for macOS. Unsigned binaries need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since they aren't notarized.
+- **Linux**: a `.deb` or `.rpm`, or a plain `nexuscontext-linux-<x86_64|arm64>.tar.gz` for other distros - full daemon/CLI/GUI, either architecture.
+- **macOS**: `nexuscontext-macos-aarch64.tar.gz` (Apple Silicon) - CLI + full daemon (`nexusd mcp` and `nexusd serve` both work), no native GUI build for macOS. Intel Macs run this fine under Rosetta 2; a native `x86_64` build was attempted but dropped after GitHub's own runner class for it never assigned a runner (a real capacity constraint, not a workflow bug - see `release.yml`). Unsigned binaries need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since they aren't notarized.
 - **Windows**: `nexuscontext-windows-<x86_64|arm64>.zip` - `nexus` CLI + `nexusd mcp` only. `nexusd serve` (the control API, background watcher, GUI target) isn't supported yet - see [issue #16](https://github.com/devNalyx/NexusContext/issues/16). Every MCP tool works fully without it; reindex manually (`nexus reindex`) rather than relying on the background watcher to keep a project warm.
 
 Otherwise, build from source:

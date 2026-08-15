@@ -8,8 +8,8 @@ daemon: it builds structure and answers queries; the calling agent still
 does all the reasoning.
 
 This is a real, working product (not a proposal), currently at **v0.1.17**,
-released for Linux, macOS, and Windows (x86_64 + arm64 each — see
-[[Known-Limitations]] for what's tiered by platform).
+released for Linux and Windows (x86_64 + arm64) and macOS (Apple Silicon)
+— see [[Known-Limitations]] for what's tiered by platform.
 This vault documents its *current state* by topic, cross-linked. For the
 blow-by-blow build history (33 phases, every bug found and how it was
 actually fixed, verified against a real dogfooded daemon rather than just
