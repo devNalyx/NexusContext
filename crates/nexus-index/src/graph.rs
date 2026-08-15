@@ -176,6 +176,14 @@ impl GraphStore {
         Ok(())
     }
 
+    /// A full reindex calls this once per Function/Type/File/Section node -
+    /// thousands of times on a real project. Two efficiencies over a naive
+    /// `execute` + separate `SELECT id`: `prepare_cached` skips re-parsing
+    /// the same SQL text on every call (rusqlite keys its statement cache by
+    /// the SQL string itself), and `RETURNING id` folds what used to be two
+    /// round trips (the insert, then a `SELECT id FROM nodes WHERE
+    /// qualified_name = ?1` to fetch what was just written) into one. See
+    /// issue #34.
     pub fn insert_node(
         &self,
         kind: NodeKind,
@@ -185,7 +193,7 @@ impl GraphStore {
         start_line: u32,
         end_line: u32,
     ) -> Result<i64> {
-        self.conn.execute(
+        let mut stmt = self.conn.prepare_cached(
             "INSERT INTO nodes (kind, name, qualified_name, file_path, start_line, end_line)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(qualified_name) DO UPDATE SET
@@ -193,7 +201,10 @@ impl GraphStore {
                 name = excluded.name,
                 file_path = excluded.file_path,
                 start_line = excluded.start_line,
-                end_line = excluded.end_line",
+                end_line = excluded.end_line
+             RETURNING id",
+        )?;
+        let id: i64 = stmt.query_row(
             rusqlite::params![
                 kind.as_str(),
                 name,
@@ -202,20 +213,15 @@ impl GraphStore {
                 start_line,
                 end_line
             ],
-        )?;
-        let id: i64 = self.conn.query_row(
-            "SELECT id FROM nodes WHERE qualified_name = ?1",
-            [qualified_name],
             |row| row.get(0),
         )?;
         Ok(id)
     }
 
     pub fn insert_edge(&self, src_id: i64, dst_id: i64, kind: EdgeKind) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO edges (src_id, dst_id, kind) VALUES (?1, ?2, ?3)",
-            rusqlite::params![src_id, dst_id, kind.as_str()],
-        )?;
+        self.conn
+            .prepare_cached("INSERT INTO edges (src_id, dst_id, kind) VALUES (?1, ?2, ?3)")?
+            .execute(rusqlite::params![src_id, dst_id, kind.as_str()])?;
         Ok(())
     }
 
@@ -282,8 +288,18 @@ impl GraphStore {
             .map_err(Into::into)
     }
 
+    /// Deliberately substring, not prefix-only - `search_graph`'s whole
+    /// point is finding `handleRequest` from a `pattern` of `"request"` or
+    /// `"handle"` alike, not just names that *start with* it. The leading
+    /// `%` in `like_pattern` below means this can't use `idx_nodes_name`
+    /// (a B-tree index only serves prefix matches) - accepted at this
+    /// project's real scale (a full table scan over a few thousand `nodes`
+    /// rows is sub-millisecond); an FTS5-backed name index would restore
+    /// index usage but is a real schema change, not proportionate to fix
+    /// preemptively without a demonstrated slowdown at a much larger node
+    /// count. See issue #37.
     pub fn search_by_name(&self, pattern: &str, limit: u32) -> Result<Vec<NodeRecord>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT id, kind, name, qualified_name, file_path, start_line, end_line
              FROM nodes WHERE name LIKE ?1 ORDER BY name LIMIT ?2",
         )?;
@@ -307,10 +323,9 @@ impl GraphStore {
     /// symbol graph entirely, since `search_by_name` only ever matched
     /// symbol names, never file content.
     pub fn insert_file_content(&self, file_path: &str, content: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO file_contents_fts (file_path, content) VALUES (?1, ?2)",
-            rusqlite::params![file_path, content],
-        )?;
+        self.conn
+            .prepare_cached("INSERT INTO file_contents_fts (file_path, content) VALUES (?1, ?2)")?
+            .execute(rusqlite::params![file_path, content])?;
         Ok(())
     }
 
@@ -373,15 +388,18 @@ impl GraphStore {
         chunk_text: &str,
         embedding: &[u8],
     ) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO embeddings (node_id, model, dim, chunk_text, embedding)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(node_id, model) DO UPDATE SET
-                dim = excluded.dim,
-                chunk_text = excluded.chunk_text,
-                embedding = excluded.embedding",
-            rusqlite::params![node_id, model, dim as i64, chunk_text, embedding],
-        )?;
+        self.conn
+            .prepare_cached(
+                "INSERT INTO embeddings (node_id, model, dim, chunk_text, embedding)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(node_id, model) DO UPDATE SET
+                    dim = excluded.dim,
+                    chunk_text = excluded.chunk_text,
+                    embedding = excluded.embedding",
+            )?
+            .execute(rusqlite::params![
+                node_id, model, dim as i64, chunk_text, embedding
+            ])?;
         Ok(())
     }
 
@@ -600,28 +618,40 @@ impl GraphStore {
         let mut frontier = start_ids;
         let mut result_ids = Vec::new();
 
+        // One batched IN (...) query per BFS level, not one query per
+        // frontier node - matches the pattern `subgraph_edges` already uses.
+        // A wide fan-in/fan-out function (a common "hub") used to turn each
+        // level into dozens-to-hundreds of individual round trips. See
+        // issue #33.
         for _ in 0..max_depth {
             if frontier.is_empty() {
                 break;
             }
+            let placeholders = frontier.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let column = match direction {
+                Direction::Outbound => "src_id",
+                Direction::Inbound => "dst_id",
+            };
+            let select = match direction {
+                Direction::Outbound => "dst_id",
+                Direction::Inbound => "src_id",
+            };
+            let sql = format!(
+                "SELECT {select} FROM edges WHERE kind = 'CALLS' AND {column} IN ({placeholders})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> = frontier
+                .iter()
+                .map(|id| id as &dyn rusqlite::ToSql)
+                .collect();
+            let rows = stmt.query_map(params.as_slice(), |row| row.get::<_, i64>(0))?;
+
             let mut next_frontier = Vec::new();
-            for &id in &frontier {
-                let query = match direction {
-                    Direction::Outbound => {
-                        "SELECT dst_id FROM edges WHERE src_id = ?1 AND kind = 'CALLS'"
-                    }
-                    Direction::Inbound => {
-                        "SELECT src_id FROM edges WHERE dst_id = ?1 AND kind = 'CALLS'"
-                    }
-                };
-                let mut stmt = self.conn.prepare(query)?;
-                let rows = stmt.query_map([id], |row| row.get::<_, i64>(0))?;
-                for neighbor in rows {
-                    let neighbor = neighbor?;
-                    if visited.insert(neighbor) {
-                        next_frontier.push(neighbor);
-                        result_ids.push(neighbor);
-                    }
+            for neighbor in rows {
+                let neighbor = neighbor?;
+                if visited.insert(neighbor) {
+                    next_frontier.push(neighbor);
+                    result_ids.push(neighbor);
                 }
             }
             frontier = next_frontier;
@@ -745,5 +775,103 @@ mod embeddings_snapshot_tests {
 
         let (nodes, _) = store.stats().unwrap();
         assert_eq!(nodes, 1);
+    }
+}
+
+/// Regression tests for issue #33: `trace_calls`'s BFS used to issue one
+/// query per frontier node instead of one batched query per level - these
+/// specifically exercise levels with more than one node in the frontier at
+/// once, since a single-node-per-level graph wouldn't distinguish the old
+/// per-node loop from the new batched query.
+#[cfg(test)]
+mod trace_calls_tests {
+    use super::*;
+
+    fn temp_store(name: &str) -> GraphStore {
+        let path = std::env::temp_dir().join(format!(
+            "nexus_trace_calls_test_{name}_{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        GraphStore::open(&path).unwrap()
+    }
+
+    fn func(store: &GraphStore, name: &str) -> i64 {
+        store
+            .insert_node(
+                NodeKind::Function,
+                name,
+                &format!("a.rs::{name}#1"),
+                "a.rs",
+                1,
+                2,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn outbound_batches_a_multi_node_frontier_and_finds_every_callee() {
+        let store = temp_store("outbound_fanout");
+        // root -> {a, b, c} (one level, three nodes in the same frontier),
+        // then a -> leaf, b -> leaf (same leaf reached two ways - must not
+        // be duplicated), c has no further calls.
+        let root = func(&store, "root");
+        let a = func(&store, "a");
+        let b = func(&store, "b");
+        let c = func(&store, "c");
+        let leaf = func(&store, "leaf");
+        store.insert_edge(root, a, EdgeKind::Calls).unwrap();
+        store.insert_edge(root, b, EdgeKind::Calls).unwrap();
+        store.insert_edge(root, c, EdgeKind::Calls).unwrap();
+        store.insert_edge(a, leaf, EdgeKind::Calls).unwrap();
+        store.insert_edge(b, leaf, EdgeKind::Calls).unwrap();
+
+        let result = store.trace_calls("root", Direction::Outbound, 3).unwrap();
+        let names: std::collections::HashSet<&str> =
+            result.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c", "leaf"].into_iter().collect());
+        assert_eq!(
+            result.len(),
+            4,
+            "leaf reached via two paths must not be duplicated"
+        );
+    }
+
+    #[test]
+    fn inbound_batches_a_multi_node_frontier_and_finds_every_caller() {
+        let store = temp_store("inbound_fanin");
+        // {a, b, c} -> target (three distinct callers of the same function,
+        // one BFS level with three nodes in the frontier).
+        let target = func(&store, "target");
+        let a = func(&store, "a");
+        let b = func(&store, "b");
+        let c = func(&store, "c");
+        store.insert_edge(a, target, EdgeKind::Calls).unwrap();
+        store.insert_edge(b, target, EdgeKind::Calls).unwrap();
+        store.insert_edge(c, target, EdgeKind::Calls).unwrap();
+
+        let result = store.trace_calls("target", Direction::Inbound, 3).unwrap();
+        let names: std::collections::HashSet<&str> =
+            result.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c"].into_iter().collect());
+    }
+
+    #[test]
+    fn max_depth_stops_the_batched_walk_at_the_right_level() {
+        let store = temp_store("depth_limit");
+        let a = func(&store, "a");
+        let b = func(&store, "b");
+        let c = func(&store, "c");
+        store.insert_edge(a, b, EdgeKind::Calls).unwrap();
+        store.insert_edge(b, c, EdgeKind::Calls).unwrap();
+
+        let one_level = store.trace_calls("a", Direction::Outbound, 1).unwrap();
+        assert_eq!(one_level.len(), 1);
+        assert_eq!(one_level[0].name, "b");
+
+        let two_levels = store.trace_calls("a", Direction::Outbound, 2).unwrap();
+        let names: std::collections::HashSet<&str> =
+            two_levels.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["b", "c"].into_iter().collect());
     }
 }
