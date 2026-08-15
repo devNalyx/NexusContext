@@ -25,7 +25,13 @@ SQLite, **WAL journal mode** — lets `nexusd serve` and a `nexusd mcp`
 session hold concurrent connections to the same graph without one locking
 out the other. Node kinds: `File`, `Function`, `Type`, `Section` (a
 markdown heading — see [[Indexing-Pipeline]]). Edge kinds: `Defines`,
-`Calls`, `Contains`. Full-text search via a parallel FTS5 table over
+`Calls`, `Contains`, `CallsResolved` (`CALLS_RESOLVED` — an LSP-resolved
+call edge, issue #10; only present after an explicit `deep` reindex with
+`[lsp] enabled = true`, and always stored *alongside* whatever `Calls`
+edges the static tree-sitter pass already found, never in place of them —
+`trace_call_path`/`detect_dead_code` union both kinds when walking the
+call graph, so a project that's never run a `deep` reindex behaves exactly
+as before this existed). Full-text search via a parallel FTS5 table over
 indexed file content. Embeddings, when enabled, are plain BLOB rows in the
 same database — see [[Embeddings-and-Semantic-Search]]. A minimal
 Cypher-lite layer answers the `query_graph` tool's one supported pattern

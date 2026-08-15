@@ -54,6 +54,17 @@ pub enum EdgeKind {
     /// File -> top-level heading (no parent in its own file's nesting -
     /// not necessarily an H1), matching the File -> Function/Type pattern.
     Contains,
+    /// A call edge from LSP reference resolution (issue #10), not the
+    /// static tree-sitter name-matching pass - kept as a distinct kind
+    /// rather than folded into `Calls` so static vs. resolved provenance
+    /// stays visible and auditable, per the PR review's provenance-first
+    /// requirement. Enrichment only ever *adds* these alongside whatever
+    /// `Calls` edges the static pass already found; nothing ever removes or
+    /// replaces a `Calls` edge based on this. `trace_calls`/`dead_functions`
+    /// treat `Calls` and `CallsResolved` as one union when walking the call
+    /// graph, so resolution only ever adds coverage, never changes existing
+    /// static-only behavior when no LSP server ran.
+    CallsResolved,
 }
 
 impl EdgeKind {
@@ -62,6 +73,7 @@ impl EdgeKind {
             EdgeKind::Defines => "DEFINES",
             EdgeKind::Calls => "CALLS",
             EdgeKind::Contains => "CONTAINS",
+            EdgeKind::CallsResolved => "CALLS_RESOLVED",
         }
     }
 }
@@ -500,12 +512,13 @@ impl GraphStore {
             .map_err(Into::into)
     }
 
-    /// All `CALLS` edges as (caller_id, callee_id) pairs - same rationale as
-    /// `all_nodes`.
+    /// All `CALLS`/`CALLS_RESOLVED` edges as (caller_id, callee_id) pairs -
+    /// same rationale as `all_nodes`. Unions both kinds like `trace_calls`/
+    /// `dead_functions` do - see `EdgeKind::CallsResolved`.
     pub fn all_call_edges(&self) -> Result<Vec<(i64, i64)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT src_id, dst_id FROM edges WHERE kind = 'CALLS'")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT src_id, dst_id FROM edges WHERE kind IN ('CALLS', 'CALLS_RESOLVED')",
+        )?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
@@ -542,13 +555,18 @@ impl GraphStore {
     /// call resolution (see `ingest.rs`): a function only ever called from
     /// a *different* file will show up here as a false positive, since that
     /// call site never produced an edge to begin with. Treat results as
-    /// "worth a second look", not a guarantee.
+    /// "worth a second look", not a guarantee. Also checks `CALLS_RESOLVED`
+    /// (issue #10) - a function LSP enrichment found a real cross-file
+    /// reference for is correctly excluded here even when the static,
+    /// name-based pass alone would have missed it and flagged a false
+    /// positive; this is the concrete case enrichment is proven against
+    /// (see the `lsp` module's dead-code regression test).
     pub fn dead_functions(&self) -> Result<Vec<NodeRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, kind, name, qualified_name, file_path, start_line, end_line
              FROM nodes
              WHERE kind = 'Function' AND name != 'main'
-             AND id NOT IN (SELECT dst_id FROM edges WHERE kind = 'CALLS')
+             AND id NOT IN (SELECT dst_id FROM edges WHERE kind IN ('CALLS', 'CALLS_RESOLVED'))
              ORDER BY file_path, start_line",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -686,8 +704,10 @@ impl GraphStore {
                 Direction::Outbound => "dst_id",
                 Direction::Inbound => "src_id",
             };
+            // Unions CALLS_RESOLVED alongside the static CALLS edges - see
+            // EdgeKind::CallsResolved. Issue #10.
             let sql = format!(
-                "SELECT {select} FROM edges WHERE kind = 'CALLS' AND {column} IN ({placeholders})"
+                "SELECT {select} FROM edges WHERE kind IN ('CALLS', 'CALLS_RESOLVED') AND {column} IN ({placeholders})"
             );
             let mut stmt = self.conn.prepare(&sql)?;
             let params: Vec<&dyn rusqlite::ToSql> = frontier

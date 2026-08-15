@@ -28,14 +28,26 @@ pub fn index_project(repo_path: &Path) -> Result<IndexStats> {
     // reindex forever - recover the lock rather than propagating the
     // poison.
     let _guard = REINDEX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    index_project_locked(repo_path)
+    index_project_locked(repo_path, false)
+}
+
+/// Same as `index_project`, plus LSP-resolved-symbol enrichment (issue
+/// #10) if `[lsp] enabled = true` in config - an explicit, separate entry
+/// point rather than a flag every existing caller has to thread through,
+/// so the watcher's ordinary auto-reindex-on-file-change loop and every
+/// other pre-existing caller are completely unaffected by this feature
+/// existing at all. Reachable via `index_repository`'s `deep` argument
+/// (MCP) and `nexus reindex --deep` (CLI) only - never automatic.
+pub fn index_project_deep(repo_path: &Path) -> Result<IndexStats> {
+    let _guard = REINDEX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    index_project_locked(repo_path, true)
 }
 
 /// The actual rebuild, factored out so `touch_and_catchup`'s cold path can
 /// hold `REINDEX_LOCK` across its own "is this still cold?" recheck instead
 /// of just around the rebuild itself - see that function's doc comment for
 /// why the recheck has to happen after the lock is held, not before.
-fn index_project_locked(repo_path: &Path) -> Result<IndexStats> {
+fn index_project_locked(repo_path: &Path, deep: bool) -> Result<IndexStats> {
     let repo_path = canonicalize_for_registry(repo_path)?;
     let repo_path = repo_path.as_path();
 
@@ -44,7 +56,18 @@ fn index_project_locked(repo_path: &Path) -> Result<IndexStats> {
 
     let db_path = graph_db_path(repo_path);
     let store = GraphStore::open(&db_path)?;
-    let stats = index_directory(repo_path, &store)?;
+    let mut stats = index_directory(repo_path, &store)?;
+
+    if deep {
+        let lsp_config = Config::load(&paths.config_file())
+            .map(|c| c.lsp)
+            .unwrap_or_default();
+        stats.lsp_enrichment = Some(crate::enrich::enrich_with_lsp(
+            repo_path,
+            &store,
+            &lsp_config,
+        ));
+    }
 
     record_indexed(&paths, repo_path, stats.nodes, stats.edges)?;
     Ok(stats)
@@ -158,7 +181,7 @@ pub fn touch_and_catchup(repo_path: &Path) {
         registry = Registry::load(&paths.registry_file());
         if is_cold(&registry, &hash, &paths) {
             let start = std::time::Instant::now();
-            let success = index_project_locked(repo_path).is_ok();
+            let success = index_project_locked(repo_path, false).is_ok();
             record_auto_reindex(repo_path, start.elapsed().as_millis() as u64, success);
             registry = Registry::load(&paths.registry_file());
         }
@@ -329,6 +352,7 @@ pub fn import_project(repo_path: &Path) -> Result<IndexStats> {
         nodes,
         edges,
         embeddings_status: "skipped: imported from artifact, not a fresh index".to_string(),
+        lsp_enrichment: None,
     })
 }
 

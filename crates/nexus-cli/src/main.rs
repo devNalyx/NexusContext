@@ -27,6 +27,10 @@ enum Command {
     Reindex {
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Also run LSP-resolved-symbol enrichment, if `[lsp] enabled =
+        /// true` in config.toml - see README.md. Slower; off by default.
+        #[arg(long)]
+        deep: bool,
     },
     /// Structural name search over the knowledge graph (no embeddings needed).
     SearchGraph {
@@ -176,11 +180,29 @@ fn main() -> Result<()> {
                     .unwrap_or("(not configured - structural tools still work)")
             );
         }
-        Command::Reindex { path } => {
-            let stats = index_project(&path)?;
+        Command::Reindex { path, deep } => {
+            let stats = if deep {
+                index::index_project_deep(&path)?
+            } else {
+                index_project(&path)?
+            };
             println!("indexed {} files", stats.files_indexed);
             println!("nodes: {}, edges: {}", stats.nodes, stats.edges);
             println!("embeddings: {}", stats.embeddings_status);
+            if let Some(report) = &stats.lsp_enrichment {
+                println!(
+                    "lsp enrichment: ran={} functions_queried={} resolved_edges_added={} duration_ms={}{}",
+                    report.ran,
+                    report.functions_queried,
+                    report.resolved_edges_added,
+                    report.duration_ms,
+                    report
+                        .note
+                        .as_ref()
+                        .map(|n| format!(" note={n:?}"))
+                        .unwrap_or_default()
+                );
+            }
             println!("graph stored at {}", graph_db_path(&path).display());
         }
         Command::SearchGraph {
