@@ -77,8 +77,7 @@ pub fn project_hash(root: &Path) -> String {
 /// 0644) and `graph.db` (via `GraphStore::open`'s `Connection::open`, same
 /// story) - is readable by any other local user otherwise. `graph.db` is
 /// the most sensitive of the three: it holds the full indexed source text
-/// (FTS5) and embedding vectors for every project ever indexed. See issue
-/// #32.
+/// (FTS5) for every project ever indexed. See issue #32.
 ///
 /// `.mode(0o600)` on `OpenOptions` is applied atomically by the OS at
 /// creation time, so a freshly-created file is never briefly

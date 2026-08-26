@@ -2,7 +2,7 @@ use crate::graph::{Direction, GraphStore};
 use crate::project::graph_db_path;
 use crate::{CodeSearchHit, NodeRecord};
 use anyhow::{bail, Result};
-use nexus_core::{truncate_to_byte_boundary, Config, EmbeddingsPolicy, Paths};
+use nexus_core::{truncate_to_byte_boundary, Paths};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -126,68 +126,6 @@ fn dot_escape(s: &str) -> String {
 
 pub fn search_code(repo_path: &Path, query: &str, limit: u32) -> Result<Vec<CodeSearchHit>> {
     open_store(repo_path)?.search_code(query, limit)
-}
-
-pub struct SemanticHit {
-    pub node: NodeRecord,
-    pub score: f32,
-    pub chunk_text: String,
-}
-
-/// Ranks every embedded chunk for the configured model against the query's
-/// own embedding via cosine similarity - brute-force, no ANN index, which
-/// is the right call at the scale this project actually operates at
-/// (thousands of chunks per project, not millions). Assumes the caller has
-/// already checked `embeddings_policy()` is `Allowed` - this only handles
-/// what happens once that's true: a live HTTP failure, or a project that's
-/// never been indexed with embeddings on for this particular model.
-pub fn semantic_search(
-    repo_path: &Path,
-    embeddings_cfg: &nexus_core::EmbeddingsConfig,
-    query: &str,
-    limit: u32,
-) -> Result<Vec<SemanticHit>> {
-    let store = open_store(repo_path)?;
-    let model = embeddings_cfg
-        .model
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("no embeddings model configured"))?;
-
-    let candidates = store.embeddings_for_model(model)?;
-    if candidates.is_empty() {
-        bail!(
-            "no embeddings found for model '{model}' in this project's index - reindex this \
-             project after enabling embeddings to build them"
-        );
-    }
-
-    let query_vector = crate::embeddings::embed_batch(embeddings_cfg, &[query.to_string()])?
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("embeddings endpoint returned no vector for the query"))?;
-
-    let mut scored: Vec<(i64, String, f32)> = candidates
-        .into_iter()
-        .map(|(node_id, chunk_text, embedding_bytes)| {
-            let vector = crate::embeddings::bytes_to_vector(&embedding_bytes);
-            let score = crate::embeddings::cosine_similarity(&query_vector, &vector);
-            (node_id, chunk_text, score)
-        })
-        .collect();
-    scored.sort_by(|a, b| b.2.total_cmp(&a.2));
-    scored.truncate(limit as usize);
-
-    let mut hits = Vec::with_capacity(scored.len());
-    for (node_id, chunk_text, score) in scored {
-        if let Some(node) = store.node_by_id(node_id)? {
-            hits.push(SemanticHit {
-                node,
-                score,
-                chunk_text,
-            });
-        }
-    }
-    Ok(hits)
 }
 
 pub fn detect_changes(repo_path: &Path) -> Result<Vec<NodeRecord>> {
@@ -406,7 +344,6 @@ fn bounded_lines(lines: &[&str], s: usize, e: usize) -> String {
 pub struct QueryPlanResult {
     pub strategy: &'static str,
     pub note: Option<&'static str>,
-    pub embeddings_policy: Option<EmbeddingsPolicy>,
     pub file_content: Option<String>,
     pub records: Vec<NodeRecord>,
 }
@@ -421,11 +358,7 @@ const STOPWORDS: &[&str] = &[
 /// just picks the cheapest of the strategies that already exist instead of
 /// making the caller guess: a named file wins outright, a single
 /// identifier-like token goes straight to the graph, and anything more
-/// descriptive falls back to a naive per-word graph search. Real semantic
-/// search now exists (`semantic_search`, backing the `search_codebase`/
-/// `query_memory` tools directly) but this planner doesn't route to it yet -
-/// routing a query here vs. calling those tools directly is a distinct,
-/// not-yet-made decision, not an oversight to paper over with a stale claim.
+/// descriptive falls back to a naive per-word graph search over the graph.
 pub fn plan_query(
     repo_path: &Path,
     query: &str,
@@ -438,7 +371,6 @@ pub fn plan_query(
         return Ok(QueryPlanResult {
             strategy: "file_read",
             note: None,
-            embeddings_policy: None,
             file_content: Some(text),
             records: vec![],
         });
@@ -458,13 +390,11 @@ pub fn plan_query(
         return Ok(QueryPlanResult {
             strategy: "graph_search",
             note: None,
-            embeddings_policy: None,
             file_content: None,
             records: results,
         });
     }
 
-    let config = Config::load(&Paths::resolve().config_file())?;
     let store = open_store(repo_path)?;
 
     let mut seen = HashSet::new();
@@ -481,30 +411,9 @@ pub fn plan_query(
         }
     }
 
-    let policy = config.embeddings_policy();
-    let note = match policy {
-        EmbeddingsPolicy::NotConfigured => {
-            "no embeddings endpoint configured - falling back to keyword search over the graph"
-        }
-        EmbeddingsPolicy::Disabled => {
-            "an embeddings endpoint and model are configured but embeddings.enabled is false - \
-             falling back to keyword search over the graph"
-        }
-        EmbeddingsPolicy::RemoteBlocked => {
-            "an embeddings endpoint is configured but blocked (remote host, allow_remote not \
-             set) - falling back to keyword search over the graph"
-        }
-        EmbeddingsPolicy::Allowed => {
-            "an embeddings endpoint is configured and allowed - query_planner doesn't route \
-             descriptive queries to it yet (call search_codebase/query_memory directly for \
-             semantic search) - falling back to keyword search over the graph"
-        }
-    };
-
     Ok(QueryPlanResult {
         strategy: "keyword_fallback_graph_search",
-        note: Some(note),
-        embeddings_policy: Some(policy),
+        note: None,
         file_content: None,
         records: merged,
     })

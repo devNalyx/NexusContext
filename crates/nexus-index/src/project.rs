@@ -152,9 +152,9 @@ fn is_cold(registry: &Registry, hash: &str, paths: &Paths) -> bool {
 /// runs. Without the second check, two tool calls racing against the same
 /// freshly-cold project both see "cold" before either has reindexed, and
 /// `REINDEX_LOCK` only serializes their two full rebuilds rather than
-/// skipping the redundant one - on an embeddings-enabled project that's a
-/// real duplicate embeddings-API spend, not just wasted CPU (see the GitHub
-/// issue this fixes for the full race). The second check is what turns that
+/// skipping the redundant one - a real duplicate full-rebuild cost, not
+/// just wasted CPU (see the GitHub issue this fixes for the full race). The
+/// second check is what turns that
 /// into ordinary double-checked locking: whichever caller loses the race to
 /// acquire the lock finds the project already warm by the time it's their
 /// turn and skips out instead of redoing the work.
@@ -351,7 +351,6 @@ pub fn import_project(repo_path: &Path) -> Result<IndexStats> {
         files_indexed: 0,
         nodes,
         edges,
-        embeddings_status: "skipped: imported from artifact, not a fresh index".to_string(),
         lsp_enrichment: None,
     })
 }

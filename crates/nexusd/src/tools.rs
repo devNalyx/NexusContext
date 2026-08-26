@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use nexus_core::{project_hash, truncate_to_byte_boundary, Config, Paths, Registry, WatcherConfig};
+use nexus_core::{project_hash, Config, Paths, Registry, WatcherConfig};
 use nexus_index::{self as index, index_project, Direction, NodeRecord};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -12,31 +12,6 @@ const SERVER_MAX_LIMIT: u32 = 200;
 fn clamp_limit(requested: u32) -> u32 {
     requested.min(SERVER_MAX_LIMIT)
 }
-
-/// `search_codebase`/`query_memory` rows are far heavier than every other
-/// tool's - each carries a `chunk_text` up to `embeddings::MAX_CHUNK_CHARS`
-/// (6000) rather than the small fixed set of fields `records_to_json`
-/// returns - so `SERVER_MAX_LIMIT` alone doesn't bound their response the
-/// way it does for structural tools. A worst case of `SERVER_MAX_LIMIT`
-/// rows here was ~1.2MB (300K+ tokens) in one MCP response. Capped much
-/// lower, and paired with `RESPONSE_CHUNK_TEXT_MAX_BYTES` below - see the
-/// GitHub issue this fixes.
-const SEMANTIC_MAX_LIMIT: u32 = 30;
-
-fn clamp_semantic_limit(requested: u32) -> u32 {
-    requested.min(SEMANTIC_MAX_LIMIT)
-}
-
-/// Separate from `embeddings::MAX_CHUNK_CHARS` (6000, applied once at index
-/// time so the stored chunk matches what was actually embedded) - this is
-/// the much smaller ceiling on what's worth spending response tokens on
-/// *per hit*, applied here rather than at index time so the full chunk
-/// stays available for the embedding call's own accuracy. Byte-based, not
-/// char-based - truncation itself is `nexus_core::truncate_to_byte_boundary`
-/// (shared with `nexus-index`'s `get_file_context`, which had its own copy
-/// of the same byte-vs-char-safe logic until a PR review flagged the
-/// duplication).
-const RESPONSE_CHUNK_TEXT_MAX_BYTES: usize = 1000;
 
 /// Per-tool call/error/byte counters for `get_session_usage`, scoped to
 /// *this process* rather than persisted like `nexus_core::stats`'s
@@ -61,9 +36,9 @@ struct SessionToolStats {
 /// below are excluded outright instead of trying to weight them.
 ///
 /// Deliberately excluded, with the caller left to judge each themselves:
-/// `search_code`/`search_codebase`/`query_memory` (a scan's hits still
-/// typically need a real read afterward - the hit isn't the substitute),
-/// `detect_dead_code` (own tool description documents a high false-positive
+/// `search_code` (a scan's hits still typically need a real read afterward -
+/// the hit isn't the substitute), `detect_dead_code` (own tool description
+/// documents a high false-positive
 /// rate - not a confident "avoided" signal), `query_graph` (an ad-hoc power
 /// query, not a stand-in for a plain read), `index_repository` (setup cost,
 /// not a saving), `delete_project`/`get_session_usage` (admin/meta, not
@@ -151,7 +126,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "search_graph",
-            "description": "Structural search over indexed symbols by name substring - functions/types and, for markdown docs, heading sections. No embeddings required.",
+            "description": "Structural search over indexed symbols by name substring - functions/types and, for markdown docs, heading sections.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -273,24 +248,6 @@ pub fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "search_codebase",
-            "description": "Semantic search via cosine similarity over embedded Function/Type nodes and markdown sections. Requires `embeddings.enabled = true` and a reachable endpoint/model - errors with an actionable reason otherwise.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer", "default": 10, "maximum": 30 } },
-                "required": ["repo_path", "query"]
-            }
-        },
-        {
-            "name": "query_memory",
-            "description": "RAG-style retrieval over indexed content - currently the same ranked semantic search as search_codebase (richer retrieval, e.g. pulling full surrounding context per hit, is a future enhancement). Same requirements and fallback guidance as search_codebase.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "repo_path": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer", "default": 10, "maximum": 30 } },
-                "required": ["repo_path", "query"]
-            }
-        },
-        {
             "name": "get_session_usage",
             "description": "How much data NexusContext has sent back in this session so far, per tool, with a rough token estimate - useful for keeping an eye on your own context budget. Scoped to this session only (since this MCP connection started, not lifetime totals across every session), and counts only NexusContext's own MCP responses - not your system prompt, conversation history, or any other tool's output.",
             "inputSchema": {
@@ -317,8 +274,6 @@ const ALL_TOOL_NAMES: &[&str] = &[
     "search_code",
     "query_planner",
     "query_graph",
-    "search_codebase",
-    "query_memory",
     "get_session_usage",
 ];
 
@@ -333,7 +288,7 @@ const MINIMAL_TOOLS: &[&str] = &[
 ];
 
 /// Rounds out `MINIMAL_TOOLS` with the rest of the everyday-useful,
-/// non-destructive, non-embeddings-gated tools.
+/// non-destructive tools.
 const STANDARD_EXTRA_TOOLS: &[&str] = &[
     "search_graph",
     "detect_changes",
@@ -342,16 +297,10 @@ const STANDARD_EXTRA_TOOLS: &[&str] = &[
     "get_session_usage",
 ];
 
-/// Admin/destructive (`delete_project`) or embeddings-gated
-/// (`search_codebase`, `query_memory`) tools, plus the niche ad-hoc
+/// Admin/destructive (`delete_project`) tools, plus the niche ad-hoc
 /// `query_graph` DSL - opt-in via `preset = "full"` or an explicit
 /// `enabled` list, not advertised by default.
-const FULL_EXTRA_TOOLS: &[&str] = &[
-    "delete_project",
-    "query_graph",
-    "search_codebase",
-    "query_memory",
-];
+const FULL_EXTRA_TOOLS: &[&str] = &["delete_project", "query_graph"];
 
 fn resolved_tool_names(config: &Config) -> std::collections::HashSet<&'static str> {
     if let Some(explicit) = &config.tools.enabled {
@@ -436,7 +385,6 @@ pub fn call(params: Value) -> Result<Value> {
         "search_code" => search_code(args),
         "query_graph" => query_graph(args),
         "query_planner" => query_planner(args),
-        "search_codebase" | "query_memory" => semantic_search_tool(args),
         "get_session_usage" => get_session_usage(args),
         _ => bail!("unknown tool: {name}"),
     };
@@ -474,73 +422,6 @@ pub fn call(params: Value) -> Result<Value> {
             json!({ "content": [ { "type": "text", "text": err.to_string() } ], "isError": true }),
         ),
     }
-}
-
-/// `search_codebase`/`query_memory` share this: check the policy, and
-/// either return a specific, actionable reason it can't run right now, or
-/// actually attempt the semantic search and translate a live failure into
-/// an equally actionable message. Every message points back at the
-/// structural tools that work regardless, so the calling agent has
-/// somewhere to go rather than just hitting a dead end.
-fn semantic_search_tool(args: Value) -> Result<String> {
-    let repo_path = repo_path_arg(&args)?;
-    let query = args
-        .get("query")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("missing 'query' argument"))?;
-    let limit =
-        clamp_semantic_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as u32);
-
-    let config = Config::load(&Paths::resolve().config_file())?;
-    match config.embeddings_policy() {
-        nexus_core::EmbeddingsPolicy::NotConfigured => bail!(
-            "embeddings backend not configured - structural tools (search_graph, trace_call_path, \
-             get_architecture, search_code, query_planner) work without one."
-        ),
-        nexus_core::EmbeddingsPolicy::Disabled => bail!(
-            "an embeddings endpoint and model are configured but embeddings.enabled = false - set \
-             it to true in config.toml (or via the GUI's Config tab) to turn semantic search on. \
-             Structural tools (search_graph, trace_call_path, get_architecture, search_code, \
-             query_planner) work without it."
-        ),
-        nexus_core::EmbeddingsPolicy::RemoteBlocked => bail!(
-            "embeddings endpoint {} is not loopback/private, and allow_remote isn't set - \
-             refusing to send code to it. Set embeddings.allow_remote = true in config.toml \
-             if this is intentional.",
-            config.embeddings.endpoint.as_deref().unwrap_or("?")
-        ),
-        nexus_core::EmbeddingsPolicy::Allowed => {}
-    }
-
-    match index::semantic_search(&repo_path, &config.embeddings, query, limit) {
-        Ok(hits) => Ok(serde_json::to_string_pretty(&semantic_hits_to_json(&hits))?),
-        Err(err) => Err(anyhow!(
-            "embeddings endpoint is configured and enabled, but this request just failed: {err}. \
-             This isn't retried automatically - try search_graph, search_code, or query_planner \
-             instead while the endpoint is unavailable."
-        )),
-    }
-}
-
-fn semantic_hits_to_json(hits: &[index::SemanticHit]) -> Value {
-    json!(hits
-        .iter()
-        .map(|hit| {
-            let (chunk_text, chunk_text_truncated) =
-                truncate_to_byte_boundary(&hit.chunk_text, RESPONSE_CHUNK_TEXT_MAX_BYTES);
-            json!({
-                "kind": format!("{:?}", hit.node.kind),
-                "name": hit.node.name,
-                "qualified_name": hit.node.qualified_name,
-                "file": hit.node.file_path,
-                "start_line": hit.node.start_line,
-                "end_line": hit.node.end_line,
-                "score": hit.score,
-                "chunk_text": chunk_text,
-                "chunk_text_truncated": chunk_text_truncated,
-            })
-        })
-        .collect::<Vec<_>>())
 }
 
 fn repo_path_arg(args: &Value) -> Result<PathBuf> {
@@ -582,7 +463,6 @@ fn index_repository(args: Value) -> Result<String> {
         "files_indexed": stats.files_indexed,
         "nodes": stats.nodes,
         "edges": stats.edges,
-        "embeddings_status": stats.embeddings_status,
         "lsp_enrichment": stats.lsp_enrichment,
     }))?)
 }
@@ -710,7 +590,7 @@ fn get_session_usage(_args: Value) -> Result<String> {
             "bytes": bytes_avoided,
             "estimated_tokens": estimate_tokens(bytes_avoided),
             "counted_tools": READS_AVOIDED_TOOLS,
-            "note": "Successful calls to tools that plausibly substituted a manual file read/grep, per an explicit, conservative allow-list (see READS_AVOIDED_TOOLS in source) - excludes raw scans (search_code/search_codebase/query_memory, whose hits still typically need a real read afterward), detect_dead_code (documented high false-positive rate), and admin/meta tools. 'bytes'/'count' are measured facts about what NexusContext returned, not a token or dollar estimate of what reading the files by hand would have cost - treat this as a floor on savings, not a precise counterfactual.",
+            "note": "Successful calls to tools that plausibly substituted a manual file read/grep, per an explicit, conservative allow-list (see READS_AVOIDED_TOOLS in source) - excludes raw scans (search_code, whose hits still typically need a real read afterward), detect_dead_code (documented high false-positive rate), and admin/meta tools. 'bytes'/'count' are measured facts about what NexusContext returned, not a token or dollar estimate of what reading the files by hand would have cost - treat this as a floor on savings, not a precise counterfactual.",
         },
         "note": "Scoped to this session only (this MCP connection, since it started) - not lifetime totals. Counts only NexusContext's own MCP response bytes, not your system prompt, conversation history, or any other tool's output, and NexusContext doesn't know your model's actual context limit or real tokenizer - estimated_tokens is a bytes/4 approximation, not an exact count.",
     }))?)
@@ -832,7 +712,6 @@ fn query_planner(args: Value) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
         "strategy": plan.strategy,
         "note": plan.note,
-        "embeddings_policy": plan.embeddings_policy.map(|p| format!("{p:?}")),
         "result": result,
         "index_freshness": index_freshness_json(&repo_path, now_unix()),
     }))?)
@@ -1024,45 +903,6 @@ mod tests {
     }
 
     #[test]
-    fn clamp_semantic_limit_is_far_tighter_than_the_general_server_max() {
-        assert_eq!(clamp_semantic_limit(1), 1);
-        assert_eq!(clamp_semantic_limit(SEMANTIC_MAX_LIMIT), SEMANTIC_MAX_LIMIT);
-        // The whole point: a caller asking for SERVER_MAX_LIMIT rows here
-        // still only gets SEMANTIC_MAX_LIMIT - the general cap alone isn't
-        // tight enough for chunk_text-bearing rows.
-        assert_eq!(clamp_semantic_limit(SERVER_MAX_LIMIT), SEMANTIC_MAX_LIMIT);
-    }
-
-    // Byte-vs-char-boundary correctness (ASCII, exact-limit, multi-byte
-    // UTF-8) is unit-tested once, at the source, in
-    // nexus_core::text::tests - no need to re-verify that same pure
-    // function's behavior here. This test is the integration-level check
-    // that nexusd actually wires it up correctly for a real MCP response.
-    #[test]
-    fn semantic_hits_to_json_truncates_long_chunk_text_with_a_flag() {
-        let hits = vec![index::SemanticHit {
-            node: NodeRecord {
-                id: 1,
-                kind: nexus_index::NodeKind::Function,
-                name: "f".to_string(),
-                qualified_name: "f".to_string(),
-                file_path: "f.rs".to_string(),
-                start_line: 1,
-                end_line: 2,
-            },
-            score: 0.9,
-            chunk_text: "x".repeat(RESPONSE_CHUNK_TEXT_MAX_BYTES + 500),
-        }];
-        let json = semantic_hits_to_json(&hits);
-        let hit = &json[0];
-        assert_eq!(
-            hit["chunk_text"].as_str().unwrap().len(),
-            RESPONSE_CHUNK_TEXT_MAX_BYTES
-        );
-        assert_eq!(hit["chunk_text_truncated"], true);
-    }
-
-    #[test]
     fn full_preset_matches_all_tool_definitions() {
         let config = Config {
             tools: nexus_core::ToolsConfig {
@@ -1113,7 +953,6 @@ mod tests {
         assert!(filtered.contains("search_code"));
         assert!(filtered.contains("get_session_usage"));
         assert!(!filtered.contains("delete_project"));
-        assert!(!filtered.contains("search_codebase"));
     }
 
     #[test]
@@ -1142,7 +981,7 @@ mod tests {
             tools: nexus_core::ToolsConfig {
                 preset: ToolsPreset::Standard,
                 enabled: Some(vec![
-                    "search_codebase".to_string(),
+                    "delete_project".to_string(),
                     "query_graph".to_string(),
                 ]),
             },
@@ -1150,7 +989,7 @@ mod tests {
         };
         let filtered = tool_names(&enabled_tool_definitions(&config));
         assert_eq!(filtered.len(), 2);
-        assert!(filtered.contains("search_codebase"));
+        assert!(filtered.contains("delete_project"));
         assert!(filtered.contains("query_graph"));
         assert!(!filtered.contains("search_code"));
     }

@@ -1,6 +1,8 @@
 # 0002. Embeddings stored as SQLite BLOBs, not a dedicated vector store
 
-Status: Accepted
+Status: Superseded by [[0010-remove-embeddings-subsystem|0010]] - the whole
+embeddings/semantic-search subsystem this ADR governed was removed. Kept as
+the historical record of why this storage choice was made while it stood.
 Date: Phase 12 (real embeddings client)
 
 ## Context
@@ -51,4 +53,4 @@ nearest neighbor) algorithm.
 ## Related
 
 [[0001-graph-storage-in-sqlite]] · [[Storage-and-Data-Model]] ·
-[[Embeddings-and-Semantic-Search]]
+[[0010-remove-embeddings-subsystem|0010]]

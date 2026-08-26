@@ -14,12 +14,10 @@ const REGISTRY_RESYNC_INTERVAL: Duration = Duration::from_secs(30);
 /// *after* an attempt finishes (indexing + re-establishing the watch), not
 /// before it starts - see the two things that land in this window:
 ///
-/// 1. Without a gap at all, a reindex slower than the burst-to-burst rate -
-///    which embeddings makes routine, since each project-wide reindex makes
-///    real network calls per batch of nodes instead of finishing in well
-///    under a second - can lose the write lock race against its own next
-///    attempt: it fails with "database is locked" after the 30s
-///    busy_timeout, and immediately re-triggers, indefinitely.
+/// 1. Without a gap at all, a reindex slower than the burst-to-burst rate
+///    can lose the write lock race against its own next attempt: it fails
+///    with "database is locked" after the 30s busy_timeout, and immediately
+///    re-triggers, indefinitely.
 /// 2. Re-establishing the watch after an attempt isn't free either: notify's
 ///    Linux backend subscribes to IN_OPEN (not just writes - see
 ///    inotify.rs's watchmask), and its recursive watch setup walks the whole
@@ -149,9 +147,8 @@ fn run() -> anyhow::Result<()> {
                 let mut to_reindex: HashSet<PathBuf> = HashSet::new();
                 let mut hit_watch_limit = collect_dirty_roots(message, &watched, &mut to_reindex);
 
-                // A reindex can take far longer than events arrive - embeddings
-                // make it network-bound, easily minutes on a large project -
-                // so while one is running, every separate debounced burst that
+                // A reindex can take far longer than events arrive on a large
+                // project, so while one is running, every separate debounced burst that
                 // lands for the same project (or another) queues up in this
                 // channel independently, since it's unbounded and nothing else
                 // is draining it. Left alone, N queued bursts for one project

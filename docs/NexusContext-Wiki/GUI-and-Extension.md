@@ -9,7 +9,7 @@ dashboard, which this project deliberately avoids.
 
 GTK4 + libadwaita, native Linux desktop look, no Electron/web-view
 overhead. Talks to the daemon **exclusively** over the control socket
-(`nexusd serve` must be running) — never stdio, never MCP. Seven tabs:
+(`nexusd serve` must be running) — never stdio, never MCP. Six tabs:
 
 - **Dashboard** — daemon status, projects indexed, auto-sync watcher count,
   inotify watch budget/usage (see [[Watcher-and-Freshness]]).
@@ -24,9 +24,6 @@ overhead. Talks to the daemon **exclusively** over the control socket
   graph (which turns into an unreadable hairball past a few hundred
   nodes on any real codebase). `graphviz` is a soft recommend, not a hard
   dependency — every other tab works without it.
-- **Config** — embeddings endpoint/model/`allow_remote`, plus a read-only
-  "API key: set/not set" indicator (see [[Security-Model]] for why the raw
-  key is never sent to the GUI).
 - **Usage** — the same `stats.get` data the control API exposes,
   per-tool/method call counts, latency, and auto-reindex history.
 

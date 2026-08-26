@@ -1,6 +1,6 @@
 # MCP Tools
 
-14 tools total, backed by the same SQLite graph — no separate index to keep
+12 tools total, backed by the same SQLite graph — no separate index to keep
 in sync, no silent fallback that hides what actually ran. Every tool caps
 its response somehow; see [[Security-Model]] for why that became a
 deliberate, tested property rather than an assumption.
@@ -17,7 +17,7 @@ deliberate, tested property rather than an assumption.
 
 | Tool | What it does |
 |---|---|
-| `search_graph` | Structural search over indexed symbols by name substring — functions/types and markdown heading `Section`s. No embeddings required. |
+| `search_graph` | Structural search over indexed symbols by name substring — functions/types and markdown heading `Section`s. |
 | `search_code` | Grep-like full-text search over indexed file content via SQLite FTS5 — code and markdown alike, matched as a literal phrase. |
 | `trace_call_path` | BFS over the `CALLS` graph (unioned with `CALLS_RESOLVED` when a `deep` reindex has run) to find callers/callees. Name-based resolution, not import-aware — see [[Known-Limitations]]. Response is capped; check `total_nodes` vs. `shown`. |
 
@@ -27,7 +27,7 @@ deliberate, tested property rather than an assumption.
 |---|---|
 | `detect_dead_code` | Functions with no inbound `CALLS`/`CALLS_RESOLVED` edge (excluding `main`). High false-positive rate is expected and stated in the tool's own description — treat hits as leads, not conclusions. |
 | `detect_changes` | Maps uncommitted git changes to the graph symbols whose line range overlaps a diff hunk. |
-| `query_planner` | Picks the cheapest retrieval strategy (file read / symbol search / semantic-or-keyword fallback) instead of the agent guessing, and returns the actual answer in-band alongside which strategy it used — no second call needed. Also carries `index_freshness`. |
+| `query_planner` | Picks the cheapest retrieval strategy (file read / symbol search / keyword fallback) instead of the agent guessing, and returns the actual answer in-band alongside which strategy it used — no second call needed. Also carries `index_freshness`. |
 
 ## Observability
 
@@ -41,9 +41,8 @@ deliberate, tested property rather than an assumption.
 |---|---|
 | `query_graph` | Minimal ad-hoc Cypher-lite: exactly one pattern shape, `MATCH (a:Kind)-[:EDGE]->(b:Kind) [WHERE ...] RETURN a|b`. `Kind` is `Function`/`Type`/`File`/`Section`. Fails clearly outside that shape rather than guessing. |
 | `delete_project` | Removes a project's indexed data (graph + registry entry). Never touches the source directory. Destructive — gated behind the `full` preset. |
-| `search_codebase` / `query_memory` | Real cosine-similarity semantic search over embedded chunks. Requires `embeddings.enabled = true` and a reachable endpoint — see [[Embeddings-and-Semantic-Search]]. `query_memory` is currently the same ranked search as `search_codebase`; richer RAG-style retrieval is a future enhancement, not built yet. |
 
-## Why not all 14 are advertised by default
+## Why not all 12 are advertised by default
 
 Every MCP session pays a fixed token cost just to load `tools/list`'s
 schemas, regardless of whether that session ever calls most of them. A
@@ -51,7 +50,7 @@ schemas, regardless of whether that session ever calls most of them. A
 
 ```toml
 [tools]
-preset = "standard"   # "minimal" (5) | "standard" (default, 10) | "full" (14)
+preset = "standard"   # "minimal" (5) | "standard" (default, 10) | "full" (12)
 # enabled = ["search_code", "get_architecture"]   # explicit list, overrides preset
 ```
 
@@ -59,8 +58,8 @@ preset = "standard"   # "minimal" (5) | "standard" (default, 10) | "full" (14)
   `get_architecture`, `trace_call_path` — the read-heavy core loop.
 - **`standard`** (10, the default): adds `search_graph`, `detect_changes`,
   `detect_dead_code`, `query_planner`, `get_session_usage`.
-- **`full`** (14): adds `delete_project` (destructive), `query_graph`
-  (niche DSL), `search_codebase`/`query_memory` (embeddings-gated).
+- **`full`** (12): adds `delete_project` (destructive) and `query_graph`
+  (niche DSL).
 
 This was a deliberate fix, not the original design — see `README.md`
 Phase 21/22 for the token-cost measurement that drove it, Phase 29
@@ -75,4 +74,4 @@ target), which is the one piece not yet ported to Windows. See
 ## Related
 
 [[Security-Model]] (response caps, `allowed_roots`) · [[Architecture]] ·
-[[Configuration]] · [[Embeddings-and-Semantic-Search]]
+[[Configuration]]

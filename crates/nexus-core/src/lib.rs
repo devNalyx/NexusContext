@@ -5,9 +5,7 @@ pub mod registry;
 pub mod stats;
 pub mod text;
 
-pub use config::{
-    Config, EmbeddingsConfig, EmbeddingsPolicy, LspConfig, ToolsConfig, ToolsPreset, WatcherConfig,
-};
+pub use config::{Config, LspConfig, ToolsConfig, ToolsPreset, WatcherConfig};
 pub use error::{Error, Result};
 pub use paths::{project_hash, Paths};
 pub use registry::{ProjectEntry, Registry};

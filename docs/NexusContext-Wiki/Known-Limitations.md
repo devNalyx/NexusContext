@@ -31,8 +31,7 @@ description; treat hits as leads, not conclusions.
 ## Reindexing is a full rebuild, not incremental
 
 Every reindex clears and re-walks the whole project (see
-[[Indexing-Pipeline]] for the one real exception: embeddings reuse across
-reindexes). Full per-file incremental diffing — a persistent
+[[Indexing-Pipeline]]). Full per-file incremental diffing — a persistent
 `file_signatures` table plus a durable `call_sites` table so a rename in
 one file correctly invalidates a resolved call edge from an *unchanged*
 caller elsewhere — is deliberately not attempted yet. It's genuinely
@@ -46,14 +45,6 @@ first-shot implementation.
 One pattern shape only: `MATCH (a:Kind)-[:EDGE]->(b:Kind) [WHERE ...]
 RETURN a|b`. Not a general query language. Fails clearly outside that
 shape.
-
-## No dedicated vector store
-
-Embeddings are BLOB rows in the same SQLite `graph.db`, ranked by
-brute-force cosine similarity at query time — see
-[[Embeddings-and-Semantic-Search]]. Appropriate at this project's actual
-scale (thousands of chunks per project); would need revisiting only well
-past that scale.
 
 ## GNOME extension version churn
 
@@ -81,5 +72,4 @@ persistent background daemon that keeps a project warm automatically.
 
 ## Related
 
-[[Indexing-Pipeline]] · [[MCP-Tools]] · [[Watcher-and-Freshness]] ·
-[[Embeddings-and-Semantic-Search]]
+[[Indexing-Pipeline]] · [[MCP-Tools]] · [[Watcher-and-Freshness]]

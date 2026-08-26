@@ -38,9 +38,7 @@ down to the next equal-or-shallower heading) linked by `EdgeKind::Contains`
 (parent heading → nested child heading). Handles level-skips without a
 phantom intermediate node, multiple independent top-level trees per file,
 and correctly ignores heading-like text inside fenced code blocks. This
-feeds full-text search, `search_graph`, and embeddings identically to code
-— the embeddings pipeline just consumes `(node_id, chunk_text)` pairs
-regardless of source.
+feeds full-text search and `search_graph` identically to code.
 
 ## Full-text search
 
@@ -65,19 +63,15 @@ for that file (structural nodes/full-text search still cover it; only
 the call graph loses fidelity for that one file). See README Phase 28
 for the incident this was root-caused from.
 
-## Reindexing is a full rebuild, not incremental — with one real exception
+## Reindexing is a full rebuild, not incremental
 
 Every reindex is `GraphStore::clear()` + a full re-walk. There's no
-per-file incremental diffing (see [[Known-Limitations]]). The one place
-this *is* optimized: **embeddings reuse**. Before `clear()` wipes the
-`embeddings` table, a snapshot is taken keyed by `qualified_name` (stable
-across a rebuild, unlike `node_id`, which resets every `clear()`). A chunk
-whose text is byte-identical to its previous snapshot entry gets its old
-vector reinserted under the new node id — zero network cost. Only
-genuinely new or changed chunks go to the real embeddings endpoint.
-`embeddings_status` reports both counts, e.g. `"ok: 12 chunks embedded,
-340 reused unchanged"`. This is what keeps a routine catch-up reindex on an
-embeddings-enabled project cheap.
+per-file incremental diffing (see [[Known-Limitations]]) — a design ADR
+0006 (`README.md`) accepted deliberately, not an oversight. Prior to the
+embeddings-subsystem removal (see [[ADRs/README|ADR 0010]]), the one place
+this had a real optimization was embeddings-vector reuse across rebuilds;
+that mechanism went away with the subsystem itself, so a reindex today is
+uniformly a full rebuild with no partial-reuse fast path.
 
 Concurrent reindex safety: `graph.db` runs in WAL mode, and the full
 rebuild happens inside `BEGIN IMMEDIATE`/`COMMIT` with a 30s busy timeout,
@@ -88,6 +82,5 @@ reindex, say) serialize instead of corrupting the graph. A process-wide
 
 ## Related
 
-[[Language-Support]] · [[Storage-and-Data-Model]] ·
-[[Embeddings-and-Semantic-Search]] · [[Watcher-and-Freshness]] ·
+[[Language-Support]] · [[Storage-and-Data-Model]] · [[Watcher-and-Freshness]] ·
 [[Known-Limitations]]

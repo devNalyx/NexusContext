@@ -1,6 +1,5 @@
 pub mod cypher;
 pub mod docs;
-pub mod embeddings;
 pub mod enrich;
 pub mod graph;
 pub mod ingest;
@@ -12,9 +11,7 @@ pub mod queries;
 
 pub use cypher::run_query as run_cypher_query;
 pub use enrich::{enrich_with_lsp, EnrichmentReport};
-pub use graph::{
-    CodeSearchHit, Direction, EdgeKind, EmbeddingsSnapshot, GraphStore, NodeKind, NodeRecord,
-};
+pub use graph::{CodeSearchHit, Direction, EdgeKind, GraphStore, NodeKind, NodeRecord};
 pub use ingest::{content_signature, estimate_watch_count, index_directory, IndexStats};
 pub use language::Language;
 pub use obsidian::export_obsidian;
@@ -24,6 +21,5 @@ pub use project::{
 };
 pub use queries::{
     call_graph_dot, detect_changes, detect_dead_code, get_architecture, get_file_context,
-    open_store, plan_query, search_code, semantic_search, ArchitectureSummary, QueryPlanResult,
-    SemanticHit,
+    open_store, plan_query, search_code, ArchitectureSummary, QueryPlanResult,
 };

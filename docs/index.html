@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NexusContext — Local codebase intelligence for AI agents</title>
-<meta name="description" content="A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and LSP-resolved symbols. Zero embeddings required. Linux and Windows on x86_64 and arm64, macOS on Apple Silicon.">
+<meta name="description" content="A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and LSP-resolved symbols — no embeddings, no vector store. Linux and Windows on x86_64 and arm64, macOS on Apple Silicon.">
 <meta name="robots" content="index, follow">
 <meta name="theme-color" content="#161309">
 <link rel="canonical" href="https://nc.nalyx.dev/">
@@ -17,14 +17,14 @@
 <meta property="og:site_name" content="NexusContext">
 <meta property="og:url" content="https://nc.nalyx.dev/">
 <meta property="og:title" content="NexusContext — Local codebase intelligence for AI agents">
-<meta property="og:description" content="A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and LSP-resolved symbols. Zero embeddings required. Linux and Windows on x86_64 and arm64, macOS on Apple Silicon.">
+<meta property="og:description" content="A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and LSP-resolved symbols — no embeddings, no vector store. Linux and Windows on x86_64 and arm64, macOS on Apple Silicon.">
 <meta property="og:image" content="https://nc.nalyx.dev/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="NexusContext — a self-hosted MCP daemon for AI coding agents, running on Linux, macOS, and Windows">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="NexusContext — Local codebase intelligence for AI agents">
-<meta name="twitter:description" content="A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and LSP-resolved symbols. Zero embeddings required.">
+<meta name="twitter:description" content="A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and LSP-resolved symbols — no embeddings, no vector store.">
 <meta name="twitter:image" content="https://nc.nalyx.dev/og-image.png">
 <meta name="twitter:image:alt" content="NexusContext — a self-hosted MCP daemon for AI coding agents, running on Linux, macOS, and Windows">
 
@@ -36,7 +36,7 @@
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Linux, macOS, Windows",
   "softwareVersion": "0.1.17",
-  "description": "A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and LSP-resolved symbols. Zero embeddings required.",
+  "description": "A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and LSP-resolved symbols — no embeddings, no vector store.",
   "url": "https://nc.nalyx.dev/",
   "image": "https://nc.nalyx.dev/og-image.png",
   "codeRepository": "https://github.com/devNalyx/NexusContext",
@@ -664,16 +664,16 @@
       NexusContext parses your codebase into functions, types, and call edges — resolved
       across file boundaries, now optionally sharpened by a real language server — and
       answers <code>search_graph</code>, <code>trace_call_path</code>, and <code>get_architecture</code>
-      over a local MCP connection. No embeddings required to get started.
+      over a local MCP connection. Purely structural — no embeddings, no vector store.
     </p>
     <div class="cta-row">
       <a class="btn btn-primary" href="https://github.com/devNalyx/NexusContext">View on GitHub</a>
       <a class="btn btn-ghost" href="#install">Quick install</a>
     </div>
     <div class="stat-row">
-      <div class="stat"><div class="n">14</div><div class="l">MCP tools</div></div>
+      <div class="stat"><div class="n">12</div><div class="l">MCP tools</div></div>
       <div class="stat"><div class="n">11</div><div class="l">Languages parsed</div></div>
-      <div class="stat"><div class="n">0</div><div class="l">Embeddings required</div></div>
+      <div class="stat"><div class="n">0</div><div class="l">Network calls required</div></div>
       <div class="stat"><div class="n">6</div><div class="l">Platform &times; arch builds</div></div>
     </div>
   </section>
@@ -690,7 +690,7 @@
       <div class="card">
         <div class="node-mark"></div>
         <h3>A graph, not just vectors</h3>
-        <p>Tree-sitter parses 11 languages into a SQLite graph of functions, types, and call edges, resolved across file boundaries — plus full-text search and dead-code detection on the same graph, zero embeddings required.</p>
+        <p>Tree-sitter parses 11 languages into a SQLite graph of functions, types, and call edges, resolved across file boundaries — plus full-text search and dead-code detection on the same graph, no embeddings layer at all.</p>
       </div>
       <div class="card">
         <div class="node-mark"></div>
@@ -700,7 +700,7 @@
       <div class="card">
         <div class="node-mark"></div>
         <h3>MCP-native</h3>
-        <p>A real JSON-RPC 2.0 stdio server with 14 tools, verified against real IDE-style sessions — drop it into any MCP-compatible agent, or auto-configure Claude Code/Desktop with one command.</p>
+        <p>A real JSON-RPC 2.0 stdio server with 12 tools, verified against real IDE-style sessions — drop it into any MCP-compatible agent, or auto-configure Claude Code/Desktop with one command.</p>
       </div>
       <div class="card">
         <div class="node-mark"></div>
@@ -710,7 +710,7 @@
       <div class="card">
         <div class="node-mark"></div>
         <h3>Safe by construction</h3>
-        <p>Embeddings endpoints are blocked unless loopback/private or explicitly allowed. Path traversal, decompression bombs, and permission leaks are closed at the check itself, not just at the call sites that found them.</p>
+        <p>No outbound network calls of any kind. Path traversal, decompression bombs, and permission leaks are closed at the check itself, not just at the call sites that found them.</p>
       </div>
       <div class="card">
         <div class="node-mark"></div>
@@ -734,12 +734,6 @@
         <h3>Find real callers, with code</h3>
         <p><code>trace_call_path</code> plus two scoped <code>get_file_context</code> calls return exactly 2 real callers with line ranges — and correctly skip a same-named test file that plain <code>grep</code> flagged as a false positive.</p>
         <p class="figure bench-win">8,096 → 551 tokens · −93%</p>
-      </div>
-      <div class="card bench-card">
-        <div class="node-mark"></div>
-        <h3>"How does this actually work?"</h3>
-        <p>One <code>query_memory</code> semantic call over the indexed docs beats reading the two most relevant files in full — the specifics it surfaced (an env var, a cache field name) checked out against the real source.</p>
-        <p class="figure bench-win">4,797 → 1,785 tokens · −63%</p>
       </div>
       <div class="card bench-card">
         <div class="node-mark"></div>
@@ -769,7 +763,7 @@
   <section id="capabilities">
     <div class="section-head">
       <div class="kicker">What your agent can actually call</div>
-      <h2>14 MCP tools, grouped by what they answer</h2>
+      <h2>12 MCP tools, grouped by what they answer</h2>
       <p>Every tool is backed by the same SQLite graph — no separate index to keep in sync, no silent fallback that hides what actually ran.</p>
     </div>
     <div class="tool-groups">
@@ -792,7 +786,7 @@
         <div class="group-label">Search &amp; trace</div>
         <div class="tool-row">
           <div class="name">search_graph</div>
-          <div class="desc">Structural search over indexed symbols by name substring — no embeddings required.</div>
+          <div class="desc">Structural search over indexed symbols by name substring.</div>
         </div>
         <div class="tool-row">
           <div class="name">search_code</div>
@@ -831,10 +825,6 @@
         <div class="tool-row">
           <div class="name">delete_project<span class="tag">destructive</span></div>
           <div class="desc">Remove a project's indexed data. Never touches the source directory.</div>
-        </div>
-        <div class="tool-row">
-          <div class="name">search_codebase / query_memory<span class="tag">opt-in</span></div>
-          <div class="desc">Cosine-similarity semantic search against any OpenAI-compatible endpoint (Ollama, LM Studio, vLLM) — off by default.</div>
         </div>
       </div>
     </div>

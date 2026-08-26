@@ -65,9 +65,6 @@ never competes with a GUI session on the control socket, and vice versa.
   hand-rolled LSP client that talks to `rust-analyzer` on an explicit
   `deep` reindex, adding `CallsResolved` edges alongside the static
   `Calls` ones. Off by default; see [[Storage-and-Data-Model]].
-- **Embeddings pipeline** *(optional)* — an OpenAI-compatible
-  `/v1/embeddings` HTTP client. Off by default; see
-  [[Embeddings-and-Semantic-Search]].
 - **Control API** — the `serve`-mode Unix socket described above. Linux/macOS only.
 - **Desktop GUI** — "NexusContext Manager", GTK4 + libadwaita. See
   [[GUI-and-Extension]].
@@ -77,8 +74,8 @@ never competes with a GUI session on the control socket, and vice versa.
 ## Design principle: the agent is the intelligence, NexusContext is the memory
 
 No LLM lives in the daemon. It builds structure and answers queries — the
-calling agent still does all the reasoning. This is why most tools need no
-embeddings at all: the agent reads structural/text results and reasons over
+calling agent still does all the reasoning. Every tool is structural, not
+embedding-based: the agent reads structural/text results and reasons over
 them itself, the same way it would reason over a `grep` result, just with
 far less noise.
 

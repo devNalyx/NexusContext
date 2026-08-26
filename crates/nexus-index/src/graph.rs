@@ -1,6 +1,5 @@
 use anyhow::Result;
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::path::Path;
 
 /// One SQLite file per indexed project (matches the proposal's
@@ -9,10 +8,6 @@ use std::path::Path;
 pub struct GraphStore {
     conn: Connection,
 }
-
-/// (chunk_text, dim, embedding_bytes) for one previously-embedded chunk,
-/// keyed by qualified_name - see `GraphStore::embeddings_snapshot`.
-pub type EmbeddingsSnapshot = HashMap<String, (String, i64, Vec<u8>)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
@@ -123,9 +118,8 @@ fn harden_project_data_dir(_dir: &Path) {}
 /// `harden_project_data_dir` - covers the case where the directory already
 /// existed with a looser mode from before this fix (an existing install
 /// being upgraded). `graph.db` is the most sensitive file this daemon
-/// writes: it holds the full indexed source text (FTS5) and embedding
-/// vectors for every project ever indexed. Best-effort for the same reason
-/// as above.
+/// writes: it holds the full indexed source text (FTS5) for every project
+/// ever indexed. Best-effort for the same reason as above.
 #[cfg(unix)]
 fn harden_graph_db_file(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -175,16 +169,17 @@ impl GraphStore {
             CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id, kind);
             CREATE VIRTUAL TABLE IF NOT EXISTS file_contents_fts
                 USING fts5(file_path UNINDEXED, content);
-            CREATE TABLE IF NOT EXISTS embeddings (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                node_id     INTEGER NOT NULL REFERENCES nodes(id),
-                model       TEXT NOT NULL,
-                dim         INTEGER NOT NULL,
-                chunk_text  TEXT NOT NULL,
-                embedding   BLOB NOT NULL,
-                UNIQUE(node_id, model)
-            );
-            CREATE INDEX IF NOT EXISTS idx_embeddings_node ON embeddings(node_id);
+            ",
+        )?;
+        // Migration for existing databases created before the embeddings/
+        // semantic-search subsystem was removed (issue #62) - drops the old
+        // table/index cleanly rather than just leaving them unused. Safe to
+        // run on every open: DROP ... IF EXISTS is a no-op once the schema
+        // has already been migrated.
+        conn.execute_batch(
+            "
+            DROP INDEX IF EXISTS idx_embeddings_node;
+            DROP TABLE IF EXISTS embeddings;
             ",
         )?;
         Ok(Self { conn })
@@ -194,7 +189,6 @@ impl GraphStore {
     /// incremental edge correctness is flagged as an open risk in the
     /// proposal and deferred past this vertical slice.
     pub fn clear(&self) -> Result<()> {
-        self.conn.execute("DELETE FROM embeddings", [])?;
         self.conn.execute("DELETE FROM file_contents_fts", [])?;
         self.conn.execute("DELETE FROM edges", [])?;
         self.conn.execute("DELETE FROM nodes", [])?;
@@ -422,73 +416,6 @@ impl GraphStore {
                 rusqlite::Error::QueryReturnedNoRows => Ok(None),
                 other => Err(other.into()),
             })
-    }
-
-    /// One row per embedded chunk (currently: one per `Function`/`Type`
-    /// node - see `ingest.rs`'s embedding pass). `ON CONFLICT` lets a
-    /// reindex refresh an existing node's vector in place rather than
-    /// accumulating stale duplicates, matching `insert_node`'s own pattern.
-    pub fn insert_embedding(
-        &self,
-        node_id: i64,
-        model: &str,
-        dim: usize,
-        chunk_text: &str,
-        embedding: &[u8],
-    ) -> Result<()> {
-        self.conn
-            .prepare_cached(
-                "INSERT INTO embeddings (node_id, model, dim, chunk_text, embedding)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(node_id, model) DO UPDATE SET
-                    dim = excluded.dim,
-                    chunk_text = excluded.chunk_text,
-                    embedding = excluded.embedding",
-            )?
-            .execute(rusqlite::params![
-                node_id, model, dim as i64, chunk_text, embedding
-            ])?;
-        Ok(())
-    }
-
-    /// Every embedded chunk for one model - callers must always scope by
-    /// model (mixing vectors from two different embedding models in one
-    /// ranking is meaningless, not just suboptimal - dimensions and vector
-    /// spaces aren't comparable across models).
-    pub fn embeddings_for_model(&self, model: &str) -> Result<Vec<(i64, String, Vec<u8>)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT node_id, chunk_text, embedding FROM embeddings WHERE model = ?1")?;
-        let rows = stmt.query_map([model], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
-    }
-
-    /// Snapshot of every embedded chunk for `model`, keyed by
-    /// `qualified_name` rather than `node_id` - node ids are fresh
-    /// autoincrements on every full rebuild (`clear()` wipes the table
-    /// first), but a function's qualified_name
-    /// (`{file_path}::{name}#{start_line}`, see `ingest.rs`) stays stable
-    /// across a rebuild as long as it hasn't actually moved. Taken *before*
-    /// `clear()` runs, so a reindex can reuse unchanged vectors instead of
-    /// re-calling the embeddings endpoint for content that didn't change -
-    /// see the freshness proposal's Stage 0. Empty map if nothing is
-    /// embedded yet (fresh project, or embeddings not configured) - callers
-    /// treat a miss exactly like "never embedded", no special-casing needed.
-    pub fn embeddings_snapshot(&self, model: &str) -> Result<EmbeddingsSnapshot> {
-        let mut stmt = self.conn.prepare(
-            "SELECT nodes.qualified_name, embeddings.chunk_text, embeddings.dim, embeddings.embedding
-             FROM embeddings JOIN nodes ON embeddings.node_id = nodes.id
-             WHERE embeddings.model = ?1",
-        )?;
-        let rows = stmt.query_map([model], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                (row.get(1)?, row.get(2)?, row.get(3)?),
-            ))
-        })?;
-        rows.collect::<rusqlite::Result<HashMap<_, _>>>()
-            .map_err(Into::into)
     }
 
     /// All nodes in the graph - used by the Obsidian export, which needs
@@ -757,98 +684,55 @@ impl GraphStore {
     }
 }
 
+/// Regression test for issue #62: opening a database that still has the
+/// pre-removal `embeddings` table must migrate it away (DROP) rather than
+/// erroring or leaving it in place unused.
 #[cfg(test)]
-mod embeddings_snapshot_tests {
+mod embeddings_migration_tests {
     use super::*;
 
-    fn temp_store(name: &str) -> GraphStore {
-        // A dedicated per-test subdirectory, not a file directly under the
-        // shared system temp root - GraphStore::open now hardens its
-        // parent directory's mode (see issue #32), and that must never be
-        // the actual `/tmp`.
+    #[test]
+    fn open_drops_a_pre_existing_embeddings_table() {
         let dir = std::env::temp_dir().join(format!(
-            "nexus_embeddings_snapshot_test_{name}_{}",
+            "nexus_embeddings_migration_test_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        GraphStore::open(&dir.join("graph.db")).unwrap()
-    }
+        let db_path = dir.join("graph.db");
 
-    #[test]
-    fn snapshot_is_empty_for_a_model_with_no_embeddings() {
-        let store = temp_store("empty");
-        let snapshot = store.embeddings_snapshot("some-model").unwrap();
-        assert!(snapshot.is_empty());
-    }
+        {
+            let store = GraphStore::open(&db_path).unwrap();
+            // Simulate a pre-removal database by recreating the old table
+            // directly, bypassing `open`'s own (now embeddings-free) schema.
+            store
+                .conn
+                .execute_batch(
+                    "CREATE TABLE embeddings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        node_id INTEGER NOT NULL,
+                        model TEXT NOT NULL,
+                        dim INTEGER NOT NULL,
+                        chunk_text TEXT NOT NULL,
+                        embedding BLOB NOT NULL
+                    );
+                    CREATE INDEX idx_embeddings_node ON embeddings(node_id);",
+                )
+                .unwrap();
+        }
 
-    #[test]
-    fn snapshot_is_keyed_by_qualified_name_not_node_id() {
-        let store = temp_store("keyed");
-        let id = store
-            .insert_node(NodeKind::Function, "foo", "a.rs::foo#1", "a.rs", 1, 2)
+        // Reopening must migrate the old table away.
+        let store = GraphStore::open(&db_path).unwrap();
+        let exists: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='embeddings'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        store
-            .insert_embedding(id, "m1", 3, "fn foo() {}", &[1, 2, 3])
-            .unwrap();
+        assert_eq!(exists, 0, "embeddings table must be dropped on open");
 
-        let snapshot = store.embeddings_snapshot("m1").unwrap();
-        let (text, dim, bytes) = snapshot.get("a.rs::foo#1").expect("entry present");
-        assert_eq!(text, "fn foo() {}");
-        assert_eq!(*dim, 3);
-        assert_eq!(bytes, &vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn snapshot_only_returns_the_requested_models_rows() {
-        let store = temp_store("model_scoped");
-        let id = store
-            .insert_node(NodeKind::Function, "foo", "a.rs::foo#1", "a.rs", 1, 2)
-            .unwrap();
-        store
-            .insert_embedding(id, "m1", 3, "fn foo() {}", &[1, 2, 3])
-            .unwrap();
-        store
-            .insert_embedding(id, "m2", 4, "fn foo() {}", &[4, 5, 6, 7])
-            .unwrap();
-
-        let snapshot = store.embeddings_snapshot("m1").unwrap();
-        assert_eq!(snapshot.len(), 1);
-        assert!(snapshot.contains_key("a.rs::foo#1"));
-        let (_, dim, _) = &snapshot["a.rs::foo#1"];
-        assert_eq!(*dim, 3, "must not pick up the other model's row");
-    }
-
-    #[test]
-    fn snapshot_survives_the_node_being_deleted_and_reinserted_under_a_new_id() {
-        // Mirrors what a real rebuild does: clear() wipes nodes/embeddings,
-        // then the same qualified_name gets a fresh autoincrement id. The
-        // snapshot must have been taken *before* that happened (this test
-        // simulates it by taking the snapshot, then clearing and
-        // reinserting) and still be usable by qualified_name alone.
-        let store = temp_store("survives_rebuild");
-        let old_id = store
-            .insert_node(NodeKind::Function, "foo", "a.rs::foo#1", "a.rs", 1, 2)
-            .unwrap();
-        store
-            .insert_embedding(old_id, "m1", 3, "fn foo() {}", &[9, 9, 9])
-            .unwrap();
-
-        let snapshot = store.embeddings_snapshot("m1").unwrap();
-
-        store.clear().unwrap();
-        let new_id = store
-            .insert_node(NodeKind::Function, "foo", "a.rs::foo#1", "a.rs", 1, 2)
-            .unwrap();
-        assert_ne!(old_id, new_id, "clear() must reset the autoincrement id");
-
-        let (text, dim, bytes) = snapshot.get("a.rs::foo#1").expect("entry present");
-        assert_eq!(text, "fn foo() {}");
-        store
-            .insert_embedding(new_id, "m1", *dim as usize, text, bytes)
-            .unwrap();
-
-        let (nodes, _) = store.stats().unwrap();
-        assert_eq!(nodes, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
