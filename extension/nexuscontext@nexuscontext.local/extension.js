@@ -59,6 +59,9 @@ class NexusIndicator extends PanelMenu.Button {
     }
 
     _refreshStatus() {
+        if (this._destroyed)
+            return;
+
         const socketPath = this._controlSocketPath();
         if (!socketPath) {
             this._setDisconnected('XDG_RUNTIME_DIR is not set');
