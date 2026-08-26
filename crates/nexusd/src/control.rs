@@ -37,8 +37,8 @@ pub fn serve(socket_path: PathBuf) -> Result<()> {
 /// Removes a stale socket file, ensures the parent directory exists, binds,
 /// then locks the socket file itself down to owner-only.
 ///
-/// The control API has no authentication of its own (see `redact_config`'s
-/// doc comment) - today's only real protection is that `socket_path`'s
+/// The control API has no authentication of its own - today's only real
+/// protection is that `socket_path`'s
 /// parent directory (`$XDG_RUNTIME_DIR/nexuscontext` under the systemd user
 /// service default) is itself 0700, owner-only. `UnixListener::bind` has no
 /// way to create the socket file with a restrictive mode atomically, so the
@@ -147,7 +147,6 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
         "projects.architecture" => projects_architecture(params),
         "config.get" => config_get(),
         "config.set" => config_set(params),
-        "embeddings.test" => embeddings_test(),
         "search.adhoc" => search_adhoc(params),
         "viz.call_graph" => viz_call_graph(params),
         "stats.get" => stats_get(),
@@ -302,8 +301,7 @@ fn projects_reindex(params: Value) -> Result<Value> {
         "status": "indexed",
         "files_indexed": stats.files_indexed,
         "nodes": stats.nodes,
-        "edges": stats.edges,
-        "embeddings_status": stats.embeddings_status
+        "edges": stats.edges
     }))
 }
 
@@ -364,85 +362,22 @@ fn projects_architecture(params: Value) -> Result<Value> {
     }))
 }
 
-/// `Config`'s `Serialize` impl includes `embeddings.api_key` verbatim -
-/// correct for what `Config::save` persists to disk (see
-/// `nexus_core::config`'s owner-only file permissions for how *that* copy
-/// is protected), but not for what goes out over the control socket, which
-/// has no authentication of its own - any local process that can connect
-/// gets back whatever this returns. Every response that echoes a `Config`
-/// goes through this instead of a raw `serde_json::to_value`, so the key
-/// itself never leaves this process: callers get `has_api_key: bool`
-/// instead, enough to render "a key is set" without needing the value.
-fn redact_config(config: &Config) -> Result<Value> {
-    let mut value = serde_json::to_value(config)?;
-    if let Some(embeddings) = value.get_mut("embeddings").and_then(|v| v.as_object_mut()) {
-        let has_api_key = embeddings
-            .get("api_key")
-            .and_then(|v| v.as_str())
-            .is_some_and(|k| !k.is_empty());
-        embeddings.remove("api_key");
-        embeddings.insert("has_api_key".to_string(), json!(has_api_key));
-    }
-    Ok(value)
-}
-
 fn config_get() -> Result<Value> {
     let paths = Paths::resolve();
     let config = Config::load(&paths.config_file())?;
-    redact_config(&config)
+    Ok(serde_json::to_value(config)?)
 }
 
-fn config_set(params: Value) -> Result<Value> {
-    let paths = Paths::resolve();
-    let mut config = Config::load(&paths.config_file())?;
-
-    if let Some(embeddings) = params.get("embeddings") {
-        if let Some(enabled) = embeddings.get("enabled").and_then(|v| v.as_bool()) {
-            config.embeddings.enabled = enabled;
-        }
-        if let Some(endpoint) = embeddings.get("endpoint").and_then(|v| v.as_str()) {
-            config.embeddings.endpoint = Some(endpoint.to_string());
-        }
-        if let Some(model) = embeddings.get("model").and_then(|v| v.as_str()) {
-            config.embeddings.model = Some(model.to_string());
-        }
-        // Only touched when the request includes an `api_key` field at all -
-        // config_get/config_set responses never send the key back (see
-        // redact_config), so a request built by round-tripping either
-        // response naturally omits it and leaves whatever's stored
-        // untouched, rather than clobbering it with nothing. An explicit
-        // empty string is still honored (as "clear it") - embeddings.rs
-        // already treats an empty key the same as no key.
-        if let Some(api_key) = embeddings.get("api_key").and_then(|v| v.as_str()) {
-            config.embeddings.api_key = Some(api_key.to_string());
-        }
-        if let Some(timeout) = embeddings.get("timeout_secs").and_then(|v| v.as_u64()) {
-            config.embeddings.timeout_secs = timeout;
-        }
-        if let Some(allow_remote) = embeddings.get("allow_remote").and_then(|v| v.as_bool()) {
-            config.embeddings.allow_remote = allow_remote;
-        }
-    }
-
-    config.save(&paths.config_file())?;
-    redact_config(&config)
-}
-
-/// Checks the currently-saved endpoint/model are actually reachable, by
-/// embedding a short literal probe string and timing it - not a project-
-/// scoped operation, just "is what's in config.toml right now usable at
-/// all." Backs the GUI's "Test Connection" button. Errors already flow
-/// through `dispatch()`'s standard `Err` -> JSON-RPC error envelope, no
-/// extra plumbing needed here.
-fn embeddings_test() -> Result<Value> {
+/// No GUI-editable config field exists anymore now that the embeddings
+/// panel (the only thing that ever called this) is gone - kept as a no-op
+/// round trip (load, re-save unchanged) rather than removed outright, since
+/// `config.set` is still a reachable control-socket method other future
+/// settings can hang fields off of.
+fn config_set(_params: Value) -> Result<Value> {
     let paths = Paths::resolve();
     let config = Config::load(&paths.config_file())?;
-    let result = nexus_index::embeddings::test_connection(&config.embeddings)?;
-    Ok(json!({
-        "model": result.model,
-        "dim": result.dim,
-        "latency_ms": result.latency_ms
-    }))
+    config.save(&paths.config_file())?;
+    Ok(serde_json::to_value(config)?)
 }
 
 fn search_adhoc(params: Value) -> Result<Value> {
@@ -508,40 +443,6 @@ fn viz_call_graph(params: Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn redact_config_replaces_a_set_api_key_with_has_api_key_true() {
-        let mut config = Config::default();
-        config.embeddings.api_key = Some("sk-real-secret".to_string());
-
-        let redacted = redact_config(&config).unwrap();
-
-        assert_eq!(
-            redacted.pointer("/embeddings/has_api_key"),
-            Some(&json!(true))
-        );
-        assert!(redacted.pointer("/embeddings/api_key").is_none());
-        // Belt and suspenders: the secret string itself must not appear
-        // anywhere in the serialized output, not just at the expected path.
-        assert!(!redacted.to_string().contains("sk-real-secret"));
-    }
-
-    #[test]
-    fn redact_config_reports_has_api_key_false_when_unset_or_empty() {
-        let unset = redact_config(&Config::default()).unwrap();
-        assert_eq!(
-            unset.pointer("/embeddings/has_api_key"),
-            Some(&json!(false))
-        );
-
-        let mut empty = Config::default();
-        empty.embeddings.api_key = Some(String::new());
-        let redacted_empty = redact_config(&empty).unwrap();
-        assert_eq!(
-            redacted_empty.pointer("/embeddings/has_api_key"),
-            Some(&json!(false))
-        );
-    }
 
     /// A scratch directory per test - unlike `nexus_core::config`'s own
     /// permission test (which this originally copied the long

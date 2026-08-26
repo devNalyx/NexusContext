@@ -7,26 +7,23 @@ fixed by a dedicated review pass rather than designed in from the start.
 
 ## What's blocked by default
 
-- **Remote embeddings endpoints.** `Config::embeddings_policy()` refuses to
-  send code to a non-loopback/non-private endpoint unless
-  `allow_remote = true` is set explicitly. Filling in an endpoint doesn't
-  silently start sending code to it either — `enabled` is a separate
-  switch. See [[Embeddings-and-Semantic-Search]].
+- **Any outbound network call at all.** With the embeddings/semantic-search
+  subsystem removed (see [[ADRs/README|ADR 0010]]), nothing in this daemon
+  makes an HTTP request to anything, ever — every tool is a local
+  filesystem read plus a local SQLite query. There's no endpoint,
+  `allow_remote` gate, or API key to reason about.
 - **Everything the daemon writes under the data/config dirs is owner-only on
   disk, directories included** — `config.toml` (`0600`, written atomically
   at creation time, not write-then-chmod, which would leave a brief
-  world-readable window; it can hold `embeddings.api_key` in plaintext),
-  `registry.json`/`usage_stats.json` (`0600`, plus their containing data
-  directory itself hardened to `0700` right alongside them — file-level
-  `0600` alone still left directory *listing* open, leaking which projects
-  exist and that `usage_stats.json` exists at all, even though the file
-  contents themselves were already protected), and `graph.db` plus its own
-  per-project data directory (`0600`/`0700`) — `graph.db` is the most
-  sensitive of these, since it holds the full indexed source text (FTS5)
-  and embedding vectors for every project ever indexed, not just metadata.
-- **`embeddings.api_key` is never echoed back over the control API.**
-  `config.get`/`config.set` both return `has_api_key: bool` instead of the
-  raw value — the key never leaves the daemon process once set.
+  world-readable window), `registry.json`/`usage_stats.json` (`0600`, plus
+  their containing data directory itself hardened to `0700` right alongside
+  them — file-level `0600` alone still left directory *listing* open,
+  leaking which projects exist and that `usage_stats.json` exists at all,
+  even though the file contents themselves were already protected), and
+  `graph.db` plus its own per-project data directory (`0600`/`0700`) —
+  `graph.db` is the most sensitive of these, since it holds the full
+  indexed source text (FTS5) for every project ever indexed, not just
+  metadata.
 - **The control socket itself is owner-only on disk (`0600`)**, set
   explicitly right after bind — a second, explicit layer on top of (not a
   replacement for) the runtime directory already being `0700` under the
@@ -42,11 +39,6 @@ fixed by a dedicated review pass rather than designed in from the start.
     a line ceiling (`MAX_RETURNED_LINES`, 4000), independently enforced —
     a line-count cap alone doesn't bound a response whose lines are
     individually enormous (a minified bundle, a generated one-line blob).
-  - `search_codebase`/`query_memory` — a tighter row limit
-    (`SEMANTIC_MAX_LIMIT`, 30, vs. the general 200) plus a separate,
-    smaller per-hit `chunk_text` cap (1000 bytes, UTF-8-safe — cuts at the
-    last whole codepoint, not a raw byte slice that could land
-    mid-character), flagged via `chunk_text_truncated`.
   - Every other tool's `limit` passes through a shared `clamp_limit()`
     capped at `SERVER_MAX_LIMIT` (200) regardless of what a caller asks
     for.
@@ -64,17 +56,16 @@ fixed by a dedicated review pass rather than designed in from the start.
   canonicalizes both the path being checked and each configured root before
   comparing, closing a `..`-traversal bypass a raw prefix check would miss
   — see below.
-- **Semantic search** — see [[Embeddings-and-Semantic-Search]].
 - **LSP-resolved-symbol enrichment (`[lsp]`, issue #10)** — default
   `enabled = false`. When on, a `deep` reindex (`index_repository`'s `deep`
   argument / `nexus reindex --deep` — never the ordinary auto-reindex path)
   spawns `lsp.server_command` (default `rust-analyzer`) as a child process
   and talks LSP over its stdio to resolve cross-file references. Worth
   naming plainly: this is the one place `config.toml` controls what
-  external binary the daemon executes, not just what it connects to — same
-  trust model as `embeddings.endpoint` (you're trusting your own config),
-  but the failure mode is "runs a program" rather than "sends a network
-  request." Strictly enrichment: a missing/crashing/timed-out server
+  external binary the daemon executes, not just what it connects to — you're
+  trusting your own config, but the failure mode is "runs a program"
+  rather than a network request (there are none in this daemon at all — see
+  above). Strictly enrichment: a missing/crashing/timed-out server
   degrades to the static tree-sitter-only index, never fails the reindex
   or blocks any other tool — see `crates/nexus-index/src/enrich.rs`'s own
   degrade-cleanly tests. Capped concurrency (`max_concurrent_servers`,
@@ -87,20 +78,18 @@ Run explicitly against two questions — where can an agent burn unnecessary
 tokens through this daemon, and where can data leak that shouldn't — each
 filed as a GitHub issue before being fixed:
 
-- Two tool calls racing against the same freshly-cold, embeddings-enabled
-  project could both trigger a full reindex — the reindex lock serialized
-  them but didn't dedupe the work, meaning real duplicate embeddings-API
-  spend. Fixed with a double-checked-locking recheck.
+- Two tool calls racing against the same freshly-cold project could both
+  trigger a full reindex — the reindex lock serialized them but didn't
+  dedupe the work, meaning real duplicate rebuild cost. Fixed with a
+  double-checked-locking recheck.
 - `allowed_roots` only gated indexing, not `get_file_context`/
   `detect_changes` — a real confused-deputy gap for an LLM-driven tool,
   where content the agent is reading could itself suggest reading
   somewhere it shouldn't. Fixed — see above.
 - `config.toml` was saved with whatever the process umask produced (`664`
   observed on a real shared box). Fixed — see above.
-- `api_key` was echoed back in cleartext over the (unauthenticated) control
-  socket. Fixed — see above.
-- `get_file_context(full=true)` and `search_codebase`/`query_memory` had no
-  server-side response-size ceiling at all. Fixed — see above.
+- `get_file_context(full=true)` had no server-side response-size ceiling
+  at all. Fixed — see above.
 
 Full detail, including the exact code paths and PR review rounds, is in
 `README.md`'s Phase 25/26 entries — this note is the current-state summary,

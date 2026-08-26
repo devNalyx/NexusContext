@@ -16,10 +16,13 @@ completes in low single-digit seconds even after the Phase 28 OOM fix.
 ## Decision
 
 Every reindex is `GraphStore::clear()` followed by a full re-walk of the
-project. The one deliberate optimization on top: embeddings reuse (keyed
-by `qualified_name`, stable across a rebuild unlike `node_id`) so a
-routine catch-up reindex on an embeddings-enabled project doesn't re-pay
-the embeddings API cost for unchanged chunks.
+project. Through v0.1.17, the one deliberate optimization on top was
+embeddings reuse (keyed by `qualified_name`, stable across a rebuild unlike
+`node_id`) so a routine catch-up reindex on an embeddings-enabled project
+didn't re-pay the embeddings API cost for unchanged chunks; that
+optimization was removed along with the rest of the embeddings subsystem
+(see [[0010-remove-embeddings-subsystem|0010]]), so a reindex today is
+uniformly a full rebuild with no partial-reuse fast path.
 
 ## Alternatives considered
 

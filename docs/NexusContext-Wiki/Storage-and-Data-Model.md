@@ -32,10 +32,15 @@ edges the static tree-sitter pass already found, never in place of them —
 `trace_call_path`/`detect_dead_code` union both kinds when walking the
 call graph, so a project that's never run a `deep` reindex behaves exactly
 as before this existed). Full-text search via a parallel FTS5 table over
-indexed file content. Embeddings, when enabled, are plain BLOB rows in the
-same database — see [[Embeddings-and-Semantic-Search]]. A minimal
-Cypher-lite layer answers the `query_graph` tool's one supported pattern
-shape.
+indexed file content. A minimal Cypher-lite layer answers the `query_graph`
+tool's one supported pattern shape.
+
+An `embeddings` table existed here through v0.1.17, storing embedding
+vectors as plain BLOB rows for the now-removed optional semantic-search
+layer — see [[ADRs/README|ADR 0010]]. `GraphStore::open` drops that table
+(and its index) on any database that still has it, so upgrading an
+existing install cleans up the old schema automatically; nothing needs to
+be done by hand.
 
 ## The project registry (`projects.json`)
 

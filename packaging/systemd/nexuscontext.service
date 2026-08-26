@@ -8,10 +8,10 @@ Type=simple
 ExecStart=/usr/bin/nexusd serve
 Restart=on-failure
 RestartSec=2
-# Structural tools and the control API don't need network access; only the
-# optional embeddings HTTP client does, and that's outbound-only anyway.
-# NoNewPrivileges/ProtectSystem are cheap wins for a user-scope daemon that
-# only ever touches its own config/data dirs.
+# Nothing in this daemon makes a network call at all - every tool is a
+# local filesystem read plus a local SQLite query. NoNewPrivileges/
+# ProtectSystem are cheap wins for a user-scope daemon that only ever
+# touches its own config/data dirs.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only

@@ -47,13 +47,6 @@ generated, per-project, local-only (gitignored), and answers "what does
 this codebase's call graph look like," not "how does NexusContext itself
 work" (that's what *this* vault, `docs/NexusContext-Wiki/`, is for).
 
-## Embeddings
-
-```bash
-nexus test-embeddings                              # global config check, no --project
-nexus search-codebase <query> --project /path/to/project
-```
-
 ## Auto-configuring an MCP agent
 
 ```bash

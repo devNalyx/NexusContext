@@ -1,6 +1,8 @@
 # 0007. Embeddings endpoints are loopback/private by default, remote is opt-in
 
-Status: Accepted
+Status: Superseded by [[0010-remove-embeddings-subsystem|0010]] - the whole
+embeddings/semantic-search subsystem this ADR governed was removed. Kept as
+the historical record of why this safety property existed while it did.
 Date: Phase 7
 
 ## Context
@@ -47,4 +49,4 @@ this is a second, independent switch on top of the endpoint check.
 
 ## Related
 
-[[Embeddings-and-Semantic-Search]] · [[Security-Model]] · [[Configuration]]
+[[0010-remove-embeddings-subsystem|0010]] · [[Security-Model]] · [[Configuration]]

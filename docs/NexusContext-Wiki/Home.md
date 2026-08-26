@@ -3,9 +3,8 @@
 A self-hosted, local-first MCP daemon that gives AI coding agents a structural
 knowledge graph over a codebase — functions, types, and call edges via
 tree-sitter, plus markdown docs as a heading graph — with full-text search
-and optional real semantic search layered on top. No LLM runs inside the
-daemon: it builds structure and answers queries; the calling agent still
-does all the reasoning.
+on top. No LLM runs inside the daemon: it builds structure and answers
+queries; the calling agent still does all the reasoning.
 
 This is a real, working product (not a proposal), currently at **v0.1.17**,
 released for Linux and Windows (x86_64 + arm64) and macOS (Apple Silicon)
@@ -23,7 +22,7 @@ for the handful of decisions worth defending later.
 
 - [[Architecture]] — the daemon, its two transports, and how the pieces fit
   together.
-- [[MCP-Tools]] — the 14 tools an agent can call, grouped, and why they're
+- [[MCP-Tools]] — the 12 tools an agent can call, grouped, and why they're
   gated behind presets.
 - [[Indexing-Pipeline]] — how a codebase becomes a graph: tree-sitter,
   two-pass call resolution, per-language quality tiers.
@@ -35,7 +34,6 @@ for the handful of decisions worth defending later.
 - [[Indexing-Pipeline]] — tree-sitter parsing, call resolution, markdown docs.
 - [[Language-Support]] — which of the 11 languages get full call graphs vs.
   structural-only.
-- [[Embeddings-and-Semantic-Search]] — the optional layer, off by default.
 - [[Watcher-and-Freshness]] — auto-sync, warm/cold projects, the inotify
   watch budget.
 - [[Storage-and-Data-Model]] — the SQLite graph, the registry, on-disk
@@ -52,10 +50,10 @@ for the handful of decisions worth defending later.
 
 ## The one-sentence pitch, held to honestly
 
-Structural tools (`search_graph`, `trace_call_path`, `get_architecture`,
-`search_code`, `query_planner`) need **zero** embeddings and work the
-moment a project is indexed. Semantic search
-(`search_codebase`/`query_memory`) is a narrowing layer for large codebases,
-opt-in, and never required for the rest of the tool to be useful — see
-[[Embeddings-and-Semantic-Search]] for exactly what that trade-off buys and
-costs.
+Every tool here — `search_graph`, `trace_call_path`, `get_architecture`,
+`search_code`, `query_planner`, and the rest — is structural: name/graph/
+full-text search over what tree-sitter actually parsed, not an embedding
+model's guess at similarity. That's a deliberate, graph-first bet, not a
+missing feature — see [[ADRs/README|ADRs]] 0002/0007/0010 for the history
+of the (now-removed) optional embeddings layer and why it didn't earn its
+keep.

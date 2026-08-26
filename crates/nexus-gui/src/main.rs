@@ -1,6 +1,5 @@
 mod architecture;
 mod client;
-mod config;
 mod dashboard;
 mod logs;
 mod project_picker;
@@ -67,12 +66,6 @@ fn build_ui(app: &adw::Application) {
         Some("usage"),
         "Usage",
         "utilities-system-monitor-symbolic",
-    );
-    view_stack.add_titled_with_icon(
-        &config::build(),
-        Some("config"),
-        "Config",
-        "preferences-system-symbolic",
     );
     view_stack.add_titled_with_icon(
         &logs::build(),

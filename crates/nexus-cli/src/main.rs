@@ -2,7 +2,7 @@ mod install;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use nexus_core::{Config, Paths};
+use nexus_core::Paths;
 use nexus_index::{
     self as index, delete_project, export_obsidian, export_project, graph_db_path, import_project,
     index_project, Direction, NodeRecord,
@@ -32,7 +32,7 @@ enum Command {
         #[arg(long)]
         deep: bool,
     },
-    /// Structural name search over the knowledge graph (no embeddings needed).
+    /// Structural name search over the knowledge graph.
     SearchGraph {
         pattern: String,
         #[arg(long, default_value = ".")]
@@ -112,17 +112,6 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: u32,
     },
-    /// Semantic search over an already-indexed project (requires embeddings.enabled = true).
-    SearchCodebase {
-        query: String,
-        #[arg(long, default_value = ".")]
-        project: PathBuf,
-        #[arg(long, default_value_t = 10)]
-        limit: u32,
-    },
-    /// Check whether the configured embeddings endpoint/model is reachable right now.
-    /// Global config check, not project-scoped - unlike every other subcommand's --project.
-    TestEmbeddings,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -168,17 +157,8 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Status => {
-            let config = Config::load(&paths.config_file())?;
             println!("config file : {}", paths.config_file().display());
             println!("data dir    : {}", paths.data_dir.display());
-            println!(
-                "embeddings  : {}",
-                config
-                    .embeddings
-                    .endpoint
-                    .as_deref()
-                    .unwrap_or("(not configured - structural tools still work)")
-            );
         }
         Command::Reindex { path, deep } => {
             let stats = if deep {
@@ -188,7 +168,6 @@ fn main() -> Result<()> {
             };
             println!("indexed {} files", stats.files_indexed);
             println!("nodes: {}, edges: {}", stats.nodes, stats.edges);
-            println!("embeddings: {}", stats.embeddings_status);
             if let Some(report) = &stats.lsp_enrichment {
                 println!(
                     "lsp enrichment: ran={} functions_queried={} resolved_edges_added={} duration_ms={}{}",
@@ -320,37 +299,6 @@ fn main() -> Result<()> {
             index::touch_and_catchup(&project);
             let results = index::run_cypher_query(&project, &query, limit)?;
             print_records(&results);
-        }
-        Command::SearchCodebase {
-            query,
-            project,
-            limit,
-        } => {
-            index::touch_and_catchup(&project);
-            let config = Config::load(&paths.config_file())?;
-            let hits = index::semantic_search(&project, &config.embeddings, &query, limit)?;
-            if hits.is_empty() {
-                println!("no matches for '{query}'");
-            }
-            for hit in hits {
-                println!(
-                    "{:<9} {:<30} {}:{}-{}  score={:.4}",
-                    format!("{:?}", hit.node.kind),
-                    hit.node.name,
-                    hit.node.file_path,
-                    hit.node.start_line,
-                    hit.node.end_line,
-                    hit.score
-                );
-            }
-        }
-        Command::TestEmbeddings => {
-            let config = Config::load(&paths.config_file())?;
-            let result = index::embeddings::test_connection(&config.embeddings)?;
-            println!(
-                "OK: model={} dim={} latency_ms={}",
-                result.model, result.dim, result.latency_ms
-            );
         }
     }
 

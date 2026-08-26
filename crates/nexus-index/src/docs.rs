@@ -22,7 +22,7 @@ pub struct Section {
 /// top title line. Skips detection entirely inside fenced code blocks
 /// (``` or ~~~) - without this, a shell comment (`# do a thing`) inside
 /// almost any real README's example commands would otherwise be misread as
-/// a heading, producing garbage sections and garbage embeddings.
+/// a heading, producing garbage sections.
 pub fn extract_sections(text: &str) -> Vec<Section> {
     let lines: Vec<&str> = text.lines().collect();
     let mut sections: Vec<Section> = Vec::new();
