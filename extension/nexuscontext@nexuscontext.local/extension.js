@@ -43,6 +43,9 @@ class NexusIndicator extends PanelMenu.Button {
                 this._refreshStatus();
         });
 
+        this._destroyed = false;
+        this._cancellable = new Gio.Cancellable();
+
         this._refreshStatus();
         this._timeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, POLL_INTERVAL_SECONDS, () => {
             this._refreshStatus();
@@ -56,6 +59,9 @@ class NexusIndicator extends PanelMenu.Button {
     }
 
     _refreshStatus() {
+        if (this._destroyed)
+            return;
+
         const socketPath = this._controlSocketPath();
         if (!socketPath) {
             this._setDisconnected('XDG_RUNTIME_DIR is not set');
@@ -65,11 +71,19 @@ class NexusIndicator extends PanelMenu.Button {
         const address = Gio.UnixSocketAddress.new(socketPath);
         const client = new Gio.SocketClient();
 
-        client.connect_async(address, null, (source, result) => {
+        client.connect_async(address, this._cancellable, (source, result) => {
+            // The extension may have been torn down (disable(), Shell restart,
+            // session end) while this call was in flight. Bail before touching
+            // any destroyed actor - see #55.
+            if (this._destroyed)
+                return;
+
             let connection;
             try {
                 connection = source.connect_finish(result);
             } catch (err) {
+                if (err.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                    return;
                 this._setDisconnected('nexusd not reachable - run `nexusd serve`');
                 return;
             }
@@ -84,14 +98,18 @@ class NexusIndicator extends PanelMenu.Button {
             try {
                 connection.get_output_stream().write_all(request, null);
             } catch (err) {
-                this._setDisconnected('failed to send request to nexusd');
+                if (!this._destroyed)
+                    this._setDisconnected('failed to send request to nexusd');
                 connection.close(null);
                 return;
             }
 
             const input = new Gio.DataInputStream({ base_stream: connection.get_input_stream() });
-            input.read_line_async(GLib.PRIORITY_DEFAULT, null, (stream, res) => {
+            input.read_line_async(GLib.PRIORITY_DEFAULT, this._cancellable, (stream, res) => {
                 try {
+                    if (this._destroyed)
+                        return;
+
                     const [line] = stream.read_line_finish_utf8(res);
                     const response = JSON.parse(line);
                     const result = response.result;
@@ -99,7 +117,10 @@ class NexusIndicator extends PanelMenu.Button {
                     this._statusItem.label.text =
                         `v${result.version} — ${result.projects_indexed} project(s) indexed`;
                 } catch (err) {
-                    this._setDisconnected('unexpected response from nexusd');
+                    if (err.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                        return;
+                    if (!this._destroyed)
+                        this._setDisconnected('unexpected response from nexusd');
                 } finally {
                     connection.close(null);
                 }
@@ -121,10 +142,15 @@ class NexusIndicator extends PanelMenu.Button {
     }
 
     vfunc_destroy() {
+        this._destroyed = true;
+
         if (this._timeoutId) {
             GLib.source_remove(this._timeoutId);
             this._timeoutId = null;
         }
+
+        this._cancellable.cancel();
+
         super.vfunc_destroy();
     }
 });
