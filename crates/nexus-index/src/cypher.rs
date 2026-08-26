@@ -2,6 +2,7 @@ use crate::graph::GraphStore;
 use crate::project::graph_db_path;
 use crate::NodeRecord;
 use anyhow::{anyhow, bail, Result};
+use nexus_core::Paths;
 use regex::Regex;
 use std::path::Path;
 use std::time::Duration;
@@ -31,6 +32,19 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// larger undertaking than this project's other gaps justified building
 /// right now.
 pub fn run_query(repo_path: &Path, query: &str, limit: u32) -> Result<Vec<NodeRecord>> {
+    // Canonicalize *before* the allowed_roots check, not after - see the
+    // matching comment on `get_file_context` in `queries.rs` for why the
+    // ordering itself is the bug (issue #29). `run_query` previously
+    // skipped this check entirely and went straight to `graph_db_path` on
+    // an uncanonicalized path, so any `repo_path` on disk with a graph DB
+    // under it was queryable through it regardless of `allowed_roots` -
+    // issue #61.
+    let repo_path = repo_path
+        .canonicalize()
+        .map_err(|_| anyhow!("repo_path does not exist: {}", repo_path.display()))?;
+    let repo_path = repo_path.as_path();
+    crate::project::require_path_allowed(&Paths::resolve(), repo_path)?;
+
     let db_path = graph_db_path(repo_path);
     if !db_path.exists() {
         bail!(

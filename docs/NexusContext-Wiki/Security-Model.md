@@ -71,13 +71,15 @@ fixed by a dedicated review pass rather than designed in from the start.
 ## What's opt-in (off unless you turn it on)
 
 - **`allowed_roots`** — empty by default (unrestricted), matching the
-  "useful with zero config" goal. When set, gates `index_repository`,
-  `export_project`, `import_project`, `get_file_context`, and
-  `detect_changes` — every tool that takes a caller-supplied `repo_path`.
-  (It didn't always gate the last two — see below.) The check itself
-  canonicalizes both the path being checked and each configured root before
-  comparing, closing a `..`-traversal bypass a raw prefix check would miss
-  — see below.
+  "useful with zero config" goal. When set, gates every tool that takes a
+  caller-supplied `repo_path`: `index_repository`, `export_project`,
+  `import_project`, `get_file_context`, `detect_changes`, `search_code`,
+  `get_architecture`, `detect_dead_code`, `trace_call_path`
+  (`call_graph_dot`), and `search_graph` (`run_cypher_query`) — the full
+  `repo_path`-accepting MCP surface, not a subset of it. (It didn't always
+  gate all of these — see below.) The check itself canonicalizes both the
+  path being checked and each configured root before comparing, closing a
+  `..`-traversal bypass a raw prefix check would miss — see below.
 - **LSP-resolved-symbol enrichment (`[lsp]`, issue #10)** — default
   `enabled = false`. When on, a `deep` reindex (`index_repository`'s `deep`
   argument / `nexus reindex --deep` — never the ordinary auto-reindex path)
@@ -147,6 +149,36 @@ tool call. Now wrapped in `catch_unwind`, isolated to one JSON-RPC error
 response per request. No currently-reachable panic-from-untrusted-input
 was found to pair with this during the audit — closes an architectural
 gap, not a demonstrated live bug.
+
+## What a third review pass found and fixed (2026-08-26, issue #61)
+
+The #29 fix (canonicalize-before-check, see above) only ever landed on
+`get_file_context` and `detect_changes` — the two functions a prior audit
+happened to be looking at. A follow-up audit (filed as issue #61) found
+five more `repo_path`-accepting query functions that skipped the
+`allowed_roots` check entirely and went straight to opening whatever graph
+DB sat under the given path: `search_code`, `get_architecture`,
+`detect_dead_code`, `call_graph_dot` (backs `trace_call_path`), and
+`run_query`/`run_cypher_query` (backs `search_graph`). With `allowed_roots`
+set, a caller could pass any `repo_path` on disk that happened to have a
+graph DB under it — not just a registered/allowed project — and these five
+tools would read from it regardless. `allowed_roots` empty (unrestricted)
+was always working as designed; the gap was that setting it didn't
+actually cover the whole tool surface.
+
+Fixed by giving every one of those five the same canonicalize-then-check
+call (`require_path_allowed`, same ordering as the #29 fix) before opening
+a store, via a shared `canonicalize_and_authorize` helper in `queries.rs`
+for the four functions that live there. See
+[[ADRs/README|ADR 0012]] and issue #61 for the consolidated adversarial
+test suite (`crates/nexus-index/tests/path_security.rs`) added alongside
+this, covering all seven `repo_path`-accepting query/read functions
+against: a path outside `allowed_roots`, a `..`-traversal path resolving
+outside it, and a genuine subdirectory of an allowed root.
+
+Issue #61's broader scope (symlink TOCTOU races, MCP-prompt-injection
+scenario coverage) is intentionally out of scope for this pass — see the
+issue for what's still open.
 
 Full detail, including every finding (including the ones judged
 low-severity) is in the GitHub issues from this pass — all closed as of

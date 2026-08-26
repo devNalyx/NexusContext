@@ -19,6 +19,29 @@ pub fn open_store(repo_path: &Path) -> Result<GraphStore> {
     GraphStore::open(&db_path)
 }
 
+/// Canonicalizes `repo_path` and checks it against `allowed_roots` *before*
+/// any store is opened - shared by every query-side function that takes a
+/// caller-supplied `repo_path` (`search_code`, `get_architecture`,
+/// `detect_dead_code`, `call_graph_dot`), matching the pattern
+/// `get_file_context`/`detect_changes` already established. Canonicalizing
+/// *before* the allowed_roots check, not after, matters: `Path::starts_with`
+/// (what `is_path_allowed` uses under the hood) is a component-wise prefix
+/// check that does not resolve `..`, so a raw `"<allowed_root>/../../etc"`
+/// would pass a check done on the uncanonicalized path and only reveal the
+/// escape on a *later* canonicalize - see issue #29. Without this function
+/// at all, these four query-side tools skipped the check entirely and went
+/// straight to `open_store` on an uncanonicalized path, so any `repo_path`
+/// on disk with a graph DB under it - not just a registered/allowed
+/// project - was readable through them even when a user had opted into
+/// `allowed_roots`. See issue #61.
+fn canonicalize_and_authorize(repo_path: &Path) -> Result<std::path::PathBuf> {
+    let canonical = repo_path
+        .canonicalize()
+        .map_err(|_| anyhow::anyhow!("repo_path does not exist: {}", repo_path.display()))?;
+    crate::project::require_path_allowed(&Paths::resolve(), &canonical)?;
+    Ok(canonical)
+}
+
 pub struct ArchitectureSummary {
     pub total_nodes: i64,
     pub total_edges: i64,
@@ -27,7 +50,8 @@ pub struct ArchitectureSummary {
 }
 
 pub fn get_architecture(repo_path: &Path) -> Result<ArchitectureSummary> {
-    let store = open_store(repo_path)?;
+    let repo_path = canonicalize_and_authorize(repo_path)?;
+    let store = open_store(&repo_path)?;
     let (total_nodes, total_edges) = store.stats()?;
     let busiest_files = store.busiest_files(10)?;
     let language_breakdown = store.file_extension_counts()?;
@@ -40,7 +64,8 @@ pub fn get_architecture(repo_path: &Path) -> Result<ArchitectureSummary> {
 }
 
 pub fn detect_dead_code(repo_path: &Path) -> Result<Vec<NodeRecord>> {
-    open_store(repo_path)?.dead_functions()
+    let repo_path = canonicalize_and_authorize(repo_path)?;
+    open_store(&repo_path)?.dead_functions()
 }
 
 /// Renders a function's call neighborhood as a Graphviz DOT string - reuses
@@ -54,7 +79,8 @@ pub fn call_graph_dot(
     direction: Direction,
     depth: u32,
 ) -> Result<String> {
-    let store = open_store(repo_path)?;
+    let repo_path = canonicalize_and_authorize(repo_path)?;
+    let store = open_store(&repo_path)?;
     // trace_calls only returns *discovered neighbors*, not the starting
     // function itself (correct for its own established use backing
     // trace_call_path, where the caller already knows the name they asked
@@ -125,7 +151,8 @@ fn dot_escape(s: &str) -> String {
 }
 
 pub fn search_code(repo_path: &Path, query: &str, limit: u32) -> Result<Vec<CodeSearchHit>> {
-    open_store(repo_path)?.search_code(query, limit)
+    let repo_path = canonicalize_and_authorize(repo_path)?;
+    open_store(&repo_path)?.search_code(query, limit)
 }
 
 pub fn detect_changes(repo_path: &Path) -> Result<Vec<NodeRecord>> {
