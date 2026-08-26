@@ -13,6 +13,17 @@ fn clamp_limit(requested: u32) -> u32 {
     requested.min(SERVER_MAX_LIMIT)
 }
 
+/// Hard ceiling on any caller-supplied graph traversal `depth`. Unlike
+/// `limit` (a result-count cap), `depth` controls how far a call-graph walk
+/// fans out - cost grows combinatorially with it on a densely-connected
+/// graph, so an unbounded value from a bad/adversarial agent call can blow
+/// up latency and memory even with `limit` already capped. See issue #58.
+pub(crate) const SERVER_MAX_DEPTH: u32 = 10;
+
+pub(crate) fn clamp_depth(requested: u32) -> u32 {
+    requested.min(SERVER_MAX_DEPTH)
+}
+
 /// Per-tool call/error/byte counters for `get_session_usage`, scoped to
 /// *this process* rather than persisted like `nexus_core::stats`'s
 /// lifetime-aggregate `usage_stats.json` - `nexusd mcp` is spawned fresh
@@ -498,7 +509,7 @@ fn trace_call_path(args: Value) -> Result<String> {
         Some("inbound") => Direction::Inbound,
         _ => Direction::Outbound,
     };
-    let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as u32;
+    let depth = clamp_depth(args.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as u32);
     let limit =
         clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as u32) as usize;
 
@@ -900,6 +911,18 @@ mod tests {
     fn clamp_limit_caps_requests_above_the_max() {
         assert_eq!(clamp_limit(SERVER_MAX_LIMIT + 1), SERVER_MAX_LIMIT);
         assert_eq!(clamp_limit(100_000), SERVER_MAX_LIMIT);
+    }
+
+    #[test]
+    fn clamp_depth_passes_through_requests_at_or_below_the_max() {
+        assert_eq!(clamp_depth(1), 1);
+        assert_eq!(clamp_depth(SERVER_MAX_DEPTH), SERVER_MAX_DEPTH);
+    }
+
+    #[test]
+    fn clamp_depth_caps_requests_above_the_max() {
+        assert_eq!(clamp_depth(SERVER_MAX_DEPTH + 1), SERVER_MAX_DEPTH);
+        assert_eq!(clamp_depth(100_000), SERVER_MAX_DEPTH);
     }
 
     #[test]

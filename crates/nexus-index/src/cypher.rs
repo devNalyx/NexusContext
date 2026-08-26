@@ -4,6 +4,19 @@ use crate::NodeRecord;
 use anyhow::{anyhow, bail, Result};
 use regex::Regex;
 use std::path::Path;
+use std::time::Duration;
+
+/// Wall-clock ceiling on a single `run_query` execution. This tool's
+/// pattern language is deliberately minimal (see the module doc below), but
+/// even a supported shape can scan a very large table with an unselective
+/// `WHERE` on a big project - without a bound, a slow query blocks whatever
+/// else needs this connection (or the daemon thread serving it)
+/// indefinitely. A few seconds is generous for any query this pattern
+/// language can express while still catching a genuinely pathological one.
+/// Enforced via `GraphStore::set_query_timeout`'s cooperative SQLite
+/// progress handler rather than killing a thread - see that method's doc
+/// comment. See issue #58.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Deliberately minimal - not a Cypher implementation, just named after the
 /// closest well-known thing it resembles. Supports exactly one pattern
@@ -64,7 +77,16 @@ pub fn run_query(repo_path: &Path, query: &str, limit: u32) -> Result<Vec<NodeRe
 
     let where_clause = where_value.map(|value| (where_var == Some(var_a), value));
 
-    store.match_pattern(&kind_a, &edge_kind, &kind_b, where_clause, return_a, limit)
+    store.set_query_timeout(QUERY_TIMEOUT);
+    let result = store.match_pattern(&kind_a, &edge_kind, &kind_b, where_clause, return_a, limit);
+    store.clear_query_timeout();
+    result.map_err(|err| {
+        if err.to_string().to_lowercase().contains("interrupt") {
+            anyhow!("query timed out after {QUERY_TIMEOUT:?} - narrow the pattern or WHERE clause")
+        } else {
+            err
+        }
+    })
 }
 
 fn normalize_kind(raw: &str) -> Result<String> {

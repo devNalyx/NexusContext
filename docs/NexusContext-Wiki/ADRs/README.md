@@ -60,6 +60,7 @@ history stays legible.
 | [0008](0008-lsp-resolved-edges-are-a-distinct-kind.md) | LSP-resolved call edges are a distinct kind, never merged into the static ones | Accepted |
 | [0009](0009-windows-gets-mcp-and-cli-only.md) | Windows ships `nexusd mcp` + `nexus` CLI only, via `cfg(unix)` module gating | Accepted |
 | [0010](0010-remove-embeddings-subsystem.md) | Remove the optional embeddings/semantic-search subsystem entirely | Accepted |
+| [0011](0011-explicit-bounds-on-repo-size-dependent-operations.md) | Every repository-size/agent-request-dependent operation gets an explicit bound | Accepted |
 
 ## Related
 

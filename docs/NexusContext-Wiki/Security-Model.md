@@ -42,6 +42,28 @@ fixed by a dedicated review pass rather than designed in from the start.
   - Every other tool's `limit` passes through a shared `clamp_limit()`
     capped at `SERVER_MAX_LIMIT` (200) regardless of what a caller asks
     for.
+  - `trace_call_path` and the GUI's call-graph visualization both take a
+    caller-supplied `depth` for how far the BFS fans out across the
+    `CALLS`/`CALLS_RESOLVED` graph — traversal cost grows combinatorially
+    with it on a densely-connected graph, so it's capped independently of
+    `limit` via `clamp_depth()` at `SERVER_MAX_DEPTH` (10).
+- **Indexing skips (doesn't error or crash on) any single file over
+  `MAX_INDEXABLE_FILE_BYTES` (5MB)**, checked via `stat` before the file is
+  ever read into memory — closes an unbounded-memory path for a huge
+  generated/vendored/minified file landing in an indexed tree (part of the
+  same class of issue as the #17 OOM investigation).
+- **`run_cypher_query` (the `search_graph` MCP tool's underlying query
+  engine) is bounded to a few seconds of wall-clock execution time**,
+  enforced via a `rusqlite` progress handler that cooperatively interrupts
+  the statement (`GraphStore::set_query_timeout`) rather than trying to
+  kill a thread — a pathological or unselective query can't hang the
+  daemon indefinitely.
+- **The file-watcher's internal event channel is bounded**
+  (`sync_channel`, 256 batches) rather than unbounded — a debounced batch
+  of filesystem events piles up in memory if the receiving loop falls
+  behind (e.g. a slow reindex in progress); the bound turns that into a
+  brief backpressure stall on notify's internal thread instead of
+  unbounded growth.
 - **The systemd unit is hardened**: `NoNewPrivileges=true`,
   `ProtectSystem=strict`, `ProtectHome=read-only`, with explicit
   `ReadWritePaths` for just the config/data dirs it actually needs.

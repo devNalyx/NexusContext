@@ -76,6 +76,25 @@ const FALLBACK_SYSTEM_WATCH_LIMIT: usize = 8192;
 /// zero projects - one modest project should always fit somewhere.
 const MIN_WATCH_BUDGET: usize = 256;
 
+/// Bound on the debounced-event channel between notify's internal debounce
+/// thread (the sender) and this module's main loop (the receiver, drained
+/// by `run`). Previously unbounded (`std::sync::mpsc::channel`) - a
+/// receiver that falls behind (e.g. stuck in a slow `nexus_index::
+/// index_project` call, see the drain-loop comment in `run` for why one
+/// project's reindex can take minutes) let debounced batches pile up with
+/// no ceiling, each one holding a `Vec<DebouncedEvent>` for every changed
+/// path since the last drain - unbounded memory growth under a sustained
+/// flood (e.g. a build tool touching thousands of files, or `git checkout`
+/// across branches). 256 batches is generous headroom over the normal
+/// case (the drain loop in `run` empties the channel in one pass every
+/// time it wakes, so depth rarely exceeds 1-2 even under load) while still
+/// capping worst-case memory. On a full channel, `send` blocks the notify
+/// debounce thread briefly rather than growing unbounded - the receiver
+/// drains it on its next wake (at most `REGISTRY_RESYNC_INTERVAL`, but in
+/// practice as soon as the in-flight reindex finishes), so this is a
+/// bounded stall, not a loss of events like a drop would be.
+const WATCHER_CHANNEL_BOUND: usize = 256;
+
 static WATCHED_COUNT: AtomicUsize = AtomicUsize::new(0);
 static WATCH_ESTIMATE_USED: AtomicUsize = AtomicUsize::new(0);
 /// How many times a project has been skipped (too big to fit alone) or
@@ -120,8 +139,16 @@ pub fn spawn() {
 }
 
 fn run() -> anyhow::Result<()> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut debouncer = new_debouncer(DEBOUNCE, tx)?;
+    let (tx, rx) = std::sync::mpsc::sync_channel(WATCHER_CHANNEL_BOUND);
+    // `new_debouncer` only accepts a `DebounceEventHandler`, which isn't
+    // implemented for `SyncSender` (only the unbounded `Sender`) - a
+    // closure satisfies the trait's blanket impl instead. `send` on a full
+    // bounded channel blocks the calling thread (notify's internal
+    // debounce thread here) rather than growing without limit - see
+    // `WATCHER_CHANNEL_BOUND`'s doc comment.
+    let mut debouncer = new_debouncer(DEBOUNCE, move |event| {
+        let _ = tx.send(event);
+    })?;
 
     // Report the constraint once at startup rather than only discovering
     // it via a WARN buried in the log the first time something doesn't
@@ -677,6 +704,47 @@ fn is_noise(path: &Path) -> bool {
             Some(".git") | Some("target") | Some("node_modules") | Some(".nexuscontext")
         )
     })
+}
+
+#[cfg(test)]
+mod bounded_channel_tests {
+    use super::*;
+
+    /// Regression test for the bounded-channel change: a flood of debounced
+    /// batches (far more than `WATCHER_CHANNEL_BOUND`) sent from a producer
+    /// thread must not be lost - the same drain pattern `run` uses (one
+    /// blocking `recv`, then `try_recv` until empty) must eventually see
+    /// every one of them, with the producer blocking (not erroring or
+    /// dropping) once the channel fills.
+    #[test]
+    fn a_flood_of_batches_is_neither_lost_nor_unbounded() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<usize>(4);
+        let total = WATCHER_CHANNEL_BOUND * 4;
+
+        let producer = std::thread::spawn(move || {
+            for i in 0..total {
+                // Blocks once the bounded channel fills, rather than
+                // growing without limit or silently dropping - exactly the
+                // backpressure behavior this change relies on.
+                tx.send(i).expect("receiver still alive");
+            }
+        });
+
+        let mut received = Vec::with_capacity(total);
+        while received.len() < total {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(v) => received.push(v),
+                Err(_) => panic!("producer stalled/died before sending everything"),
+            }
+            while let Ok(v) = rx.try_recv() {
+                received.push(v);
+            }
+        }
+
+        producer.join().unwrap();
+        assert_eq!(received.len(), total);
+        assert_eq!(received, (0..total).collect::<Vec<_>>());
+    }
 }
 
 #[cfg(test)]
