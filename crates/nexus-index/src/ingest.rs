@@ -1,10 +1,38 @@
 use crate::graph::{EdgeKind, GraphStore, NodeKind};
 use crate::language::{self, Language};
-use anyhow::Result;
+use anyhow::{bail, Result};
 use ignore::WalkBuilder;
 use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
+
+/// Ceiling on a single file's size before this pipeline will read and parse
+/// it. Source files past this are almost never a meaningfully useful part
+/// of a structural index (generated/vendored/minified/bundled blobs, data
+/// dumps accidentally living in-tree) - they're expensive to parse without
+/// adding real signal, and were part of the OOM mechanism investigated in
+/// #17 (see `PendingCall`'s doc comment above for the other half of that
+/// fix). 5 MB comfortably covers real hand-written source files (even
+/// unusually large ones) while excluding the pathological cases. Enforced
+/// before `std::fs::read`, not after - so an oversized file is never fully
+/// loaded into memory just to be discarded.
+const MAX_INDEXABLE_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Reads a file's contents for indexing, refusing (not panicking) if it
+/// exceeds `MAX_INDEXABLE_FILE_BYTES` - the caller's existing
+/// "failed to index file, skipping" handling (see `index_directory`'s
+/// per-file match on `Err`) surfaces this the same way it already surfaces
+/// any other per-file parse failure, so oversized files show up in the log
+/// instead of silently ballooning memory.
+fn read_source_capped(path: &Path) -> Result<Vec<u8>> {
+    let size = std::fs::metadata(path)?.len();
+    if size > MAX_INDEXABLE_FILE_BYTES {
+        bail!(
+            "file is {size} bytes, over the {MAX_INDEXABLE_FILE_BYTES}-byte indexable cap - skipping"
+        );
+    }
+    Ok(std::fs::read(path)?)
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct IndexStats {
@@ -284,7 +312,7 @@ fn index_file(
     root: &Path,
     store: &GraphStore,
 ) -> Result<FileIndexResult> {
-    let source = std::fs::read(path)?;
+    let source = read_source_capped(path)?;
     let rel_path = path
         .strip_prefix(root)
         .unwrap_or(path)
@@ -399,7 +427,7 @@ fn is_markdown(path: &Path) -> bool {
 /// no call graph to build here, so this returns the same `FileIndexResult`
 /// shape `index_file` does with empty `fn_nodes`/`pending_calls`.
 fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<FileIndexResult> {
-    let source = std::fs::read(path)?;
+    let source = read_source_capped(path)?;
     let rel_path = path
         .strip_prefix(root)
         .unwrap_or(path)
@@ -502,6 +530,67 @@ mod index_markdown_file_tests {
         assert!(result.fn_nodes.is_empty());
         let (nodes, _) = store.stats().unwrap();
         assert_eq!(nodes, 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod read_source_capped_tests {
+    use super::{index_markdown_file, MAX_INDEXABLE_FILE_BYTES};
+    use crate::graph::GraphStore;
+    use std::fs;
+
+    fn temp_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_index_size_cap_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn open_store(dir: &std::path::Path) -> GraphStore {
+        GraphStore::open(&dir.join("graph.db")).unwrap()
+    }
+
+    #[test]
+    fn a_file_over_the_cap_is_skipped_not_errored_out_of_the_process() {
+        let dir = temp_project("over");
+        let path = dir.join("HUGE.md");
+        // Sparse file: seek-and-write-one-byte at the target length avoids
+        // actually allocating/writing MAX_INDEXABLE_FILE_BYTES+1 bytes just
+        // to prove the cap trips.
+        {
+            let f = fs::File::create(&path).unwrap();
+            f.set_len(MAX_INDEXABLE_FILE_BYTES + 1).unwrap();
+        }
+
+        let store = open_store(&dir);
+        let result = index_markdown_file(&path, &dir, &store);
+
+        // Skipped via a returned Err (the same path `index_directory`'s
+        // per-file match already logs-and-continues on), not a panic.
+        let err = match result {
+            Ok(_) => panic!("oversized file must not be indexed"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("indexable cap"), "unexpected error: {err}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_at_exactly_the_cap_is_still_indexed() {
+        let dir = temp_project("at_cap");
+        let path = dir.join("AT_CAP.md");
+        let content = format!("# Title\n\n{}\n", "x".repeat(200));
+        fs::write(&path, &content).unwrap();
+
+        let store = open_store(&dir);
+        let result = index_markdown_file(&path, &dir, &store);
+        assert!(result.is_ok(), "small file must not be affected by the cap");
 
         let _ = fs::remove_dir_all(&dir);
     }

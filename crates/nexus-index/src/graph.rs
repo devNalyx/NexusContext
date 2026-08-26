@@ -185,6 +185,29 @@ impl GraphStore {
         Ok(Self { conn })
     }
 
+    /// Installs a cooperative bail-out on this connection: SQLite calls the
+    /// handler every `num_ops` VM instructions during query execution, and a
+    /// `true` return aborts the in-progress statement with
+    /// `SQLITE_INTERRUPT` - rusqlite surfaces that as an ordinary `Err`, not
+    /// a panic or a killed thread. Used to bound `run_cypher_query`
+    /// (freeform, caller-supplied query shapes) so a pathological one can't
+    /// hang the daemon indefinitely; 1000 is a small enough instruction
+    /// interval that the elapsed-time check is effectively real-time
+    /// without materially slowing normal queries. Call `clear_query_timeout`
+    /// once the bounded query finishes so the handler doesn't keep clamping
+    /// unrelated queries on the same long-lived connection.
+    pub fn set_query_timeout(&self, timeout: std::time::Duration) {
+        let start = std::time::Instant::now();
+        self.conn
+            .progress_handler(1000, Some(move || start.elapsed() > timeout));
+    }
+
+    /// Removes a progress handler previously installed by
+    /// `set_query_timeout`.
+    pub fn clear_query_timeout(&self) {
+        self.conn.progress_handler(0, None::<fn() -> bool>);
+    }
+
     /// Phase 1 reindexing is a full rebuild, not an incremental diff -
     /// incremental edge correctness is flagged as an open risk in the
     /// proposal and deferred past this vertical slice.
@@ -681,6 +704,61 @@ impl GraphStore {
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+}
+
+/// Regression tests for issue #58: a pathological query must be bounded by
+/// wall-clock time, not run to completion (or hang forever).
+#[cfg(test)]
+mod query_timeout_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn temp_store(name: &str) -> GraphStore {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_query_timeout_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        GraphStore::open(&dir.join("graph.db")).unwrap()
+    }
+
+    #[test]
+    fn a_slow_query_is_interrupted_once_the_timeout_elapses() {
+        let store = temp_store("slow");
+        store.set_query_timeout(Duration::from_millis(50));
+
+        // An effectively-unbounded recursive CTE - stands in for a
+        // pathological caller-supplied query. Without the progress handler
+        // this would run for a very long time; with it, SQLite aborts the
+        // statement shortly after the timeout elapses.
+        let start = std::time::Instant::now();
+        let result: rusqlite::Result<i64> = store.conn.query_row(
+            "WITH RECURSIVE cnt(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM cnt LIMIT 2000000000) \
+             SELECT count(*) FROM cnt",
+            [],
+            |row| row.get(0),
+        );
+        let elapsed = start.elapsed();
+
+        store.clear_query_timeout();
+        assert!(result.is_err(), "pathological query should be interrupted, not complete");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "interrupt took too long: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_query_is_unaffected_by_a_generous_timeout() {
+        let store = temp_store("fast");
+        store.set_query_timeout(Duration::from_secs(30));
+
+        let result: rusqlite::Result<i64> =
+            store.conn.query_row("SELECT 1", [], |row| row.get(0));
+
+        store.clear_query_timeout();
+        assert_eq!(result.unwrap(), 1);
     }
 }
 

@@ -26,7 +26,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 directories = "5"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
 ignore = "0.4"
 tree-sitter = "0.26"
 tree-sitter-tags = "0.26"

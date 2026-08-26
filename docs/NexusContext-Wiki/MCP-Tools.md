@@ -19,7 +19,7 @@ deliberate, tested property rather than an assumption.
 |---|---|
 | `search_graph` | Structural search over indexed symbols by name substring — functions/types and markdown heading `Section`s. |
 | `search_code` | Grep-like full-text search over indexed file content via SQLite FTS5 — code and markdown alike, matched as a literal phrase. |
-| `trace_call_path` | BFS over the `CALLS` graph (unioned with `CALLS_RESOLVED` when a `deep` reindex has run) to find callers/callees. Name-based resolution, not import-aware — see [[Known-Limitations]]. Response is capped; check `total_nodes` vs. `shown`. |
+| `trace_call_path` | BFS over the `CALLS` graph (unioned with `CALLS_RESOLVED` when a `deep` reindex has run) to find callers/callees. Name-based resolution, not import-aware — see [[Known-Limitations]]. Response is capped; check `total_nodes` vs. `shown`. `depth` is capped independently of `limit`, see [[Security-Model]]. |
 
 ## Quality & change
 
