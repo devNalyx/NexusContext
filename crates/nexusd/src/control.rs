@@ -429,9 +429,8 @@ fn viz_call_graph(params: Value) -> Result<Value> {
         Some("inbound") => nexus_index::Direction::Inbound,
         _ => nexus_index::Direction::Outbound,
     };
-    let depth = crate::tools::clamp_depth(
-        params.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as u32,
-    );
+    let depth =
+        crate::tools::clamp_depth(params.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as u32);
 
     let dot = nexus_index::call_graph_dot(
         std::path::Path::new(repo_path),
