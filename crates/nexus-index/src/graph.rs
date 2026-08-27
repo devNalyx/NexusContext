@@ -112,6 +112,66 @@ pub struct CodeSearchHit {
     pub snippet: String,
 }
 
+/// One directory-path group in `GraphStore::directory_groups`'s grouped
+/// view (issue #90) - `path` is the group's key (the first `depth`
+/// path components of each member node's parent directory, or "." for
+/// nodes with no directory component), `node_counts` is per-`NodeKind`
+/// counts within the group (sorted busiest-kind-first), and `total_nodes`
+/// is their sum, cached separately so callers don't need to re-sum.
+#[derive(Debug, Clone)]
+pub struct DirectoryGroup {
+    pub path: String,
+    pub node_counts: Vec<(String, i64)>,
+    pub total_nodes: i64,
+}
+
+/// One directory-group pair with at least one edge crossing between them
+/// (`from` -> `to`, direction-preserving - a File->Function DEFINES edge
+/// and a Function->Function CALLS edge both count, so this is a raw edge
+/// tally, not a symmetric "these two groups relate" flag).
+#[derive(Debug, Clone)]
+pub struct CrossGroupEdge {
+    pub from: String,
+    pub to: String,
+    pub count: i64,
+}
+
+/// `get_architecture`'s opt-in grouped mode (issue #90): every graph node
+/// already carries `file_path`, so directory/module structure is fully
+/// derivable without any new indexing or extraction - this is purely a
+/// different query/response shape over the existing `nodes`/`edges` tables.
+/// Deliberately structural (path-based) grouping only, never semantic
+/// subsystem/layer inference - see ADR 0017.
+#[derive(Debug, Clone)]
+pub struct GroupedArchitecture {
+    pub groups: Vec<DirectoryGroup>,
+    /// Count of edges whose endpoints fall in the same directory group.
+    pub within_group_edges: i64,
+    /// Edges whose endpoints fall in different directory groups, tallied
+    /// per (from, to) pair and sorted busiest-pair-first - this is the
+    /// "which modules actually depend on which" signal the issue asks for.
+    pub cross_group_edges: Vec<CrossGroupEdge>,
+}
+
+/// Maps a node's `file_path` to its directory group key at `depth`: the
+/// first `depth` (minimum 1) components of the file's parent directory,
+/// joined with "/", or "." when the file has no parent directory component
+/// (e.g. a file at the repo root). Purely path-based - no semantic
+/// inference of what a directory "is".
+fn directory_group_key(file_path: &str, depth: usize) -> String {
+    let depth = depth.max(1);
+    let parent = Path::new(file_path).parent().unwrap_or(Path::new(""));
+    let components: Vec<String> = parent
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if components.is_empty() {
+        return ".".to_string();
+    }
+    let take = components.len().min(depth);
+    components[..take].join("/")
+}
+
 /// Owner-only (0700) on the project's data directory, not just the `.db`
 /// file itself - `graph.db` in WAL mode also creates `-wal`/`-shm` sidecar
 /// files lazily on first write (after `open()` already returns), which a
@@ -652,6 +712,92 @@ impl GraphStore {
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+
+    /// `get_architecture`'s opt-in grouped mode (issue #90): groups every
+    /// node by its `file_path`'s directory at `depth`, then classifies
+    /// every edge as within-group or cross-group by looking up its two
+    /// endpoints' groups. Reuses only what's already in `nodes`/`edges` -
+    /// no new indexing or extraction, matching #89's established pattern
+    /// for this kind of opt-in richer-response mode.
+    pub fn directory_groups(&self, depth: usize) -> Result<GroupedArchitecture> {
+        let mut node_stmt = self.conn.prepare("SELECT id, kind, file_path FROM nodes")?;
+        let node_rows: Vec<(i64, String, String)> = node_stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+
+        let mut group_of: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        let mut kind_counts: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, i64>,
+        > = std::collections::HashMap::new();
+        for (id, kind, file_path) in node_rows {
+            let group = directory_group_key(&file_path, depth);
+            group_of.insert(id, group.clone());
+            *kind_counts
+                .entry(group)
+                .or_default()
+                .entry(kind)
+                .or_insert(0) += 1;
+        }
+
+        let mut groups: Vec<DirectoryGroup> = kind_counts
+            .into_iter()
+            .map(|(path, counts)| {
+                let total_nodes = counts.values().sum();
+                let mut node_counts: Vec<(String, i64)> = counts.into_iter().collect();
+                node_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                DirectoryGroup {
+                    path,
+                    node_counts,
+                    total_nodes,
+                }
+            })
+            .collect();
+        groups.sort_by(|a, b| {
+            b.total_nodes
+                .cmp(&a.total_nodes)
+                .then_with(|| a.path.cmp(&b.path))
+        });
+
+        let mut edge_stmt = self.conn.prepare("SELECT src_id, dst_id FROM edges")?;
+        let edge_rows: Vec<(i64, i64)> = edge_stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+
+        let mut within_group_edges = 0i64;
+        let mut cross: std::collections::HashMap<(String, String), i64> =
+            std::collections::HashMap::new();
+        for (src, dst) in edge_rows {
+            let (Some(src_group), Some(dst_group)) = (group_of.get(&src), group_of.get(&dst))
+            else {
+                continue;
+            };
+            if src_group == dst_group {
+                within_group_edges += 1;
+            } else {
+                *cross
+                    .entry((src_group.clone(), dst_group.clone()))
+                    .or_insert(0) += 1;
+            }
+        }
+
+        let mut cross_group_edges: Vec<CrossGroupEdge> = cross
+            .into_iter()
+            .map(|((from, to), count)| CrossGroupEdge { from, to, count })
+            .collect();
+        cross_group_edges.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.from.cmp(&b.from))
+                .then_with(|| a.to.cmp(&b.to))
+        });
+
+        Ok(GroupedArchitecture {
+            groups,
+            within_group_edges,
+            cross_group_edges,
+        })
     }
 
     /// `trace_call_path`-equivalent: BFS over CALLS edges up to `max_depth`.
@@ -1331,5 +1477,115 @@ mod trace_calls_tests {
             EdgeKind::CallsResolved,
             "CallsResolved must win over Calls regardless of insertion order either"
         );
+    }
+
+    // --- directory_groups / directory_group_key (issue #90) ---
+
+    #[test]
+    fn directory_group_key_takes_the_first_depth_components_of_the_parent_dir() {
+        assert_eq!(directory_group_key("pkg/events/lib.rs", 1), "pkg");
+        assert_eq!(directory_group_key("pkg/events/lib.rs", 2), "pkg/events");
+        // depth beyond the actual nesting just returns everything there is.
+        assert_eq!(directory_group_key("pkg/events/lib.rs", 5), "pkg/events");
+    }
+
+    #[test]
+    fn directory_group_key_roots_a_file_with_no_parent_dir_to_dot() {
+        assert_eq!(directory_group_key("main.rs", 1), ".");
+    }
+
+    /// Three directories: `pkg/a` and `pkg/b` each have dense internal
+    /// calls (two calls apiece, all within-directory), and exactly one call
+    /// crosses from `pkg/a` into `pkg/b`. A third, uninvolved directory
+    /// (`pkg/c`) has one function with no calls at all, to confirm an
+    /// all-internal (zero-cross-edge) group is still reported correctly.
+    fn multi_directory_fixture(name: &str) -> GraphStore {
+        let store = temp_store(name);
+        let a1 = store
+            .insert_node(NodeKind::Function, "a1", "pkg::a::a1", "pkg/a/lib.rs", 1, 3)
+            .unwrap();
+        let a2 = store
+            .insert_node(NodeKind::Function, "a2", "pkg::a::a2", "pkg/a/lib.rs", 5, 7)
+            .unwrap();
+        let a_type = store
+            .insert_node(
+                NodeKind::Type,
+                "AThing",
+                "pkg::a::AThing",
+                "pkg/a/lib.rs",
+                9,
+                12,
+            )
+            .unwrap();
+        let b1 = store
+            .insert_node(NodeKind::Function, "b1", "pkg::b::b1", "pkg/b/lib.rs", 1, 3)
+            .unwrap();
+        let b2 = store
+            .insert_node(NodeKind::Function, "b2", "pkg::b::b2", "pkg/b/lib.rs", 5, 7)
+            .unwrap();
+        let _c1 = store
+            .insert_node(NodeKind::Function, "c1", "pkg::c::c1", "pkg/c/lib.rs", 1, 3)
+            .unwrap();
+
+        // Dense within-`pkg/a` calls.
+        store.insert_edge(a1, a2, EdgeKind::Calls).unwrap();
+        store.insert_edge(a2, a1, EdgeKind::Calls).unwrap();
+        let _ = a_type;
+        // Dense within-`pkg/b` calls.
+        store.insert_edge(b1, b2, EdgeKind::Calls).unwrap();
+        store.insert_edge(b2, b1, EdgeKind::Calls).unwrap();
+        // The one cross-directory call: pkg/a -> pkg/b.
+        store.insert_edge(a1, b1, EdgeKind::Calls).unwrap();
+
+        store
+    }
+
+    #[test]
+    fn groups_nodes_by_top_level_directory_with_per_kind_counts() {
+        let store = multi_directory_fixture("groups_by_dir");
+        // depth 2 to distinguish pkg/a from pkg/b/pkg/c (all share the
+        // `pkg` top-level directory in this fixture).
+        let result = store.directory_groups(2).unwrap();
+
+        let by_path: std::collections::HashMap<&str, &DirectoryGroup> =
+            result.groups.iter().map(|g| (g.path.as_str(), g)).collect();
+        assert_eq!(by_path["pkg/a"].total_nodes, 3);
+        assert_eq!(by_path["pkg/b"].total_nodes, 2);
+        assert_eq!(by_path["pkg/c"].total_nodes, 1);
+
+        let a_counts: std::collections::HashMap<&str, i64> = by_path["pkg/a"]
+            .node_counts
+            .iter()
+            .map(|(k, c)| (k.as_str(), *c))
+            .collect();
+        assert_eq!(a_counts["Function"], 2);
+        assert_eq!(a_counts["Type"], 1);
+    }
+
+    #[test]
+    fn counts_within_group_calls_separately_from_the_one_cross_group_call() {
+        let store = multi_directory_fixture("cross_group_edges");
+        let result = store.directory_groups(2).unwrap();
+
+        assert_eq!(
+            result.within_group_edges, 4,
+            "the two internal calls in each of pkg/a and pkg/b"
+        );
+        assert_eq!(result.cross_group_edges.len(), 1);
+        let cross = &result.cross_group_edges[0];
+        assert_eq!(cross.from, "pkg/a");
+        assert_eq!(cross.to, "pkg/b");
+        assert_eq!(cross.count, 1);
+    }
+
+    #[test]
+    fn a_directory_with_no_calls_reports_zero_cross_group_involvement() {
+        let store = multi_directory_fixture("isolated_dir");
+        let result = store.directory_groups(2).unwrap();
+        let touches_c = result
+            .cross_group_edges
+            .iter()
+            .any(|e| e.from == "pkg/c" || e.to == "pkg/c");
+        assert!(!touches_c, "pkg/c has no calls in or out");
     }
 }

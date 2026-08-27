@@ -52,6 +52,10 @@ pub struct ArchitectureSummary {
 pub fn get_architecture(repo_path: &Path) -> Result<ArchitectureSummary> {
     let repo_path = canonicalize_and_authorize(repo_path)?;
     let store = open_store(&repo_path)?;
+    architecture_summary(&store)
+}
+
+fn architecture_summary(store: &GraphStore) -> Result<ArchitectureSummary> {
     let (total_nodes, total_edges) = store.stats()?;
     let busiest_files = store.busiest_files(10)?;
     let language_breakdown = store.file_extension_counts()?;
@@ -61,6 +65,24 @@ pub fn get_architecture(repo_path: &Path) -> Result<ArchitectureSummary> {
         busiest_files,
         language_breakdown,
     })
+}
+
+/// `get_architecture`'s opt-in grouped mode (issue #90): same flat
+/// `ArchitectureSummary` plain `get_architecture` always returns, plus a
+/// directory-grouped breakdown (`GraphStore::directory_groups`) built from
+/// the same store/open call - no new indexing, no second connection.
+/// `depth` is expected to already be clamped by the caller (mirrors
+/// `trace_call_path`/`detect_changes_blast_radius`'s clamping convention -
+/// this function does no clamping of its own).
+pub fn get_architecture_grouped(
+    repo_path: &Path,
+    depth: usize,
+) -> Result<(ArchitectureSummary, crate::graph::GroupedArchitecture)> {
+    let repo_path = canonicalize_and_authorize(repo_path)?;
+    let store = open_store(&repo_path)?;
+    let summary = architecture_summary(&store)?;
+    let grouped = store.directory_groups(depth)?;
+    Ok((summary, grouped))
 }
 
 pub fn detect_dead_code(repo_path: &Path, path_prefix: Option<&str>) -> Result<Vec<NodeRecord>> {

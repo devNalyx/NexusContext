@@ -12,7 +12,10 @@ pub mod secure_fs;
 
 pub use cypher::run_query as run_cypher_query;
 pub use enrich::{enrich_with_lsp, EnrichmentReport};
-pub use graph::{CodeSearchHit, Direction, EdgeKind, GraphStore, NodeKind, NodeRecord, TracedNode};
+pub use graph::{
+    CodeSearchHit, CrossGroupEdge, Direction, DirectoryGroup, EdgeKind, GraphStore,
+    GroupedArchitecture, NodeKind, NodeRecord, TracedNode,
+};
 pub use ingest::{
     content_signature, estimate_watch_count, index_directory, index_directory_checked, IndexStats,
 };
@@ -24,6 +27,6 @@ pub use project::{
     record_auto_reindex, touch_and_catchup, touch_queried, IndexingStatus,
 };
 pub use queries::{
-    call_graph_dot, detect_changes, detect_dead_code, get_architecture, get_file_context,
-    open_store, plan_query, search_code, ArchitectureSummary, QueryPlanResult,
+    call_graph_dot, detect_changes, detect_dead_code, get_architecture, get_architecture_grouped,
+    get_file_context, open_store, plan_query, search_code, ArchitectureSummary, QueryPlanResult,
 };
