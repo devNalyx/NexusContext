@@ -894,18 +894,18 @@
 
   <section id="hardened">
     <div class="section-head">
-      <div class="kicker">Two review rounds, findings public</div>
+      <div class="kicker">Multiple review rounds, findings public</div>
       <h2>Hardened against its own audits, not just designed safe</h2>
       <p>Every finding below was filed as a GitHub issue before it was fixed, and stayed open until a regression test proved the fix — not just a description of it.</p>
     </div>
     <div class="trace">
       <div class="trace-item critical">
         <div class="t-head">allowed_roots path traversal <span class="sev critical">critical</span></div>
-        <p>A raw, not-yet-canonicalized path let <code>..</code> escape an opt-in directory allowlist. Fixed at the check itself, not just the call sites that found it — so a future caller getting the ordering wrong is still protected.</p>
+        <p>A raw, not-yet-canonicalized path let <code>..</code> escape an opt-in directory allowlist. Fixed at the check itself, not just the call sites that found it — so a future caller getting the ordering wrong is still protected. A follow-up audit then found the check wasn't wired into every <code>repo_path</code>-accepting tool yet — it now covers all of them, with symlink-escape and confused-deputy adversarial tests to prove it.</p>
       </div>
       <div class="trace-item warn">
         <div class="t-head">Markdown OOM path <span class="sev high">high</span></div>
-        <p>A large flat markdown file with no headings could balloon into one untruncated multi-MB chunk during embedding. Routed through the same cap the code path already had.</p>
+        <p>A large flat markdown file with no headings could balloon into one untruncated multi-MB chunk at indexing time. Routed through the same content-size cap the code path already had.</p>
       </div>
       <div class="trace-item">
         <div class="t-head">Decompression-bomb import, data-dir permissions <span class="sev fixed">fixed</span></div>
@@ -914,6 +914,14 @@
       <div class="trace-item">
         <div class="t-head">Query batching, panic isolation, O(n²) fixes <span class="sev fixed">fixed</span></div>
         <p>Call-graph BFS batched into one query per level instead of one per node; a panic in MCP tool dispatch is now isolated to that one call instead of killing the session; heading-range computation dropped a redundant O(n²) pass.</p>
+      </div>
+      <div class="trace-item">
+        <div class="t-head">Resource bounds on repo-size-dependent work <span class="sev fixed">fixed</span></div>
+        <p>A bounded watcher event channel, a capped traversal depth, a per-file indexable-size ceiling, and a cooperative graph-query timeout — so a pathological repo or query can't hang or OOM the daemon, with live RSS/queue-depth observability to see the pressure, not just trust the cap.</p>
+      </div>
+      <div class="trace-item">
+        <div class="t-head">Symlink-substitution TOCTOU, defense-in-depth <span class="sev fixed">fixed</span></div>
+        <p><code>O_NOFOLLOW</code> on both filesystem-read hot paths closes the cheapest symlink-swap race between the allowlist check and the actual read. Stated plainly, not oversold: this is defense-in-depth, not full TOCTOU-proofing — see the Security Model doc for the exact gap that remains.</p>
       </div>
     </div>
     <p class="install-note" style="text-align:left; margin-top:32px; max-width:640px;">

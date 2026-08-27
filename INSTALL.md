@@ -144,7 +144,7 @@ preset = "standard"   # "minimal" (5 core read tools) | "standard" (default, 10)
 # enabled = ["search_code", "get_architecture"]   # optional explicit list, overrides preset
 ```
 
-Env var overrides: `NEXUS_CACHE_DIR` (data dir), `NEXUS_LOG_LEVEL` (`trace`/`debug`/`info`/`warn`/`error`), `NEXUS_LOG_FORMAT=json` (structured logs, `serve`/`mcp` modes both support it).
+Env var overrides: `NEXUS_CONFIG_DIR` (config dir, i.e. where `config.toml` lives), `NEXUS_CACHE_DIR` (data dir), `NEXUS_LOG_LEVEL` (`trace`/`debug`/`info`/`warn`/`error`), `NEXUS_LOG_FORMAT=json` (structured logs, `serve`/`mcp` modes both support it).
 
 The GUI's Projects tab also has **Import** (top row, next to Index/Reindex - point it at a path with a `.nexuscontext/index.db.zst` artifact, e.g. one a teammate exported and committed) and, per project, **Export** (writes that same artifact into the project so it can be shared) - the same `nexus export`/`nexus import` CLI commands, now reachable without leaving the GUI.
 

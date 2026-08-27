@@ -5,6 +5,18 @@ that reads arbitrary parts of the filesystem on request — worth being
 explicit about what's protected, what's opt-in, and what was found and
 fixed by a dedicated review pass rather than designed in from the start.
 
+**How this document is organized:** the next three sections (*What's
+blocked by default*, *Observability*, *What's opt-in*) describe the
+system's current, standing behavior — read those for "what does
+NexusContext actually protect against today." Everything after that,
+starting at *What a dedicated review pass found and fixed*, is a
+chronological log of the review passes that got it there — each entry
+records what a given pass found and fixed at the time, so later entries
+sometimes narrow or extend an earlier one's scope (e.g. the TOCTOU section
+under 2026-08-27 refines the 2026-08-27 review-pass section above it). Kept
+as a log rather than folded away because the *sequence* of findings is
+itself part of the record this project keeps.
+
 ## What's blocked by default
 
 - **Any outbound network call at all.** With the embeddings/semantic-search

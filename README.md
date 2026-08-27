@@ -1,6 +1,8 @@
 # NexusContext
 
-**Objective:** A self-hosted, lightweight binary daemon that provides a standardized MCP interface for local codebase indexing, structural code intelligence (knowledge graph), semantic search, and RAG-based LLM orchestration — with a native Linux desktop GUI on top.
+**Objective:** A self-hosted, lightweight binary daemon that provides a standardized MCP interface for local codebase indexing and structural code intelligence (knowledge graph, optionally enriched with LSP-resolved symbols) — with a native Linux desktop GUI on top.
+
+> **Note on the sections below:** Sections 1-3 and 5-6 describe the *current* system and are kept up to date. Section 4 ("Full Roadmap") is a frozen, phase-by-phase historical log - it legitimately references things (an embeddings/semantic-search subsystem, specific old tool counts) that were true at that phase and were later removed or changed; that's intentional history, not drift. The embeddings/semantic-search subsystem described there was removed entirely (see [`docs/NexusContext-Wiki/ADRs/0010-remove-embeddings-subsystem.md`](docs/NexusContext-Wiki/ADRs/0010-remove-embeddings-subsystem.md)) and is not part of the current product.
 
 ---
 
@@ -15,17 +17,14 @@
    (IDE, CLI agents) │                              │
                      │  Ingestion Engine             │
    File watcher ─────┤   - tree-sitter parsing       │
-                     │   - chunking                  │
+   (bounded queue)   │   - resource-bounded          │
                      │                              │
                      │  Knowledge Graph (SQLite)      │
                      │   - nodes/edges, Cypher-lite   │
+                     │   - FTS5 full-text search      │
                      │                              │
-   Embedding ────────┤  Embedding Pipeline           │
-   endpoint (net)    │   - optional, off by default  │
-                     │                              │
-                     │  Vector Store (not built yet)  │
-                     │                              │
-                     │  RAG / Query Planner          │
+   rust-analyzer ────┤  Optional LSP Enrichment       │
+   (opt-in, `--deep`)│   - Rust only today            │
                      │                              │
    GUI / extension ──┤  Control API (Unix socket)    │
                      └─────────────────────────────┘
@@ -35,47 +34,40 @@ Two transports, two purposes:
 - **Stdio JSON-RPC** — reserved for MCP clients (IDE extensions, CLI agents). This is the actual MCP spec transport and shouldn't be shared with anything else.
 - **Local Unix domain socket** — a separate control/status API for the GUI and GNOME extension (indexing progress, watched paths, config, ad-hoc search). Keeps the GUI decoupled from whatever MCP client happens to be attached to stdio at the time.
 
-The daemon runs as a `systemd --user` service, independent of any GUI. The GUI is a client, not a requirement — the tool must be fully usable headless.
+The daemon runs as a `systemd --user` service on Linux (Windows ships the MCP server + CLI tier only, no GUI/systemd unit), independent of any GUI. The GUI is a client, not a requirement — the tool must be fully usable headless.
 
 ## 2. Component Breakdown
 
 **Ingestion Engine**
-- Directory watcher (`notify` crate), git-diff-aware: on file change, re-parse only the changed files rather than polling everything.
+- Directory watcher (`notify` crate), git-diff-aware: on file change, re-parse only the changed files rather than polling everything. The watcher's internal channel is bounded (`WATCHER_CHANNEL_BOUND`) so a flood of filesystem events can't grow unbounded memory.
 - Tree-sitter parsers per language, extracting functions/classes/interfaces as node boundaries instead of naive line-splitting.
-- **Layered ignore rules**: hardcoded patterns (`.git`, `node_modules`, build dirs) → `.gitignore` hierarchy → project-specific `.nexusignore` (gitignore syntax) for one-off excludes. Symlinks always skipped.
-- Incremental re-indexing — only re-parse/re-embed changed nodes, not whole files, on save.
+- **Layered ignore rules**: hardcoded patterns (`.git`, `node_modules`, build dirs) → `.gitignore` hierarchy → project-specific `.nexusignore` (gitignore syntax) for one-off excludes. Symlinks always skipped, with `O_NOFOLLOW` defense-in-depth against symlink-substitution TOCTOU (see ADR 0015 - this closes the easy case, not full TOCTOU-proofing).
+- Resource bounds added this cycle (issue #58): a per-file indexable-size cap (`MAX_INDEXABLE_FILE_BYTES`, 5 MiB - larger files are skipped, not truncated-and-indexed), a traversal-depth cap, and a graph-query timeout (`QUERY_TIMEOUT`, 5s, enforced cooperatively via SQLite's progress handler) so a pathological repo or query can't hang or OOM the daemon.
+- Incremental re-indexing — only re-parse changed files, not the whole project, on save; cooperative reindex cancellation if a project is superseded by a newer reindex request mid-run.
 
-**Knowledge Graph Layer** *(new — the main structural addition over the original proposal)*
-- Every ingested file becomes graph nodes (`File`, `Function`, `Class`, `Interface`, `Route`, ...) linked by edges (`CALLS`, `IMPORTS`, `IMPLEMENTS`, `DEFINES`, `HTTP_CALLS`) derived straight from the tree-sitter AST — no embeddings involved.
-- Stored in SQLite (not LanceDB) at `~/.local/share/nexuscontext/<project-hash>/graph.db` — cheap, embeddable, and a natural fit for graph traversal queries via recursive CTEs or a small Cypher-lite query layer.
-- This is what makes `trace_call_path`, `get_architecture`, `detect_changes` (git-diff → affected-symbols mapping), and dead-code detection possible **without any embedding backend running at all** — directly relevant to keeping Ollama/embeddings optional rather than load-bearing.
-- Semantic search becomes one additional signal layered on top of the graph, not the only retrieval mechanism.
+**Knowledge Graph Layer** *(the main structural addition over the original proposal)*
+- Every ingested file becomes graph nodes (`File`, `Function`, `Type`, `Section` for markdown headings, ...) linked by edges (`CALLS`, `CALLS_RESOLVED`, `CONTAINS`, ...) derived from the tree-sitter AST, plus optional LSP-verified edges.
+- Stored in SQLite (not a dedicated graph DB) at `~/.local/share/nexuscontext/<project-hash>/graph.db` — cheap, embeddable, and a natural fit for graph traversal queries via recursive CTEs or a small Cypher-lite query layer (`query_graph`).
+- This is what makes `trace_call_path`, `get_architecture`, `detect_changes` (git-diff → affected-symbols mapping), and dead-code detection possible. There is no semantic/embedding layer of any kind - retrieval is entirely structural (graph) and lexical (FTS5), see ADR 0010.
+- Call resolution is name-based, not import-aware: same-file matches win, a cross-file call resolves only if the callee name is unique project-wide, and 2+ ambiguous candidates leave no edge at all (which means an ambiguous callee can silently read as dead code to `detect_dead_code`). Each `CALLS` edge carries `provenance`/`resolution`/`confidence` metadata so a caller can tell a plain name-match apart from an LSP-verified one (see below).
 
-**Embedding Pipeline** *(optional layer — daemon is fully useful without it)*
-- No embedding runtime is bundled or hardwired. The daemon speaks the **OpenAI-compatible `/v1/embeddings` API** — the de facto standard that Ollama, LM Studio, vLLM, and llama.cpp server all implement — over a plain configurable HTTP endpoint.
-- Config (`[embeddings]` in `config.toml`): `endpoint` (URL, e.g. `http://localhost:11434/v1` or a LAN host), `model` (e.g. `nomic-embed-text`), optional `api_key` (blank for local servers that don't need one).
-- Since `endpoint` is just a URL, "Ollama on this machine" and "Ollama/vLLM on another box on the network" are the same code path — no special-casing.
-- Startup health check against the endpoint; if unreachable, the daemon logs a clear error and keeps running in a degraded state (search/MCP tools return an explicit "embedding backend unavailable" instead of crashing).
-- Retry/timeout are config knobs, not assumptions — useful once the endpoint might be a network hop away rather than localhost.
-
-**Vector Store**
-- LanceDB, embedded, disk-backed at `~/.local/share/nexuscontext/<project-hash>/vectors/`.
-- One table per indexed project/workspace, keyed by content hash to dedupe.
-- **Post-write integrity check**: after indexing, compare persisted row count against the in-memory count; if it falls suspiciously short, report `status: "degraded"` from `index_status` instead of silently claiming success.
+**Optional LSP-Resolved-Symbol Enrichment** *(off by default; Rust only today via `rust-analyzer`)*
+- Never load-bearing: a missing/failing LSP server always degrades to the static tree-sitter-only index rather than failing the reindex, and it only ever runs on an explicit `deep` request (`index_repository`'s `deep: true` argument, or `nexus reindex --deep`) - the ordinary watcher-driven auto-reindex never pays this cost.
+- When it runs, semantically-verified call edges are recorded as `CALLS_RESOLVED` with `provenance: "lsp"`, `resolution: "semantic-symbol"`, `confidence: "exact"` (vs. `provenance: "tree-sitter"`, `resolution: "name-match"`, `confidence: "heuristic"` for a plain name-based edge) — exposed to callers via `trace_call_path`.
+- `[lsp]` config: `enabled` (bool, default false), `server_command` (default `rust-analyzer`), `max_concurrent_servers` (default 2 - the daemon evicts the least-recently-used server instance past this cap), `request_timeout_secs` (default 10).
+- A single-language pilot deliberately, not a multi-language matrix - see issue #10 and ADR 0008.
 
 **MCP Server**
 - `listTools` / `callTool` per spec, newline-delimited JSON-RPC 2.0 over stdio. Logging goes to stderr exclusively - stdout is reserved for the protocol stream.
-- Structural tools (graph-backed, no embeddings required): `index_repository` (build/rebuild the graph for a path - the prerequisite for everything else; `deep: true` also runs LSP-resolved-symbol enrichment if `[lsp] enabled = true` - Phase 32), `search_graph`, `trace_call_path`, `get_architecture`, `detect_changes`, `get_file_context` (plain file/line-range read, no embeddings involved either), `detect_dead_code`, `search_code` (FTS5 over file content), `query_graph` (Cypher-lite), `delete_project`.
-- Retrieval tools (embedding-backed, degrade gracefully with a clear error if no endpoint configured): `search_codebase` (semantic), `query_memory`.
-- `query_planner` tool decides file-read vs. graph search vs. keyword-fallback-graph-search (semantic search once the embeddings pipeline exists) to cut token spend - see Phase 5 for the honest version of what it does today.
-- `get_session_usage` (Phase 28, extended Phase 31): per-tool call/error/output-byte counters (plus a rough bytes/4 token estimate) for the calling agent's own MCP session only - resets when the `nexusd mcp` stdio process does, not a lifetime total. Answers "how much of my context budget has NexusContext itself cost me so far" without needing the control socket's lifetime `stats.get`. Also reports the fixed per-session `schema_tax` (bytes of every tool's own schema, paid once regardless of usage) and a `reads_avoided` counterfactual (successful calls to an explicit allow-list of tools that plausibly substituted a manual file read/grep, plus the bytes/estimated-tokens they returned) - see Phase 31 for the reasoning behind what counts.
-- `query_planner`/`get_architecture` responses carry an `index_freshness` field (Phase 31): whether the project is registered, when it was last indexed, and whether the background watcher currently considers it "warm" (actively kept in sync) or cold (may be behind the working tree) - a cheap, in-band staleness signal instead of a separate call.
-- **Tool-description caveats** (moved out of the in-schema text in Phase 22 to keep the fixed per-session schema-token cost down - see Phase 21/22):
-  - `trace_call_path`: resolution is name-based, not import-aware - same-file matches win, and a cross-file call resolves only if the callee name is unique project-wide; ambiguous same-named functions across files are left unresolved. Call-graph quality varies by language: solid for Rust/Python/JS/TS/Go/Java/Ruby; structural-only (no call edges) for C/C++/C#/PHP - see `language.rs` for why.
-  - `detect_dead_code`: call resolution is name-based (same-file, or cross-file only when the name is unique project-wide), so a function called only via an ambiguous same-named cross-file call, or invoked via reflection/routing/dependency injection rather than a direct call, may show up as a false positive - treat results as worth a second look, not a guarantee (see Phase 16 for the incident that drove the `limit`/`total_flagged` cap in the first place).
-  - `query_planner`: a specific file goes straight to `get_file_context`, a single identifier-like token goes to `search_graph`, and a descriptive multi-word query goes to semantic search if configured or a keyword-over-the-graph fallback otherwise.
-  - `query_graph`: not full Cypher - exactly one pattern shape, `MATCH (a:Kind)-[:EDGE_KIND]->(b:Kind) [WHERE a.name = 'value' or b.name = 'value'] RETURN a|b`. `Kind` is `Function`, `Type`, `File`, or `Section` (a markdown heading; `CONTAINS` edges link a heading to its nested sub-headings). Fails with a clear error for anything outside that shape rather than guessing.
-  - `search_codebase`/`query_memory`: requires `embeddings.enabled = true` and a reachable endpoint/model in `config.toml` (see the GUI's Config tab), and that the project was reindexed after enabling it. Errors with a specific, actionable reason otherwise - structural tools (`search_graph`, `search_code`, `query_planner`) work regardless.
+- 12 tools total, backed by the same SQLite graph: `index_repository`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes`, `delete_project`, `detect_dead_code`, `search_code`, `query_planner`, `query_graph`, `get_session_usage`. See [`docs/NexusContext-Wiki/MCP-Tools.md`](docs/NexusContext-Wiki/MCP-Tools.md) for full schemas/limits per tool - not duplicated here to avoid this file drifting out of sync with the real schemas again.
+- By default only 10 of these 12 are advertised to an agent (the `standard` preset) to cut the fixed per-session token cost of loading tool schemas; `full` adds the destructive `delete_project` and the niche `query_graph` ad-hoc DSL. See the `[tools]` config section.
+- `allowed_roots` (opt-in, empty/unrestricted by default) is enforced consistently across every `repo_path`-accepting tool, not just `index_repository` - closed as issue #61.
+- `get_session_usage`: per-tool call/error/output-byte counters (plus a rough bytes/4 token estimate) for the calling agent's own MCP session only - resets when the `nexusd mcp` stdio process does, not a lifetime total. Also reports the fixed per-session `schema_tax` (bytes of every tool's own schema, paid once regardless of usage) and a `reads_avoided` counterfactual (successful calls to an explicit allow-list of tools that plausibly substituted a manual file read/grep, plus the bytes/estimated-tokens they returned).
+- `query_planner`/`get_architecture` responses carry an `index_freshness` field: whether the project is registered, when it was last indexed, and whether the background watcher currently considers it "warm" (actively kept in sync) or cold (may be behind the working tree) - a cheap, in-band staleness signal instead of a separate call.
+- **Tool-description caveats** (kept in the schema text or the wiki, deliberately not repeated at length here):
+  - `trace_call_path`/`detect_dead_code`: name-based resolution caveats above; call-graph quality varies by language (solid for Rust/Python/JS/TS/Go/Java/Ruby; structural-only, no call edges, for C/C++/C#/PHP - see `language.rs`).
+  - `query_planner`: a specific file goes straight to `get_file_context`, a single identifier-like token goes to `search_graph`, and a descriptive multi-word query gets a keyword fallback over the graph - there is no semantic-search arm.
+  - `query_graph`: not full Cypher - exactly one pattern shape, `MATCH (a:Kind)-[:EDGE_KIND]->(b:Kind) [WHERE a.name = 'value' or b.name = 'value'] RETURN a|b`. `Kind` is `Function`, `Type`, `File`, or `Section`. Fails with a clear error for anything outside that shape rather than guessing.
 
 **Control API (for GUI/extension, not MCP)**
 - Unix socket, same JSON-RPC framing for consistency, but a distinct method namespace (`status.*`, `config.*`, `search.adhoc`).
@@ -107,19 +99,20 @@ The daemon runs as a `systemd --user` service, independent of any GUI. The GUI i
 | Concern | Choice |
 |---|---|
 | Daemon language | Rust |
-| Knowledge graph | SQLite, WAL mode (nodes/edges, FTS5 for content search, Cypher-lite traversal) |
-| Vector engine | **No dedicated vector DB** — the original proposal's "LanceDB" pick was aspirational and never built; embeddings (see Phase 12) are stored as plain BLOBs in the same SQLite graph.db, ranked by brute-force cosine similarity in Rust at query time. Appropriate at this project's actual scale (thousands of chunks, not millions) |
-| Parsing | tree-sitter via community `TAGS_QUERY` conventions (11 languages - see Phase 11) plus a hand-rolled markdown heading parser for `.md`/`.markdown` docs (see Phase 14) |
-| Embeddings | Real, working (Phase 12) — OpenAI-compatible `/v1/embeddings` over a configurable HTTP endpoint (Ollama, LM Studio, vLLM, llama.cpp server, local or LAN), backing `search_codebase`/`query_memory` for real. Optional and off by default (`embeddings.enabled = true` required); daemon is fully useful without it; policy-gated (loopback/private by default, `allow_remote` opt-in for anything else) |
+| Knowledge graph | SQLite, WAL mode (nodes/edges, FTS5 for content search, Cypher-lite traversal via `query_graph`) |
+| Vector/semantic engine | **None.** The original proposal's embeddings/semantic-search subsystem was built (Phase 12), then removed entirely (issue #62, ADR 0010) once the structural graph alone proved sufficient for every shipped tool. Retrieval today is purely structural (graph) and lexical (FTS5) |
+| Parsing | tree-sitter via community `TAGS_QUERY` conventions (11 languages) plus a hand-rolled markdown heading parser for `.md`/`.markdown` docs |
+| Optional LSP enrichment | `rust-analyzer` only today, opt-in via `[lsp] enabled = true` + `--deep`; never runs on the ordinary auto-reindex path (see ADR 0008) |
 | MCP transport | JSON-RPC 2.0 over stdio |
 | GUI/control transport | JSON-RPC 2.0 over Unix domain socket |
-| GUI toolkit | GTK4 + libadwaita (`gtk-rs`) |
+| GUI toolkit | GTK4 + libadwaita (`gtk-rs`), Linux only |
 | Shell integration | GNOME Shell extension (GJS), status-only |
-| Auto-sync | `notify-debouncer-mini`, 2s debounce, `serve`-mode only |
-| Config | TOML, `~/.config/nexuscontext/config.toml` + env var overrides (`NEXUS_CACHE_DIR`, `NEXUS_LOG_LEVEL`, `NEXUS_LOG_FORMAT=json`) |
-| Data dir | `~/.local/share/nexuscontext/` |
-| Service management | `systemd --user` unit, autostart |
+| Auto-sync | `notify-debouncer-mini`, 2s debounce, `serve`-mode only, bounded watcher channel |
+| Config | TOML, `~/.config/nexuscontext/config.toml` + env var overrides (`NEXUS_CONFIG_DIR`, `NEXUS_CACHE_DIR`, `NEXUS_LOG_LEVEL`, `NEXUS_LOG_FORMAT=json`) |
+| Data dir | `~/.local/share/nexuscontext/` (or `NEXUS_CACHE_DIR` if set) |
+| Service management | `systemd --user` unit, autostart (Linux); MCP server + CLI only on Windows, no service manager integration |
 | Logging | `tracing` crate; `NEXUS_LOG_FORMAT=json` for structured/machine-parseable logs, plain text by default |
+| Platforms | Linux (x86_64, arm64), Windows (x86_64, arm64) — MCP+CLI tier, macOS (Apple Silicon) — MCP+CLI tier |
 
 ## 4. Full Roadmap
 

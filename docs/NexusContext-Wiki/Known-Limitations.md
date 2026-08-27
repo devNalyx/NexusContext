@@ -73,6 +73,21 @@ One pattern shape only: `MATCH (a:Kind)-[:EDGE]->(b:Kind) [WHERE ...]
 RETURN a|b`. Not a general query language. Fails clearly outside that
 shape.
 
+## Symlink defense is not full TOCTOU-proofing
+
+`O_NOFOLLOW` on the two filesystem-read hot paths (Unix only) rejects a
+path that's been swapped for a symlink between the `allowed_roots` check
+and the actual read/open — the cheapest TOCTOU shape. It does **not**
+close the race where an attacker with concurrent filesystem write access
+swaps the path for a *different regular file or directory* at the same
+name in that same window; that needs atomic check-and-open
+(`openat2(RESOLVE_NO_SYMLINKS)` plus path resolution relative to an
+already-open directory fd throughout), which is out of scope today. This
+needs a co-resident malicious process racing the daemon's own
+check-then-use window, a materially higher bar than the ordinary
+prompt-injection/confused-deputy threat model the rest of the security
+posture targets. See [[Security-Model]] and [[ADRs/README|ADR 0015]].
+
 ## GNOME extension version churn
 
 Shell extensions frequently break across major GNOME releases. Treated as

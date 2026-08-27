@@ -6,8 +6,11 @@ zero-config default. Written owner-only (`0600`) on save — see
 [[Security-Model]].
 
 ```toml
-allowed_roots = []   # if non-empty, index_repository/reindex/get_file_context/
-                      # detect_changes refuse any path outside these roots
+allowed_roots = []   # if non-empty, every MCP tool/CLI command that takes a
+                      # repo_path (index_repository, get_file_context, trace_call_path,
+                      # search_graph, search_code, detect_changes, detect_dead_code,
+                      # query_planner, query_graph, delete_project, export/import)
+                      # refuses any path outside these roots
 
 [watcher]
 warm_window_secs = 21600   # 6h default - see Watcher-and-Freshness
