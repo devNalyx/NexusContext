@@ -24,6 +24,7 @@ pub use project::{
     record_auto_reindex, touch_and_catchup, touch_queried, IndexingStatus,
 };
 pub use queries::{
-    call_graph_dot, detect_changes, detect_dead_code, get_architecture, get_file_context,
-    open_store, plan_query, search_code, ArchitectureSummary, QueryPlanResult,
+    call_graph_dot, detect_changes, detect_changes_blast_radius, detect_dead_code,
+    get_architecture, get_file_context, open_store, plan_query, search_code, ArchitectureSummary,
+    BlastRadiusResult, QueryPlanResult,
 };
