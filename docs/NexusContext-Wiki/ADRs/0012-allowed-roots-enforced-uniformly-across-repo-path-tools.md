@@ -185,6 +185,18 @@ attempted inline here. Once that exists, the symlink-creation finding above
 means the symlink-specific cases can extend to Windows immediately, with no
 further platform investigation needed.
 
+## Update (2026-08-27): `NEXUS_CONFIG_DIR` harness built, Windows CI now runs the suite (#85, #83)
+
+`nexus_core::Paths::resolve()` gained a `NEXUS_CONFIG_DIR` env override for
+`config_dir`, mirroring the existing `NEXUS_CACHE_DIR` override for
+`data_dir` - a plain env var read, no `directories`-crate/OS-API
+involvement, so it behaves identically on every platform. `path_security.
+rs`'s `setup_fake_home` now sets this directly instead of redirecting
+`$HOME`/`$XDG_CONFIG_HOME`, and the file's blanket `#![cfg(unix)]` gate is
+removed - only the three symlink-creating tests keep an individual
+`#[cfg(unix)]`. Verified via real `test-windows` CI run, not just local
+compilation (see PR closing this issue and #83 for the job log evidence).
+
 ## Related
 
 [[Security-Model]] · [issue #61](https://github.com/devNalyx/NexusContext/issues/61) ·
