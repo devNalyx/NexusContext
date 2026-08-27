@@ -5,10 +5,8 @@
 
 #[test]
 fn windows_runner_can_create_symlink_without_elevation() {
-    let dir = std::env::temp_dir().join(format!(
-        "nexuscontext-symlink-probe-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("nexuscontext-symlink-probe-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let target = dir.join("target.txt");
     std::fs::write(&target, b"hello").unwrap();
