@@ -47,8 +47,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use nexus_index::{
-    call_graph_dot, detect_changes, detect_dead_code, get_architecture, get_file_context,
-    run_cypher_query, search_code,
+    call_graph_dot, detect_changes, detect_dead_code, get_architecture, get_architecture_grouped,
+    get_file_context, graph_db_path, run_cypher_query, search_code, EdgeKind, GraphStore, NodeKind,
 };
 
 /// Serializes every test below against the process-global `HOME` env var
@@ -211,6 +211,13 @@ fn search_code_enforces_allowed_roots() {
 #[test]
 fn get_architecture_enforces_allowed_roots() {
     assert_enforces_allowed_roots("get_architecture", |p| get_architecture(p).map(|_| ()));
+}
+
+#[test]
+fn get_architecture_grouped_enforces_allowed_roots() {
+    assert_enforces_allowed_roots("get_architecture_grouped", |p| {
+        get_architecture_grouped(p, 1).map(|_| ())
+    });
 }
 
 #[test]
@@ -462,4 +469,87 @@ fn search_code_rejects_agent_steered_outside_project_root() {
     assert_enforces_allowed_roots("search-code-confused-deputy", |p| {
         search_code(p, "id_rsa OR password OR secret", 10).map(|_| ())
     });
+}
+
+/// Builds a real graph.db for `repo_path` (allowed-roots setup + a directly
+/// opened `GraphStore`, same as `index_project` would produce, without
+/// pulling in the full tree-sitter ingest pipeline) with two directories:
+/// `pkg/a` (two functions, one call between them) and `pkg/b` (one
+/// function), plus one call crossing from `pkg/a` into `pkg/b` - the same
+/// multi-directory shape issue #90 asks for, exercised end to end through
+/// the public `get_architecture`/`get_architecture_grouped` functions
+/// rather than `GraphStore` directly.
+fn setup_grouped_repo(label: &str) -> (FakeHome, PathBuf, PathBuf) {
+    let root = scratch_dir(&format!("grouped-root-{label}"));
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let home = setup_fake_home(&format!("grouped-{label}"), &root);
+
+    let store = GraphStore::open(&graph_db_path(&repo)).unwrap();
+    let a1 = store
+        .insert_node(NodeKind::Function, "a1", "pkg::a::a1", "pkg/a/lib.rs", 1, 3)
+        .unwrap();
+    let a2 = store
+        .insert_node(NodeKind::Function, "a2", "pkg::a::a2", "pkg/a/lib.rs", 5, 7)
+        .unwrap();
+    let b1 = store
+        .insert_node(NodeKind::Function, "b1", "pkg::b::b1", "pkg/b/lib.rs", 1, 3)
+        .unwrap();
+    store.insert_edge(a1, a2, EdgeKind::Calls).unwrap();
+    store.insert_edge(a1, b1, EdgeKind::Calls).unwrap();
+    drop(store);
+
+    (home, root, repo)
+}
+
+#[test]
+fn get_architecture_default_output_is_unchanged_by_the_grouped_mode_existing() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_home, root, repo) = setup_grouped_repo("default-unchanged");
+
+    // The plain call and the flat half of the grouped call must agree
+    // exactly - proves `get_architecture` itself is untouched by the
+    // grouped code path existing alongside it (mirrors #89's own
+    // default-unchanged regression test for `detect_changes`).
+    let plain = get_architecture(&repo).unwrap();
+    let (grouped_flat, _groups) = get_architecture_grouped(&repo, 2).unwrap();
+
+    assert_eq!(plain.total_nodes, grouped_flat.total_nodes);
+    assert_eq!(plain.total_edges, grouped_flat.total_edges);
+    assert_eq!(plain.busiest_files, grouped_flat.busiest_files);
+    assert_eq!(plain.language_breakdown, grouped_flat.language_breakdown);
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn grouped_mode_reports_the_dense_internal_and_single_cross_directory_call() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (_home, root, repo) = setup_grouped_repo("cross-group");
+
+    let (_flat, groups) = get_architecture_grouped(&repo, 2).unwrap();
+
+    let a = groups
+        .groups
+        .iter()
+        .find(|g| g.path == "pkg/a")
+        .expect("pkg/a group missing");
+    assert_eq!(a.total_nodes, 2);
+    let b = groups
+        .groups
+        .iter()
+        .find(|g| g.path == "pkg/b")
+        .expect("pkg/b group missing");
+    assert_eq!(b.total_nodes, 1);
+
+    assert_eq!(
+        groups.within_group_edges, 1,
+        "the one a1 -> a2 call inside pkg/a"
+    );
+    assert_eq!(groups.cross_group_edges.len(), 1);
+    assert_eq!(groups.cross_group_edges[0].from, "pkg/a");
+    assert_eq!(groups.cross_group_edges[0].to, "pkg/b");
+    assert_eq!(groups.cross_group_edges[0].count, 1);
+
+    std::fs::remove_dir_all(&root).ok();
 }

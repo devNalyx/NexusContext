@@ -180,10 +180,14 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "get_architecture",
-            "description": "Summarize an indexed project: total node/edge counts and the busiest files by definition count (code functions/types and markdown heading sections counted together).",
+            "description": "Summarize an indexed project: total node/edge counts and the busiest files by definition count (code functions/types and markdown heading sections counted together). Optional `grouped=true` adds a directory-based structural breakdown (per-directory node counts by kind, plus cross-directory edge counts) - purely path-based grouping from each node's existing `file_path`, not semantic subsystem/layer inference.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "repo_path": { "type": "string" } },
+                "properties": {
+                    "repo_path": { "type": "string" },
+                    "grouped": { "type": "boolean", "default": false },
+                    "depth": { "type": "integer", "default": 1 }
+                },
                 "required": ["repo_path"]
             }
         },
@@ -716,22 +720,74 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Shared by both branches of `get_architecture`: the flat-summary JSON
+/// shape that must stay byte-for-byte unchanged from before #90 when
+/// `grouped` is false/omitted.
+fn architecture_summary_json(summary: &index::ArchitectureSummary) -> Value {
+    json!({
+        "total_nodes": summary.total_nodes,
+        "total_edges": summary.total_edges,
+        "busiest_files": summary.busiest_files.iter()
+            .map(|(file, count)| json!({ "file": file, "definitions": count }))
+            .collect::<Vec<_>>(),
+        "language_breakdown": summary.language_breakdown.iter()
+            .map(|(ext, count)| json!({ "extension": ext, "files": count }))
+            .collect::<Vec<_>>()
+    })
+}
+
 fn get_architecture(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
-    let cache_key = format!("get_architecture:{}", project_hash(&repo_path));
+    let grouped = args
+        .get("grouped")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // grouped=false (the default) must stay byte-for-byte identical to this
+    // tool's pre-#90 response and cost - separate cache key + code path from
+    // the grouped branch below, never touching `directory_groups` at all.
+    let cache_key = format!(
+        "get_architecture:{}{}",
+        project_hash(&repo_path),
+        if grouped {
+            let depth = clamp_depth(args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as u32);
+            format!(":grouped:{depth}")
+        } else {
+            String::new()
+        }
+    );
 
     let value = crate::cache::get_or_compute(&cache_key, last_indexed_unix(&repo_path), || {
-        let summary = index::get_architecture(&repo_path)?;
-        Ok(json!({
-            "total_nodes": summary.total_nodes,
-            "total_edges": summary.total_edges,
-            "busiest_files": summary.busiest_files.into_iter()
-                .map(|(file, count)| json!({ "file": file, "definitions": count }))
-                .collect::<Vec<_>>(),
-            "language_breakdown": summary.language_breakdown.into_iter()
-                .map(|(ext, count)| json!({ "extension": ext, "files": count }))
-                .collect::<Vec<_>>()
-        }))
+        if !grouped {
+            let summary = index::get_architecture(&repo_path)?;
+            return Ok(architecture_summary_json(&summary));
+        }
+
+        let depth = clamp_depth(args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as u32);
+        let (summary, groups) = index::get_architecture_grouped(&repo_path, depth as usize)?;
+        let mut value = architecture_summary_json(&summary);
+        if let Value::Object(ref mut map) = value {
+            map.insert(
+                "grouped".to_string(),
+                json!({
+                    "depth": depth,
+                    "groups": groups.groups.into_iter().map(|g| json!({
+                        "path": g.path,
+                        "total_nodes": g.total_nodes,
+                        "node_counts": g.node_counts.into_iter()
+                            .map(|(kind, count)| json!({ "kind": kind, "count": count }))
+                            .collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
+                    "within_group_edges": groups.within_group_edges,
+                    "cross_group_edges": groups.cross_group_edges.into_iter().map(|e| json!({
+                        "from": e.from,
+                        "to": e.to,
+                        "count": e.count,
+                    })).collect::<Vec<_>>(),
+                }),
+            );
+        }
+        Ok(value)
     })?;
 
     // Freshness is merged in *after* the cache lookup, not inside the cached
