@@ -87,7 +87,66 @@ the setup.
   explicitly not addressed by this ADR or its PR. The issue stays open for
   that; see the issue for what's left.
 
+## Update (2026-08-27): closing out #61's remaining checklist items
+
+Issue #61 kept two checkboxes open after this ADR's original PR (#65):
+"address symlink escape scenarios" and "add prompt-injection/confused-
+deputy tests". Both are closed out now, on top of the fix above, without
+changing any production code - only tests and this doc.
+
+**Symlink escape is already defended, by the same mechanism as the
+`..`-traversal fix above.** `std::path::Path::canonicalize()` resolves
+every symlink component in a path, following the OS's own realpath(3)
+semantics - it doesn't just normalize `.`/`..`, it substitutes each
+symlink's actual target on disk. Since every `repo_path`/`file` argument
+is canonicalized *before* the `allowed_roots` check runs (the exact
+ordering this ADR already established), a symlink sitting inside an
+allowed root but pointing outside it canonicalizes to that outside
+location and gets rejected the same way a raw `../../etc` path does -
+there is no separate code path for symlinks to slip through. This is
+proven directly now: `crates/nexus-index/tests/path_security.rs` gained
+adversarial cases planting a symlink inside an allowed root pointing
+outside it (rejected, both as a `file` argument and as `repo_path`
+itself), plus the reverse case - a symlink that stays inside the same
+allowed root - confirmed to *not* be falsely rejected.
+
+**True TOCTOU (time-of-check-to-time-of-use) races are a different,
+explicitly out-of-scope threat model, split into
+[issue #72](https://github.com/devNalyx/NexusContext/issues/72).** The
+symlink case above is a single synchronous request: the symlink exists
+before the request starts, and canonicalize+check resolves it once,
+before any file is touched. A true TOCTOU race requires an attacker with
+**concurrent filesystem write access** to swap a real file/directory for
+a symlink *during* the request - after the check, before the
+`fs::read`/DB open that follows it. NexusContext does not defend against
+that today (no `O_NOFOLLOW` + inode comparison, no atomic
+open-and-verify). That's intentionally not fixed in this pass: it
+requires a co-resident attacker who already has local write access to the
+filesystem racing the daemon's own check-then-use window - a
+categorically higher bar than "repository content manipulated an agent
+into asking for the wrong path" (#61's actual threat model, which needs
+no race at all and is fully closed by server-side enforcement regardless
+of caller intent). It's also platform-specific, non-trivial work
+(`openat2`/`O_NOFOLLOW` on Linux, different and mostly-unavailable
+mechanisms on macOS, yet another one on Windows). See issue #72 for the
+proposed scope.
+
+**Prompt-injection/confused-deputy is defended by design, and now tested
+explicitly under that framing.** The security boundary
+(`require_path_allowed` against `allowed_roots`) is enforced entirely
+server-side, independent of what convinced the calling agent to ask for a
+given path - it doesn't matter whether the agent's request originated
+from the user's own intent or from something a malicious file in the
+repository said. `path_security.rs` now has tests framed explicitly
+around this scenario rather than leaving it implicit in the generic
+"outside allowed_roots" cases: one using a fake
+`$HOME/.ssh/id_rsa`-shaped path (the issue's own example of what a
+manipulated agent might be steered toward), and one confirming
+`search_code` enforces the same boundary, not just file reads.
+
 ## Related
 
 [[Security-Model]] · [issue #61](https://github.com/devNalyx/NexusContext/issues/61) ·
-issue #29 (the original canonicalize-before-check fix this extends)
+issue #29 (the original canonicalize-before-check fix this extends) ·
+[issue #72](https://github.com/devNalyx/NexusContext/issues/72) (TOCTOU
+hardening, split out as a separate threat model)

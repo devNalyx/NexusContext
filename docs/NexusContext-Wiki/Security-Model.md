@@ -184,6 +184,50 @@ Full detail, including every finding (including the ones judged
 low-severity) is in the GitHub issues from this pass — all closed as of
 this writing.
 
+## Symlink escape vs. TOCTOU vs. confused-deputy (2026-08-27, closing out #61)
+
+Three related but distinct questions, worth being explicit about since
+they're easy to conflate:
+
+- **Symlink escape (defended today).** `Path::canonicalize()` resolves
+  every symlink component in a path before `allowed_roots` is checked —
+  the same canonicalize-before-check ordering from issue #29, above — so
+  a symlink inside an allowed root pointing outside it resolves to that
+  outside location and is rejected exactly like a raw `../../etc` path
+  would be. Holds for both a `repo_path` argument that is itself a
+  symlink and a `file` argument that resolves through one. Proven
+  directly by adversarial tests in
+  `crates/nexus-index/tests/path_security.rs`: a symlink inside an
+  allowed root pointing outside it is rejected (as both a `repo_path` and
+  a `file` argument), and — the reverse case — a symlink pointing
+  elsewhere inside the same allowed root is correctly still allowed, not
+  falsely rejected.
+- **TOCTOU races (NOT defended today — tracked separately).** A
+  fundamentally different scenario: an attacker with *concurrent
+  filesystem write access* swaps a real file/directory for a symlink
+  *during* a request, between the canonicalize+check step and the actual
+  `fs::read`/DB open that follows it. That needs a co-resident malicious
+  process racing the daemon's own check-then-use window — a much higher
+  bar than "repository content steered an agent's request" — and fixing
+  it properly is platform-specific (`openat2`/`O_NOFOLLOW` + inode
+  comparison on Linux, different and mostly-unavailable mechanisms on
+  macOS, yet another approach on Windows). Split out into
+  [issue #72](https://github.com/devNalyx/NexusContext/issues/72) rather
+  than bundled with the confused-deputy work below, since it's a
+  different threat model with a different (lower, but real) priority.
+- **Prompt-injection / confused-deputy (defended by design).** Issue
+  #61's actual framing: repository content might try to manipulate the
+  calling agent into requesting a path outside the project it was invoked
+  on — e.g. "read `~/.ssh/id_rsa`" smuggled into a comment the agent
+  naively follows. This requires no race window at all — it's a single
+  synchronous request, and `require_path_allowed` enforces
+  `allowed_roots` server-side regardless of what convinced the agent to
+  ask. Tested explicitly under this framing (not just implicitly via the
+  generic "outside allowed_roots" cases already in the suite) using the
+  issue's own `$HOME/.ssh/id_rsa`-shaped example.
+
+See [[ADRs/README|ADR 0012]]'s 2026-08-27 update for the full reasoning.
+
 ## Trust boundary, stated plainly
 
 The MCP tools trust the calling agent, not arbitrary network input — there
