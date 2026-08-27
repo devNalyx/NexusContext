@@ -33,7 +33,10 @@ fn read_source_capped(path: &Path) -> Result<Vec<u8>> {
             "file is {size} bytes, over the {MAX_INDEXABLE_FILE_BYTES}-byte indexable cap - skipping"
         );
     }
-    Ok(std::fs::read(path)?)
+    // O_NOFOLLOW-guarded on Unix as defense-in-depth against a path being
+    // swapped for a symlink between the earlier canonicalize/allowed_roots
+    // check and this read - see issue #72 and `secure_fs` module docs.
+    crate::secure_fs::read_verified(path)
 }
 
 #[derive(Debug, Clone, Default)]

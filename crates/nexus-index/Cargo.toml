@@ -28,3 +28,6 @@ tree-sitter-ruby.workspace = true
 tree-sitter-php.workspace = true
 zstd.workspace = true
 regex.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
