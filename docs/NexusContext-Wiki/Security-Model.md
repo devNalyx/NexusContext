@@ -313,6 +313,30 @@ The general CI matrix (`test-windows`) does exercise the rest of the
 workspace's test suite on Windows already - this gap is specific to this
 one security-focused adversarial file, not a general Windows-support gap.
 
+## Update (2026-08-27): `NEXUS_CONFIG_DIR` closes the config-injection gap (#85, #83)
+
+Issue #85 built the harness the previous update called for: `nexus_core::
+Paths::resolve()` now honors a `NEXUS_CONFIG_DIR` env override for
+`config_dir`, the same way it already honored `NEXUS_CACHE_DIR` for
+`data_dir`. It's a plain env var read, not routed through the OS-specific
+`directories` crate, so it works identically on every platform.
+
+`path_security.rs`'s `setup_fake_home`/`FakeHome` now sets
+`NEXUS_CONFIG_DIR` directly instead of redirecting `$HOME`/
+`$XDG_CONFIG_HOME`, and the blanket `#![cfg(unix)]` gate at the top of the
+file is gone. Every non-symlink test (outside-root rejection,
+`..`-traversal, the confused-deputy `$HOME/.ssh/id_rsa` case, and their
+per-function variants across all seven `repo_path`-accepting tools) now
+runs unconditionally, including on Windows. Only the three tests that
+create real symlinks (`get_file_context_rejects_symlink_escaping_
+allowed_root`, `get_file_context_rejects_repo_path_itself_a_symlink_
+escaping_allowed_root`, `get_file_context_accepts_symlink_pointing_within_
+the_same_allowed_root`) keep an individual `#[cfg(unix)]`, since Windows
+symlink creation (confirmed CI-safe in the earlier update) has no
+`std::os::windows::fs::symlink_file`/`symlink_dir` equivalent implemented
+for them yet - a smaller, well-scoped remainder rather than the
+whole-file blocker this section originally described.
+
 ## Trust boundary, stated plainly
 
 The MCP tools trust the calling agent, not arbitrary network input — there

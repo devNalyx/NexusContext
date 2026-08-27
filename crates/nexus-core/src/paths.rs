@@ -2,9 +2,9 @@ use directories::ProjectDirs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-/// Resolved filesystem locations, honoring the `NEXUS_CACHE_DIR` env override
-/// documented in the proposal (config lives at ~/.config, data at ~/.local/share
-/// unless overridden).
+/// Resolved filesystem locations, honoring the `NEXUS_CACHE_DIR` and
+/// `NEXUS_CONFIG_DIR` env overrides documented in the proposal (config lives
+/// at ~/.config, data at ~/.local/share unless overridden).
 pub struct Paths {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
@@ -20,7 +20,9 @@ impl Paths {
         let dirs = ProjectDirs::from("", "", "nexuscontext")
             .expect("could not determine a home directory for the current user");
 
-        let config_dir = dirs.config_dir().to_path_buf();
+        let config_dir = std::env::var_os("NEXUS_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| dirs.config_dir().to_path_buf());
         let data_dir = std::env::var_os("NEXUS_CACHE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| dirs.data_dir().to_path_buf());

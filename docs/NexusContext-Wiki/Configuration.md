@@ -46,6 +46,13 @@ request_timeout_secs = 10
 
 - `NEXUS_CACHE_DIR` — overrides the data dir (`~/.local/share/nexuscontext`
   by default).
+- `NEXUS_CONFIG_DIR` — overrides the config dir (`~/.config/nexuscontext` on
+  Linux, `~/Library/Application Support/nexuscontext` on macOS, the roaming
+  `AppData` known folder on Windows, by default) — where `config.toml` is
+  read from. A plain env var read, not routed through the OS-specific
+  `directories` crate, so it works identically cross-platform. Primarily for
+  tests that need a controlled `allowed_roots` without depending on
+  home-directory resolution (see `crates/nexus-index/tests/path_security.rs`).
 - `NEXUS_LOG_LEVEL` — `trace`/`debug`/`info`/`warn`/`error`.
 - `NEXUS_LOG_FORMAT=json` — structured, machine-parseable logs; plain text
   is the default. Works for both `serve` and `mcp` modes.

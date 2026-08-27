@@ -7,44 +7,41 @@
 //! `call_graph_dot`, `run_query`/`run_cypher_query`).
 //!
 //! `nexus_core::Paths::resolve()` (what every one of these functions calls
-//! internally) resolves its config directory from `$HOME` on Unix via the
-//! `directories` crate - there's no injectable override, so these tests
-//! redirect `HOME` to a scratch directory for the duration of each test and
-//! write a `config.toml` there with a controlled `allowed_roots`. That env
-//! var is process-global, so `ENV_LOCK` below serializes every test in this
-//! binary against it (integration test binaries otherwise run their `#[test]`
-//! functions on multiple threads).
+//! internally) honors a `NEXUS_CONFIG_DIR` env override (issue #85) ahead of
+//! its normal `directories`-crate-based resolution, so these tests point
+//! that var directly at a scratch directory for the duration of each test
+//! and write a `config.toml` there with a controlled `allowed_roots`. That
+//! env var is process-global, so `ENV_LOCK` below serializes every test in
+//! this binary against it (integration test binaries otherwise run their
+//! `#[test]` functions on multiple threads).
 //!
-//! ## Why this whole file, not just the symlink cases, is `#[cfg(unix)]`
+//! ## Platform coverage (issues #83, #85)
 //!
-//! Investigated for issue #83: it's tempting to assume only the
-//! `std::os::unix::fs::symlink` cases below need Unix and the rest (outside-
-//! root rejection, `..`-traversal, the confused-deputy case) could run
-//! unconditionally. They can't, today - every single test in this file,
-//! symlink or not, goes through `setup_fake_home`/`FakeHome`, which only
-//! works because `directories::ProjectDirs`'s *Unix* backends resolve
-//! through `$HOME`/`$XDG_CONFIG_HOME`. Its Windows backend
+//! Before `NEXUS_CONFIG_DIR` existed, this whole file was `#[cfg(unix)]`:
+//! every test went through `setup_fake_home`/`FakeHome`, which redirected
+//! `$HOME`/`$XDG_CONFIG_HOME` and relied on `directories::ProjectDirs`'s
+//! *Unix* backends resolving through them. Its Windows backend
 //! (`directories-5.0.1/src/win.rs`) calls
 //! `dirs_sys::known_folder_roaming_app_data()`, which goes through the Win32
-//! known-folder API (`SHGetKnownFolderPath`) - not an environment variable a
-//! test process can override. Setting `HOME` before calling
-//! `nexus_core::Paths::resolve()` on Windows has no effect on where it looks
-//! for `config.toml`. There's also no test-only override hook anywhere in
-//! this codebase for `config_dir` specifically (`NEXUS_CACHE_DIR` only
-//! overrides `data_dir`), so there is currently no way to inject a
-//! controlled `allowed_roots` into these functions on Windows at all - a
-//! more fundamental blocker than "symlinks need elevation."
+//! known-folder API (`SHGetKnownFolderPath`) and ignores those env vars
+//! entirely - so no test in this file could run on Windows at all, not just
+//! the symlink-specific ones.
 //!
-//! Symlink creation itself, separately, turns out **not** to be the
-//! blocker it looked like: probed directly against this repo's own
-//! `test-windows` CI job (`windows-latest` GitHub Actions runner) with a
-//! throwaway `std::os::windows::fs::symlink_file` call, which succeeded
-//! without any elevation or Developer Mode step. So if/when a
-//! cross-platform config-injection mechanism exists (tracked as issue #85,
-//! not attempted here - it's a real harness change, not a test tweak), the
-//! symlink-specific cases below should extend to Windows too, not stay
-//! Unix-only.
-#![cfg(unix)]
+//! `NEXUS_CONFIG_DIR` (a plain env var read in `Paths::resolve()`, not an OS
+//! API) sidesteps that entirely: it works identically on every platform, so
+//! `setup_fake_home` now sets it directly instead of redirecting
+//! `$HOME`/`$XDG_CONFIG_HOME`, and every test below except the
+//! symlink-creating ones runs unconditionally, including on Windows.
+//!
+//! Symlink creation is the one remaining Unix-only piece, and only because
+//! these specific tests use `std::os::unix::fs::symlink`, not for any
+//! config-injection reason - probed directly against this repo's own
+//! `test-windows` CI job (`windows-latest` GitHub Actions runner), Windows
+//! itself can create symlinks without elevation or a Developer Mode step,
+//! so a `std::os::windows::fs::symlink_file`/`symlink_dir`-based Windows
+//! equivalent of those cases is possible; it's just not implemented here.
+//! Those tests stay behind `#[cfg(unix)]` individually rather than gating
+//! the whole file.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -66,50 +63,35 @@ fn scratch_dir(label: &str) -> PathBuf {
     ))
 }
 
-/// Sets up a fake `$HOME` with `config.toml` configured with
-/// `allowed_roots = [allowed_root]` at whatever path
-/// `nexus_core::Paths::resolve()` actually resolves for that `$HOME`, and
-/// returns the fake home dir plus a guard that restores the previous
-/// `$HOME`/`$XDG_CONFIG_HOME` on drop.
+/// Sets up a fake config dir (via the `NEXUS_CONFIG_DIR` override, issue
+/// #85) with `config.toml` configured with `allowed_roots = [allowed_root]`,
+/// and returns a guard that restores the previous `NEXUS_CONFIG_DIR` on
+/// drop.
 ///
-/// This must go through `Paths::resolve()` itself rather than hardcoding
-/// `$HOME/.config/nexuscontext` - `directories::ProjectDirs` (what
-/// `Paths::resolve()` uses) honors `$XDG_CONFIG_HOME` over `$HOME` on
-/// Linux when set (as some CI runners do), and uses an entirely different
-/// layout on macOS (`~/Library/Application Support`, not `~/.config`).
-/// Hardcoding the Linux path silently no-ops the whole test on both: the
-/// fake config is never found, `allowed_roots` falls back to "unrestricted"
-/// (its documented behavior for an absent/empty config), and every
-/// "must be rejected" assertion below fails as "the call succeeded".
+/// Works identically on every platform: `NEXUS_CONFIG_DIR` is a plain env
+/// var read in `Paths::resolve()`, not routed through the OS-specific
+/// `directories` crate the way `$HOME`/`$XDG_CONFIG_HOME` redirection used
+/// to be.
 struct FakeHome {
-    prev_home: Option<std::ffi::OsString>,
-    prev_xdg_config_home: Option<std::ffi::OsString>,
+    prev_config_dir: Option<std::ffi::OsString>,
     _dir: PathBuf,
 }
 
 impl Drop for FakeHome {
     fn drop(&mut self) {
-        match &self.prev_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match &self.prev_xdg_config_home {
-            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        match &self.prev_config_dir {
+            Some(v) => std::env::set_var("NEXUS_CONFIG_DIR", v),
+            None => std::env::remove_var("NEXUS_CONFIG_DIR"),
         }
     }
 }
 
 fn setup_fake_home(label: &str, allowed_root: &Path) -> FakeHome {
-    let home = scratch_dir(&format!("home-{label}"));
-    std::fs::create_dir_all(&home).unwrap();
+    let config_dir = scratch_dir(&format!("home-{label}"));
+    std::fs::create_dir_all(&config_dir).unwrap();
 
-    let prev_home = std::env::var_os("HOME");
-    let prev_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
-    std::env::set_var("HOME", &home);
-    // A stray XDG_CONFIG_HOME from the outer environment would otherwise
-    // keep pointing at the real config dir even after $HOME is redirected.
-    std::env::remove_var("XDG_CONFIG_HOME");
+    let prev_config_dir = std::env::var_os("NEXUS_CONFIG_DIR");
+    std::env::set_var("NEXUS_CONFIG_DIR", &config_dir);
 
     let config_file = nexus_core::Paths::resolve().config_file();
     std::fs::create_dir_all(config_file.parent().unwrap()).unwrap();
@@ -117,9 +99,8 @@ fn setup_fake_home(label: &str, allowed_root: &Path) -> FakeHome {
     std::fs::write(&config_file, config_toml).unwrap();
 
     FakeHome {
-        prev_home,
-        prev_xdg_config_home,
-        _dir: home,
+        prev_config_dir,
+        _dir: config_dir,
     }
 }
 
