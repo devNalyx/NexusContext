@@ -144,6 +144,47 @@ around this scenario rather than leaving it implicit in the generic
 manipulated agent might be steered toward), and one confirming
 `search_code` enforces the same boundary, not just file reads.
 
+## Update (2026-08-27): investigated, but did not extend, Windows CI coverage (#83)
+
+Flagged by #78's independent review: `path_security.rs` is entirely
+`#[cfg(unix)]`-gated, so none of it runs on the `test-windows` CI job. Two
+questions worth separating, since it's easy to conflate them:
+
+**Is symlink creation itself the blocker on Windows CI?** No, or at least
+not anymore. Probed directly: a throwaway `#[cfg(windows)]` test calling
+`std::os::windows::fs::symlink_file` was pushed and run on this repo's own
+`test-windows` job (`windows-latest` GitHub Actions runner) - it succeeded
+without elevation or a Developer Mode step. Removed again once the answer
+was confirmed; the finding is what's kept, not the throwaway test.
+
+**Is that actually why the file is Unix-only?** No - and this is the real
+finding. Every test in `path_security.rs`, symlink-specific or not, depends
+on `setup_fake_home`/`FakeHome` redirecting `$HOME`/`$XDG_CONFIG_HOME` so
+`nexus_core::Paths::resolve()` picks up a scratch `config.toml` with a
+controlled `allowed_roots`. That only works because `directories::
+ProjectDirs`'s Unix backends resolve through those env vars. Its Windows
+backend goes through the Win32 known-folder API
+(`SHGetKnownFolderPath`), which no environment variable a test process sets
+can redirect - and there is no other test-only override hook for
+`config_dir` anywhere in the codebase (`NEXUS_CACHE_DIR` only overrides
+`data_dir`). So the outside-root/`..`-traversal/confused-deputy cases that
+don't touch a symlink are just as blocked on Windows today as the symlink
+ones are, for a completely different reason: there is currently no way at
+all to inject `allowed_roots` into these functions in a Windows test
+process.
+
+**Decision: did not split the file or force a partial Windows subset this
+pass.** Splitting on "does this case use a symlink" would still leave every
+resulting group unable to run on Windows, since the blocker is the
+config-injection mechanism, not the symlink calls. Building a proper
+cross-platform config-injection test harness (e.g. a `Paths::resolve_from`
+variant, or a `NEXUS_CONFIG_DIR` override threaded through every call site)
+is a real, separately-scoped piece of work, not a test tweak - filed as
+[issue #85](https://github.com/devNalyx/NexusContext/issues/85) rather than
+attempted inline here. Once that exists, the symlink-creation finding above
+means the symlink-specific cases can extend to Windows immediately, with no
+further platform investigation needed.
+
 ## Related
 
 [[Security-Model]] · [issue #61](https://github.com/devNalyx/NexusContext/issues/61) ·
