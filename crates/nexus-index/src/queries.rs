@@ -63,9 +63,9 @@ pub fn get_architecture(repo_path: &Path) -> Result<ArchitectureSummary> {
     })
 }
 
-pub fn detect_dead_code(repo_path: &Path) -> Result<Vec<NodeRecord>> {
+pub fn detect_dead_code(repo_path: &Path, path_prefix: Option<&str>) -> Result<Vec<NodeRecord>> {
     let repo_path = canonicalize_and_authorize(repo_path)?;
-    open_store(&repo_path)?.dead_functions()
+    open_store(&repo_path)?.dead_functions(path_prefix)
 }
 
 /// Renders a function's call neighborhood as a Graphviz DOT string - reuses

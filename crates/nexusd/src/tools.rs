@@ -207,12 +207,13 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "detect_dead_code",
-            "description": "Functions with no inbound CALLS edge (excluding main). High false-positive rate expected - see README.md. Response is capped at `limit` (default 50) with a `total_flagged` count.",
+            "description": "Functions with no inbound CALLS edge (excluding main). High false-positive rate expected - see README.md. Response is capped at `limit` (default 50) with a `total_flagged` count. Optional `path_prefix` restricts results to a subdirectory (or exact file) of the repo, e.g. \"pkg/events\" - useful on monorepos to exclude vendored/generated directories from the candidate set.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "repo_path": { "type": "string" },
-                    "limit": { "type": "integer", "default": 50 }
+                    "limit": { "type": "integer", "default": 50 },
+                    "path_prefix": { "type": "string" }
                 },
                 "required": ["repo_path"]
             }
@@ -780,7 +781,8 @@ fn detect_dead_code(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
     let limit =
         clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as u32) as usize;
-    let dead = index::detect_dead_code(&repo_path)?;
+    let path_prefix = args.get("path_prefix").and_then(|v| v.as_str());
+    let dead = index::detect_dead_code(&repo_path, path_prefix)?;
     // Unbounded on a real project this size flagged ~40% of all indexed
     // symbols as "dead" (mostly false positives - see the tool description's
     // name-resolution caveat) and blew past 99K chars in one response,

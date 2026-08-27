@@ -665,7 +665,7 @@ mod reexport_alias_tests {
         index_directory(&dir, &store).unwrap();
 
         let dead: Vec<String> = store
-            .dead_functions()
+            .dead_functions(None)
             .unwrap()
             .into_iter()
             .map(|f| f.name)
@@ -709,7 +709,7 @@ mod reexport_alias_tests {
         index_directory(&dir, &store).unwrap();
 
         let dead: Vec<String> = store
-            .dead_functions()
+            .dead_functions(None)
             .unwrap()
             .into_iter()
             .map(|f| f.name)
@@ -805,7 +805,7 @@ mod ambiguous_resolution_tests {
         // one of them is genuinely called by `main` - this is the real,
         // user-visible cost of "unresolved rather than guessed wrong".
         let dead: Vec<String> = store
-            .dead_functions()
+            .dead_functions(None)
             .unwrap()
             .into_iter()
             .map(|f| f.name)
@@ -854,7 +854,7 @@ mod ambiguous_resolution_tests {
         // module_a::foo is never called and is genuinely dead here; the
         // caller's own local foo is not (it has an inbound CALLS edge).
         let dead: Vec<String> = store
-            .dead_functions()
+            .dead_functions(None)
             .unwrap()
             .into_iter()
             .map(|f| f.name)

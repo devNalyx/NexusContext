@@ -389,7 +389,7 @@ mod real_rust_analyzer_tests {
         index_directory(&root, &store).unwrap();
 
         let dead_before: Vec<String> = store
-            .dead_functions()
+            .dead_functions(None)
             .unwrap()
             .into_iter()
             .map(|f| f.qualified_name)
@@ -415,7 +415,7 @@ mod real_rust_analyzer_tests {
         );
 
         let dead_after: Vec<String> = store
-            .dead_functions()
+            .dead_functions(None)
             .unwrap()
             .into_iter()
             .map(|f| f.qualified_name)
@@ -443,7 +443,7 @@ mod real_rust_analyzer_tests {
 
         let store = GraphStore::open(&root.join("graph.db")).unwrap();
         index_directory(&root, &store).unwrap();
-        let dead_before = store.dead_functions().unwrap().len();
+        let dead_before = store.dead_functions(None).unwrap().len();
 
         let config = LspConfig {
             enabled: true,
@@ -457,7 +457,7 @@ mod real_rust_analyzer_tests {
         assert_eq!(report.resolved_edges_added, 0);
 
         // The static index itself is completely unaffected.
-        assert_eq!(store.dead_functions().unwrap().len(), dead_before);
+        assert_eq!(store.dead_functions(None).unwrap().len(), dead_before);
 
         let _ = fs::remove_dir_all(&root);
     }

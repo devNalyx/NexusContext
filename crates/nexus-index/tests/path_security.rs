@@ -206,7 +206,9 @@ fn get_architecture_enforces_allowed_roots() {
 
 #[test]
 fn detect_dead_code_enforces_allowed_roots() {
-    assert_enforces_allowed_roots("detect_dead_code", |p| detect_dead_code(p).map(|_| ()));
+    assert_enforces_allowed_roots("detect_dead_code", |p| {
+        detect_dead_code(p, None).map(|_| ())
+    });
 }
 
 #[test]

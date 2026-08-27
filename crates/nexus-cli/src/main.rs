@@ -64,6 +64,11 @@ enum Command {
     DeadCode {
         #[arg(long, default_value = ".")]
         project: PathBuf,
+        /// Restrict results to a subdirectory (or exact file) of the repo,
+        /// e.g. "pkg/events" - excludes vendored/generated directories from
+        /// the candidate set on monorepos.
+        #[arg(long)]
+        path_prefix: Option<String>,
     },
     /// Pick the cheapest retrieval strategy for a query (file read, graph search, or keyword fallback).
     QueryPlanner {
@@ -247,9 +252,12 @@ fn main() -> Result<()> {
             let affected = index::detect_changes(&project)?;
             print_records(&affected);
         }
-        Command::DeadCode { project } => {
+        Command::DeadCode {
+            project,
+            path_prefix,
+        } => {
             index::touch_and_catchup(&project);
-            let dead = index::detect_dead_code(&project)?;
+            let dead = index::detect_dead_code(&project, path_prefix.as_deref())?;
             print_records(&dead);
         }
         Command::QueryPlanner {
