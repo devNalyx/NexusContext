@@ -151,16 +151,15 @@ Specifically:
    says this may not generalize to larger/unfamiliar repos, and no follow-up benchmark has run yet.
    Hiding a tool on unconfirmed-negative evidence is a bigger risk than the ~200-token schema cost
    of keeping it visible.
-2. **`query_graph` is the one plausible near-term "advanced/opt-in" candidate**, not because #57
-   evaluated it (it didn't — no task used raw Cypher-lite), but because it's structurally the
-   issue's own textbook example of an implementation-mechanism tool: a raw query language escape
-   hatch that `query_planner`, `search_graph`, and `trace_call_path` already cover the common
-   cases of. Moving it behind an opt-in flag (e.g. an `advanced: true` preset, mirroring the
-   existing `ALL_TOOL_NAMES`/preset-filtering mechanism already in `tools.rs`) would save ~87
-   tokens of default schema weight at negligible functional loss, since nothing in #57 or in the
-   other 11 tools' descriptions depends on `query_graph` being unconditionally present.
-   `delete_project` is a similar low-risk opt-in candidate on the same admin-op grounds the issue
-   itself names, saving another ~50 tokens.
+2. **Correction (2026-08-27): this is already done, not a pending recommendation.**
+   `FULL_EXTRA_TOOLS` in `crates/nexusd/src/tools.rs` already gates both `query_graph` and
+   `delete_project` behind `preset = "full"` (or an explicit `enabled` list) — neither ships in
+   the default `Standard` preset's 10 tools. This predates this evaluation entirely (introduced in
+   the `[tools]` config/MCP schema filtering work well before issue #60 was filed). The paragraph
+   below originally recommended this as a future move without checking whether the existing
+   preset-filtering mechanism already covered it; it did. No code change was needed here — this
+   entry is left in place, corrected, rather than deleted, so the reasoning for why these two
+   tools are the right opt-in candidates stays on record.
 3. **`query_planner` is not ready to replace or absorb the specialized tools.** It currently
    routes ~3 of 12 tools' worth of capability. Before any "collapse specialized tools behind the
    planner" change is viable, `plan_query` would need new routable strategies for at minimum
@@ -185,10 +184,21 @@ Specifically:
 - File a follow-up issue to benchmark `trace_call_path`/`search_graph`/cross-session persistence
   on a large, unfamiliar repository — the two gaps #57 explicitly left open and that this
   evaluation's recommendation depends on.
-- If/when product sign-off wants an actual surface change, start with `query_graph` and
-  `delete_project` behind an opt-in preset — smallest risk, clearest "implementation mechanism"
-  fit, zero measured usage to lose.
+- ~~If/when product sign-off wants an actual surface change, start with `query_graph` and
+  `delete_project` behind an opt-in preset~~ — already done, see the correction above.
 - Do not attempt to fold `trace_call_path` or `detect_dead_code` into `query_planner` until
   `plan_query` gains explicit routing logic for directional graph BFS and reachability queries —
   treat that as a feature addition to scope and benchmark on its own, not a byproduct of a
   surface-reduction PR.
+
+## 6. Closing #60
+
+With the correction above, every actionable item #60 asked for is now satisfied:
+`query_planner` already exists as the internal-routing mechanism the issue proposed evolving
+toward; tools are inventoried and classified core vs. advanced/internal (§3); and the one
+concrete low-risk surface-reduction move (`query_graph`/`delete_project` opt-in-only) was already
+shipped independently of this issue. What remains — folding more capability into `query_planner`,
+and benchmarking a large/unfamiliar repo before considering hiding `trace_call_path`/
+`search_graph` — is real future work, but it's speculative until that benchmark exists, not a
+known gap this issue can meaningfully stay open to track. Closing #60; the large-repo benchmark
+follow-up is tracked under #57 instead, where the rest of that evidence-gathering lives.
