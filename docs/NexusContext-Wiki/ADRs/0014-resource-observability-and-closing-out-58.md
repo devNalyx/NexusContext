@@ -1,7 +1,70 @@
 # 0014. Resource observability closes out issue #58, with two items explicitly deferred
 
-Status: Accepted
-Date: 2026-08-27
+Status: Accepted (amended)
+Date: 2026-08-27 (amended 2026-08-27)
+
+## Amendment: cooperative reindex cancellation on supersession
+
+The original decision below left "background-work cancellation for a
+superseded reindex request" as a real, deliberately-deferred gap - full
+mid-file cancellation was correctly judged too big a lift to fold into this
+pass. A dedicated follow-up traced through exactly what happens today when
+more file changes land in a project *while* its reindex is already running,
+concretely (not by inspection alone):
+
+- `nexusd::watcher::run`'s main loop is single-threaded and blocks for the
+  whole duration of its `nexus_index::index_project` call - it cannot drain
+  its own channel or notice anything while that call is in flight.
+- `notify_debouncer_mini`'s debounce thread, however, is separate and keeps
+  running the whole time: it still sends every new debounced batch onto the
+  bounded channel (`WATCHER_CHANNEL_BOUND`), which simply queues (or, once
+  full, applies backpressure) rather than dropping anything.
+- Once `index_project` returns, `run`'s loop resumes, drains everything
+  that queued up during the reindex in one pass (the same coalescing this
+  ADR's Decision section already described), computes a fresh
+  `content_signature`, and - if it differs from the signature captured
+  before the just-finished reindex - triggers exactly one follow-up
+  reindex, subject only to `MIN_REINDEX_GAP`.
+
+**Conclusion: this is the wasted-work case, not the data-loss case.**
+Nothing is silently dropped - every change made during an in-flight reindex
+is guaranteed to be captured by a follow-up pass. The real cost is that the
+in-flight pass runs to completion re-processing files that were already
+known to be stale, on a project whose reindex can take minutes, before that
+correct follow-up pass even starts.
+
+Given that, full preemptive mid-file cancellation (and the partially-
+rebuilt-`graph.db`-on-abort story it would need) was the wrong lift, exactly
+as this ADR originally suspected. What was implemented instead:
+
+- **`nexus_index::project`**: a process-wide `REINDEX_GENERATION` counter
+  and a `CURRENT_REINDEX_ROOT` (the project path currently being rebuilt,
+  set/cleared by the same `IndexingGuard` RAII that already manages
+  `INDEXING_ACTIVE`). `note_possible_supersession(path)` bumps the
+  generation only when `path` falls under the project currently in flight -
+  a change for a *different* project isn't a supersession, it just queues
+  normally behind `REINDEX_LOCK`, which was already fine.
+- **`nexus_index::ingest::index_directory_checked`**: `index_directory`'s
+  existing entry point now takes an optional `superseded: impl Fn() -> bool`
+  checkpoint, polled every 25 files (`SUPERSESSION_CHECK_INTERVAL`) in the
+  per-file walk inside `index_directory_inner` - cheap enough (one relaxed
+  atomic load) to not matter, infrequent enough not to matter either way. A
+  trip **rolls back** the in-progress transaction rather than committing a
+  partial rebuild, so the previous, complete (if stale) `graph.db` survives
+  untouched until the guaranteed follow-up pass replaces it correctly.
+- **`nexusd::watcher`**: the debounce-thread closure - the one piece of this
+  system that keeps running while the main loop is blocked in
+  `index_project` - now calls `note_possible_supersession` for every real
+  (non-noise) changed path, which is exactly what makes an in-flight pass
+  able to notice a change on the same project without needing its own
+  polling thread.
+- **`status.get`**: `indexing.superseded_count` (alongside the existing
+  `active`/`completed_count`), incremented once per bailed-out pass, in the
+  same spirit as every other zero-in-the-common-case observability counter
+  this ADR added.
+
+This closes out the one item issue #58 still had open. See
+[[Security-Model]]'s indexing-activity section for the field's shape.
 
 ## Context
 
@@ -75,27 +138,17 @@ no new metrics/telemetry framework, matching how `watch_budget` and
 
 ### Deliberately deferred, with reasons
 
-- **Background-work cancellation for a superseded reindex request.**
-  Partially, not fully, handled today: `run`'s drain loop in
-  `watcher.rs` already *coalesces* every debounced burst that arrives
-  while one reindex is in flight into a single follow-up pass (see its
-  own doc comment - this was itself a fix for a real repeated-reindex
-  incident), so redundant re-triggering from the same burst of file
-  events is already solved. What's genuinely still missing: once a
-  reindex has actually *started* (past the coalescing point,
-  `nexus_index::index_project` is running), there's no way to cancel it
-  mid-flight if a newer request supersedes it - the running rebuild
-  always runs to completion, however long that takes on a large
-  repository, before anything else touching that project can proceed
-  (`REINDEX_LOCK` blocks other callers, not just other reindexes of the
-  same project). This is a real gap, not a documented non-issue, but a
-  nontrivial one: mid-rebuild cancellation would need either a
-  cooperative cancellation check threaded through `index_directory`'s
-  per-file loop (similar in spirit to `run_cypher_query`'s progress
-  handler from ADR 0011, but through hand-written code instead of a
-  SQLite hook) or accepting a partially-rebuilt, inconsistent
-  `graph.db` on abort - real design work, not a small addition. Left as
-  a follow-up issue rather than folded into this pass.
+- ~~**Background-work cancellation for a superseded reindex request.**~~
+  Resolved by this ADR's own amendment above, dated the same day: traced
+  through concretely (not by inspection) and confirmed to be the wasted-
+  work case, not a data-loss case - a follow-up reindex reliably captures
+  every change made during an in-flight one, since the watcher's debounce
+  thread keeps queuing events on the bounded channel the whole time and the
+  main loop drains and re-triggers on resumption. What was actually
+  implemented is a lightweight cooperative checkpoint
+  (`REINDEX_GENERATION`/`note_possible_supersession`/
+  `index_directory_checked`), not full mid-file preemptive cancellation -
+  see the amendment for the concrete trace and what was built.
 - **A unified resource-governor abstraction** across all the bounds
   from ADR 0011 plus this pass's observability. Considered and rejected
   again for the same reason ADR 0011 gave: the enforcement points differ
@@ -110,9 +163,9 @@ no new metrics/telemetry framework, matching how `watch_budget` and
   bounded channel has ever hit backpressure, and whether a reindex is
   running right now - the three gaps #58's own "Observability" section
   named as missing.
-- Issue #58's checklist is now honestly satisfied except for mid-flight
-  reindex cancellation, tracked as its own follow-up rather than left
-  vague inside #58.
+- Issue #58's checklist is now fully satisfied: the original observability
+  gaps, plus (per this ADR's amendment) mid-flight reindex supersession,
+  handled cooperatively rather than via full preemptive cancellation.
 
 ## Related
 

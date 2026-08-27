@@ -279,7 +279,14 @@ fn status_get() -> Result<Value> {
         // depth (issue #58's "active indexing job state" ask).
         "indexing": {
             "active": indexing.active,
-            "completed_count": indexing.completed_count
+            "completed_count": indexing.completed_count,
+            // How many in-flight reindexes bailed out early because a newer
+            // request for the same project superseded them mid-run (issue
+            // #58's remaining gap, closed out by ADR 0014's amendment) -
+            // zero in the common case; a follow-up reindex always fires
+            // afterward and picks up the newer changes, so this is a wasted-
+            // work signal, not a data-loss one.
+            "superseded_count": indexing.superseded_count
         },
         // Resident set size of this process, for the memory half of issue
         // #58's observability ask - Linux-only for now (this whole control

@@ -49,6 +49,14 @@ pub struct IndexStats {
     /// edges LSP enrichment adds") gets real data through the same
     /// response path every other stat already flows through.
     pub lsp_enrichment: Option<crate::enrich::EnrichmentReport>,
+    /// Set when this pass bailed out early because a newer reindex request
+    /// for the same project superseded it mid-run (issue #58's cooperative-
+    /// cancellation gap, see ADR 0014) - `false` for every ordinary
+    /// completed or genuinely-failed reindex. The other fields are
+    /// meaningless when this is `true`: nothing was committed, so `nodes`/
+    /// `edges` are whatever `GraphStore::stats` happened to report against
+    /// the not-yet-rolled-back transaction, not the project's real state.
+    pub superseded: bool,
 }
 
 /// A call site whose callee wasn't found in its own file, carried past the
@@ -85,8 +93,35 @@ struct PendingCall {
 /// own file doesn't also define one, the call is left unresolved rather
 /// than guessing which one - wrong edges would be worse than missing ones.
 pub fn index_directory(root: &Path, store: &GraphStore) -> Result<IndexStats> {
+    index_directory_checked(root, store, || false)
+}
+
+/// Same as `index_directory`, plus a cooperative-cancellation checkpoint:
+/// `superseded` is polled between files in the main indexing loop (see
+/// `index_directory_inner`), and if it ever returns `true` the pass stops
+/// early and rolls back rather than committing a partial rebuild - the
+/// caller (`nexus_index::project::index_project_locked`) treats that as "a
+/// newer request already superseded this one, a follow-up pass will redo it
+/// correctly" rather than either a success or a real failure. See issue #58
+/// / ADR 0014's amendment for why this exists: a reindex on a large project
+/// can run long enough that further edits land before it finishes, and
+/// letting it run to completion anyway is pure wasted work once a follow-up
+/// pass is already guaranteed to happen.
+pub fn index_directory_checked(
+    root: &Path,
+    store: &GraphStore,
+    superseded: impl Fn() -> bool,
+) -> Result<IndexStats> {
     store.begin_immediate()?;
-    match index_directory_inner(root, store) {
+    match index_directory_inner(root, store, &superseded) {
+        Ok(stats) if stats.superseded => {
+            // Discard the partial rebuild entirely rather than committing
+            // it - a rolled-back attempt leaves the previous (stale but
+            // complete and consistent) graph.db in place until the
+            // follow-up pass replaces it, instead of a half-written one.
+            let _ = store.rollback();
+            Ok(stats)
+        }
         Ok(stats) => {
             store.commit()?;
             Ok(stats)
@@ -189,7 +224,21 @@ pub fn estimate_watch_count(root: &Path, budget: usize) -> usize {
     count
 }
 
-fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> {
+/// Checked for supersession between files in the main walk below (not
+/// inside a single file's own parsing - a file is small enough that
+/// interrupting mid-file wouldn't meaningfully speed up a bail-out, and
+/// would need its own partial-write story on top of the transaction-level
+/// rollback `index_directory_checked` already does). `N` files between
+/// checks, not every single one, since an atomic load is cheap but
+/// thousands of files still shouldn't pay thousands of redundant loads for
+/// a check that's essentially never going to be true.
+pub(crate) const SUPERSESSION_CHECK_INTERVAL: usize = 25;
+
+fn index_directory_inner(
+    root: &Path,
+    store: &GraphStore,
+    superseded: &impl Fn() -> bool,
+) -> Result<IndexStats> {
     store.clear()?;
 
     let mut files_indexed = 0;
@@ -213,6 +262,22 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
         .build();
 
     for entry in walker {
+        if files_indexed > 0 && files_indexed % SUPERSESSION_CHECK_INTERVAL == 0 && superseded() {
+            tracing::info!(
+                project = %root.display(),
+                files_indexed,
+                "reindex superseded by a newer request for the same project - bailing out early, \
+                 a follow-up pass will redo it"
+            );
+            return Ok(IndexStats {
+                files_indexed,
+                nodes: 0,
+                edges: 0,
+                lsp_enrichment: None,
+                superseded: true,
+            });
+        }
+
         let entry = match entry {
             Ok(e) => e,
             Err(_) => continue,
@@ -323,6 +388,7 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
         nodes,
         edges,
         lsp_enrichment: None,
+        superseded: false,
     })
 }
 
@@ -1110,6 +1176,104 @@ mod estimate_watch_count_tests {
     fn empty_directory_counts_as_just_the_root() {
         let dir = temp_project("empty");
         assert_eq!(estimate_watch_count(&dir, 1000), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// Regression tests for issue #58's remaining gap (see ADR 0014's
+/// amendment): `index_directory_checked`'s cooperative-cancellation
+/// checkpoint.
+#[cfg(test)]
+mod index_directory_checked_tests {
+    use super::{index_directory, index_directory_checked, SUPERSESSION_CHECK_INTERVAL};
+    use crate::graph::GraphStore;
+    use std::fs;
+
+    fn temp_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_index_directory_checked_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// More files than one checkpoint interval, so a `superseded` closure
+    /// that's always `true` is guaranteed to be observed before the walk
+    /// finishes on its own.
+    fn write_files(dir: &std::path::Path, count: usize) {
+        for i in 0..count {
+            fs::write(dir.join(format!("f{i}.rs")), format!("fn f{i}() {{}}\n")).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_pass_marked_superseded_bails_early_and_rolls_back() {
+        let dir = temp_project("bails_early");
+        write_files(&dir, SUPERSESSION_CHECK_INTERVAL * 2 + 5);
+
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        let stats = index_directory_checked(&dir, &store, || true).unwrap();
+
+        assert!(stats.superseded, "must report itself as superseded");
+        assert!(
+            stats.files_indexed < SUPERSESSION_CHECK_INTERVAL * 2 + 5,
+            "must have stopped before walking every file: {}",
+            stats.files_indexed
+        );
+        // Rolled back, not committed - nothing should have landed in the
+        // store at all (this project had never been indexed before).
+        let (nodes, edges) = store.stats().unwrap();
+        assert_eq!((nodes, edges), (0, 0));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A superseded pass must not clobber a previously-good, complete
+    /// index with a half-written one - the whole point of rolling back
+    /// instead of committing partial work.
+    #[test]
+    fn a_superseded_pass_leaves_the_previous_complete_index_untouched() {
+        let dir = temp_project("preserves_previous");
+        write_files(&dir, 3);
+
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        index_directory(&dir, &store).unwrap();
+        let (nodes_before, edges_before) = store.stats().unwrap();
+        assert!(
+            nodes_before > 0,
+            "the first real pass must have indexed something"
+        );
+
+        // A second pass over a bigger tree gets marked superseded partway
+        // through - the first pass's committed data must survive intact.
+        write_files(&dir, SUPERSESSION_CHECK_INTERVAL * 2 + 5);
+        let stats = index_directory_checked(&dir, &store, || true).unwrap();
+        assert!(stats.superseded);
+
+        let (nodes_after, edges_after) = store.stats().unwrap();
+        assert_eq!((nodes_after, edges_after), (nodes_before, edges_before));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A `superseded` closure that never returns `true` must behave
+    /// identically to the plain `index_directory` entry point - the
+    /// checkpoint must not change ordinary, uninterrupted behavior.
+    #[test]
+    fn never_superseded_behaves_like_an_ordinary_full_index() {
+        let dir = temp_project("never_superseded");
+        write_files(&dir, SUPERSESSION_CHECK_INTERVAL + 3);
+
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        let stats = index_directory_checked(&dir, &store, || false).unwrap();
+
+        assert!(!stats.superseded);
+        assert_eq!(stats.files_indexed, SUPERSESSION_CHECK_INTERVAL + 3);
+        let (nodes, _) = store.stats().unwrap();
+        assert!(nodes > 0);
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

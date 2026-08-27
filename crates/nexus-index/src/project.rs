@@ -1,5 +1,5 @@
 use crate::graph::GraphStore;
-use crate::ingest::{index_directory, IndexStats};
+use crate::ingest::{index_directory_checked, IndexStats};
 use anyhow::{bail, Result};
 use nexus_core::{project_hash, Config, Paths, ProjectEntry, Registry, WatcherConfig};
 use std::path::{Path, PathBuf};
@@ -32,19 +32,78 @@ static INDEXING_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// `INDEXING_ACTIVE` is true for on a fast project.
 static INDEXING_COMPLETED_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Monotonic generation counter for whichever reindex is currently in
+/// flight (if any). Bumped by `note_possible_supersession` whenever an
+/// incoming file-change event lands under `CURRENT_REINDEX_ROOT` while a
+/// reindex for that same project is already running - the in-flight pass
+/// samples this once at the start (see `IndexingGuard::start`) and compares
+/// against the live value at natural checkpoints in
+/// `ingest::index_directory_inner`'s per-file loop, so it can cooperatively
+/// bail out early rather than run to completion on data it already knows is
+/// stale (issue #58's remaining gap, see ADR 0014's amendment). A mismatch
+/// only ever means "superseded" - the counter never needs resetting between
+/// projects, since a stale higher generation from a previous project just
+/// means the *next* project's guard also samples that higher value as its
+/// own starting point.
+static REINDEX_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Root of the project currently being reindexed, if any - lets
+/// `note_possible_supersession` tell "a new change landed for the project
+/// already being rebuilt" (a real supersession, worth bumping
+/// `REINDEX_GENERATION`) apart from "a new change landed for some other
+/// project" (nothing to do here; `REINDEX_LOCK` already means that other
+/// project's own reindex just queues up normally, no wasted work to avoid).
+static CURRENT_REINDEX_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Lifetime count of in-flight reindexes that bailed out early because a
+/// newer request for the same project superseded them mid-run, for
+/// `status.get` observability - zero in the common case (most reindexes run
+/// to completion before anything else changes), a loud nonzero signal that
+/// this cooperative-cancellation path is actually doing something on a
+/// project whose edit bursts outlast a single reindex pass.
+static REINDEX_SUPERSEDED_COUNT: AtomicU64 = AtomicU64::new(0);
+
 /// Current indexing-activity snapshot for `status.get` (issue #58). See
 /// `INDEXING_ACTIVE`'s doc comment for why `active` is effectively a 0/1
 /// flag rather than a real queue depth.
 pub struct IndexingStatus {
     pub active: bool,
     pub completed_count: u64,
+    pub superseded_count: u64,
 }
 
 pub fn indexing_status() -> IndexingStatus {
     IndexingStatus {
         active: INDEXING_ACTIVE.load(Ordering::Relaxed),
         completed_count: INDEXING_COMPLETED_COUNT.load(Ordering::Relaxed),
+        superseded_count: REINDEX_SUPERSEDED_COUNT.load(Ordering::Relaxed),
     }
+}
+
+/// Called (from `nexusd::watcher`'s debounce callback, which runs on its own
+/// thread and keeps firing even while the main watcher loop is blocked
+/// inside a call to `index_project`) for every real, non-noise file-change
+/// path observed. If a reindex is currently running for the project that
+/// path lives under, this is a genuine supersession - bumping
+/// `REINDEX_GENERATION` lets that in-flight pass notice at its next
+/// checkpoint and bail out cooperatively instead of finishing a rebuild that
+/// a follow-up pass (triggered the normal way, once the watcher's main loop
+/// resumes draining its channel) is about to immediately redo anyway. A
+/// no-op if nothing is currently indexing, or if `path` isn't under the
+/// in-flight project's root.
+pub fn note_possible_supersession(path: &Path) {
+    let root = CURRENT_REINDEX_ROOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(root) = root.as_ref() {
+        if path.starts_with(root) {
+            REINDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+fn is_superseded(started_generation: u64) -> bool {
+    REINDEX_GENERATION.load(Ordering::Relaxed) != started_generation
 }
 
 /// Single entry point for "index this directory" used by the CLI, the MCP
@@ -77,16 +136,28 @@ pub fn index_project_deep(repo_path: &Path) -> Result<IndexStats> {
 /// hold `REINDEX_LOCK` across its own "is this still cold?" recheck instead
 /// of just around the rebuild itself - see that function's doc comment for
 /// why the recheck has to happen after the lock is held, not before.
-/// RAII guard clearing `INDEXING_ACTIVE`/bumping `INDEXING_COMPLETED_COUNT`
-/// on drop, so a panic partway through indexing (already tolerated by
-/// `REINDEX_LOCK`'s poison-recovery above) can't leave `status.get`
-/// reporting `active: true` forever.
-struct IndexingGuard;
+/// RAII guard clearing `INDEXING_ACTIVE`/bumping `INDEXING_COMPLETED_COUNT`/
+/// clearing `CURRENT_REINDEX_ROOT` on drop, so a panic partway through
+/// indexing (already tolerated by `REINDEX_LOCK`'s poison-recovery above)
+/// can't leave `status.get` reporting `active: true` forever, or leave a
+/// stale root in `CURRENT_REINDEX_ROOT` that would make a later, unrelated
+/// file change under that same path look like a supersession.
+struct IndexingGuard {
+    generation: u64,
+}
 
 impl IndexingGuard {
-    fn start() -> Self {
+    /// Snapshots `REINDEX_GENERATION` as this reindex's starting point and
+    /// publishes `repo_path` as the currently-in-flight project - both must
+    /// happen together, before any file is read, so a supersession that
+    /// lands the instant after this call is never missed.
+    fn start(repo_path: &Path) -> Self {
         INDEXING_ACTIVE.store(true, Ordering::Relaxed);
-        IndexingGuard
+        *CURRENT_REINDEX_ROOT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(repo_path.to_path_buf());
+        let generation = REINDEX_GENERATION.load(Ordering::Relaxed);
+        IndexingGuard { generation }
     }
 }
 
@@ -94,24 +165,48 @@ impl Drop for IndexingGuard {
     fn drop(&mut self) {
         INDEXING_ACTIVE.store(false, Ordering::Relaxed);
         INDEXING_COMPLETED_COUNT.fetch_add(1, Ordering::Relaxed);
+        *CURRENT_REINDEX_ROOT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
 fn index_project_locked(repo_path: &Path, deep: bool) -> Result<IndexStats> {
-    let _guard = IndexingGuard::start();
-    index_project_inner(repo_path, deep)
-}
-
-fn index_project_inner(repo_path: &Path, deep: bool) -> Result<IndexStats> {
     let repo_path = canonicalize_for_registry(repo_path)?;
     let repo_path = repo_path.as_path();
 
     let paths = Paths::resolve();
     require_path_allowed(&paths, repo_path)?;
 
+    let guard = IndexingGuard::start(repo_path);
+    index_project_inner(repo_path, deep, guard.generation, &paths)
+}
+
+/// `repo_path` is already canonicalized and allowed-root-checked by
+/// `index_project_locked` before this runs - both need to happen before
+/// `IndexingGuard::start` publishes `CURRENT_REINDEX_ROOT`, so they can't be
+/// folded back in here.
+fn index_project_inner(
+    repo_path: &Path,
+    deep: bool,
+    generation: u64,
+    paths: &Paths,
+) -> Result<IndexStats> {
     let db_path = graph_db_path(repo_path);
     let store = GraphStore::open(&db_path)?;
-    let mut stats = index_directory(repo_path, &store)?;
+    let mut stats = index_directory_checked(repo_path, &store, || is_superseded(generation))?;
+
+    if stats.superseded {
+        // A newer request for this same project landed while this pass was
+        // still running - the partial work was already rolled back (see
+        // `index_directory_checked`), and a follow-up reindex triggered by
+        // that newer request will redo it correctly once it gets its turn
+        // at `REINDEX_LOCK`. Recording this as a completed reindex
+        // (`record_indexed`) would be wrong - it did not actually capture
+        // the project's current state.
+        REINDEX_SUPERSEDED_COUNT.fetch_add(1, Ordering::Relaxed);
+        return Ok(stats);
+    }
 
     if deep {
         let lsp_config = Config::load(&paths.config_file())
@@ -124,7 +219,7 @@ fn index_project_inner(repo_path: &Path, deep: bool) -> Result<IndexStats> {
         ));
     }
 
-    record_indexed(&paths, repo_path, stats.nodes, stats.edges)?;
+    record_indexed(paths, repo_path, stats.nodes, stats.edges)?;
     Ok(stats)
 }
 
@@ -407,6 +502,7 @@ pub fn import_project(repo_path: &Path) -> Result<IndexStats> {
         nodes,
         edges,
         lsp_enrichment: None,
+        superseded: false,
     })
 }
 
@@ -715,6 +811,190 @@ mod decode_bounded_tests {
             fs::read(&out).unwrap(),
             b"pre-existing graph.db content, must survive"
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// Regression tests for issue #58's remaining gap (see ADR 0014's
+/// amendment): the `REINDEX_GENERATION`/`CURRENT_REINDEX_ROOT` bookkeeping
+/// that `note_possible_supersession`, `IndexingGuard`, and `is_superseded`
+/// use to let an in-flight reindex notice it's been superseded.
+#[cfg(test)]
+mod supersession_tests {
+    use super::*;
+    use std::fs;
+
+    /// Serializes every test in this module against the process-wide
+    /// `REINDEX_GENERATION`/`CURRENT_REINDEX_ROOT`/`REINDEX_SUPERSEDED_COUNT`
+    /// statics, same pattern as `nexusd::watcher`'s
+    /// `depth_counters_test_lock` - without it, cargo test's default
+    /// multi-threaded runner could interleave two tests' generation bumps
+    /// and produce a flaky assertion.
+    fn statics_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn reset_statics() {
+        REINDEX_GENERATION.store(0, Ordering::Relaxed);
+        REINDEX_SUPERSEDED_COUNT.store(0, Ordering::Relaxed);
+        *CURRENT_REINDEX_ROOT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_supersession_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_change_under_the_in_flight_root_bumps_the_generation() {
+        let _guard = statics_test_lock();
+        reset_statics();
+        let dir = temp_dir("under_root");
+
+        let guard = IndexingGuard::start(&dir);
+        assert!(!is_superseded(guard.generation));
+
+        note_possible_supersession(&dir.join("src/lib.rs"));
+        assert!(is_superseded(guard.generation));
+
+        drop(guard);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_change_under_a_different_root_does_not_bump_the_generation() {
+        let _guard = statics_test_lock();
+        reset_statics();
+        let dir = temp_dir("unrelated_root");
+        let other = temp_dir("unrelated_other");
+
+        let guard = IndexingGuard::start(&dir);
+        note_possible_supersession(&other.join("src/lib.rs"));
+        assert!(!is_superseded(guard.generation));
+
+        drop(guard);
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn a_change_with_nothing_currently_indexing_is_a_no_op() {
+        let _guard = statics_test_lock();
+        reset_statics();
+        let dir = temp_dir("nothing_indexing");
+
+        // No IndexingGuard alive - CURRENT_REINDEX_ROOT is None.
+        note_possible_supersession(&dir.join("src/lib.rs"));
+        assert_eq!(REINDEX_GENERATION.load(Ordering::Relaxed), 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `IndexingGuard::drop` must clear `CURRENT_REINDEX_ROOT` even on a
+    /// panic mid-reindex (the same poison-tolerant spirit as `REINDEX_LOCK`
+    /// itself) - otherwise a stale root left behind would make an unrelated
+    /// later change under that same path look like a supersession of
+    /// nothing.
+    #[test]
+    fn dropping_the_guard_clears_the_current_reindex_root() {
+        let _guard = statics_test_lock();
+        reset_statics();
+        let dir = temp_dir("guard_drop_clears_root");
+
+        {
+            let _indexing = IndexingGuard::start(&dir);
+            assert!(CURRENT_REINDEX_ROOT
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|r| r == &dir));
+        }
+        assert!(CURRENT_REINDEX_ROOT.lock().unwrap().is_none());
+
+        // With nothing in flight any more, a change under the same path
+        // must no longer count as a supersession of anything.
+        note_possible_supersession(&dir.join("src/lib.rs"));
+        assert_eq!(REINDEX_SUPERSEDED_COUNT.load(Ordering::Relaxed), 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// End-to-end through the real `index_project_locked` entry point,
+    /// mirroring the real production shape: a second thread (standing in
+    /// for `nexusd::watcher`'s debounce-thread closure) calls
+    /// `note_possible_supersession` for the same project *while*
+    /// `index_project_locked`'s file loop is still running on the main
+    /// thread. The in-flight pass must notice at its next checkpoint,
+    /// report `superseded: true`, and bail out without walking every file.
+    ///
+    /// This used to spawn a second thread that polled `CURRENT_REINDEX_ROOT`
+    /// with a timeout, racing real wall-clock indexing time - flaky on
+    /// CI's macOS/Windows runners in two different ways as this test's own
+    /// git history shows: first because a small file count could finish
+    /// indexing before the racer thread was even scheduled for its first
+    /// poll (closing the window before it ever fired), then, after widening
+    /// the file count to fix that, because writing thousands of individual
+    /// files turned out to be pathologically slow on those same runners
+    /// (100+ seconds, most likely antivirus-scanned file creation on
+    /// Windows) - slow enough that the racer's own poll loop no longer
+    /// reliably kept up either, and CI got both slower *and* still flaky.
+    ///
+    /// Rewritten to be fully deterministic instead: `IndexingGuard::start`
+    /// and `note_possible_supersession` are the exact same production
+    /// functions the real race exercises, called synchronously in the same
+    /// thread with no timing dependency at all, followed by a direct call
+    /// to `index_project_inner` (`index_project_locked`'s real body, minus
+    /// the canonicalize/`allowed_roots` checks that happen just before it -
+    /// already covered by other tests) with the supersession already in
+    /// place before the very first file is walked. Same real production
+    /// functions under test end to end, including
+    /// `REINDEX_SUPERSEDED_COUNT`'s own increment, zero flakiness, and runs
+    /// in milliseconds instead of over a hundred seconds.
+    #[test]
+    fn index_project_locked_reports_supersession_when_raced_by_a_new_change() {
+        let _guard = statics_test_lock();
+        reset_statics();
+        let dir = temp_dir("end_to_end_locked");
+        let file_count = crate::ingest::SUPERSESSION_CHECK_INTERVAL * 4;
+        for i in 0..file_count {
+            fs::write(dir.join(format!("f{i}.rs")), format!("fn f{i}() {{}}\n")).unwrap();
+        }
+
+        let guard = IndexingGuard::start(&dir);
+        // Stand in for the watcher's debounce-thread closure firing mid-run
+        // - here, deterministically, before index_project_inner below even
+        // starts walking files.
+        note_possible_supersession(&dir.join("f0.rs"));
+        assert!(
+            is_superseded(guard.generation),
+            "sanity check: the supersession above must already be visible"
+        );
+
+        let before = REINDEX_SUPERSEDED_COUNT.load(Ordering::Relaxed);
+        let stats = index_project_inner(&dir, false, guard.generation, &Paths::resolve()).unwrap();
+        drop(guard);
+
+        assert!(
+            stats.superseded,
+            "a change landing before the walk even starts must still be observed as a \
+             supersession at the first checkpoint"
+        );
+        assert!(
+            stats.files_indexed < file_count,
+            "a superseded pass must bail out at its next checkpoint, not walk every file - \
+             indexed {} of {file_count}",
+            stats.files_indexed
+        );
+        assert_eq!(REINDEX_SUPERSEDED_COUNT.load(Ordering::Relaxed), before + 1);
 
         let _ = fs::remove_dir_all(&dir);
     }
