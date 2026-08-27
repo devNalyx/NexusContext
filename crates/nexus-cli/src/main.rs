@@ -210,7 +210,23 @@ fn main() -> Result<()> {
                      files won't resolve cross-file; see README)"
                 );
             }
-            print_records(&results);
+            // Issue #59: tag each row with the provenance of the edge that
+            // reached it, so the CLI (not just the MCP JSON response) makes
+            // heuristic vs. LSP-verified calls visible.
+            for traced in &results {
+                let (provenance, confidence) = match traced.edge_kind {
+                    nexus_index::EdgeKind::CallsResolved => ("lsp", "exact"),
+                    _ => ("tree-sitter", "heuristic"),
+                };
+                println!(
+                    "{:<9} {:<30} {}:{}-{}  [{provenance}, {confidence}]",
+                    format!("{:?}", traced.node.kind),
+                    traced.node.name,
+                    traced.node.file_path,
+                    traced.node.start_line,
+                    traced.node.end_line
+                );
+            }
         }
         Command::Architecture { project } => {
             index::touch_and_catchup(&project);

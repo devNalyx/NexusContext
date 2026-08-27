@@ -19,7 +19,7 @@ deliberate, tested property rather than an assumption.
 |---|---|
 | `search_graph` | Structural search over indexed symbols by name substring — functions/types and markdown heading `Section`s. |
 | `search_code` | Grep-like full-text search over indexed file content via SQLite FTS5 — code and markdown alike, matched as a literal phrase. |
-| `trace_call_path` | BFS over the `CALLS` graph (unioned with `CALLS_RESOLVED` when a `deep` reindex has run) to find callers/callees. Name-based resolution, not import-aware — see [[Known-Limitations]]. Response is capped; check `total_nodes` vs. `shown`. `depth` is capped independently of `limit`, see [[Security-Model]]. |
+| `trace_call_path` | BFS over the `CALLS` graph (unioned with `CALLS_RESOLVED` when a `deep` reindex has run) to find callers/callees. Name-based resolution, not import-aware — see [[Known-Limitations]]. Response is capped; check `total_nodes` vs. `shown`. `depth` is capped independently of `limit`, see [[Security-Model]]. **Each returned node also carries `provenance`/`resolution`/`confidence`** (issue #59), tagged from whichever edge first reached that node in the BFS: a plain `CALLS` hop reports `{"provenance": "tree-sitter", "resolution": "name-match", "confidence": "heuristic"}`; a `CALLS_RESOLVED` hop (only present after a `deep` reindex with LSP enrichment — see #10) reports `{"provenance": "lsp", "resolution": "semantic-symbol", "confidence": "exact"}`. Treat `heuristic` hops as plausible-but-unverified and `exact` hops as backed by rust-analyzer's semantic symbol resolution. |
 
 ## Quality & change
 

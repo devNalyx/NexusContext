@@ -150,7 +150,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "trace_call_path",
-            "description": "BFS over the CALLS graph to find callers/callees of a function. Resolution is name-based, not import-aware - see README.md for per-language call-graph quality and resolution caveats. Response is capped; check `total_nodes` vs `shown` for truncation.",
+            "description": "BFS over the CALLS graph to find callers/callees of a function. Resolution is name-based, not import-aware - see README.md for per-language call-graph quality and resolution caveats. Each returned node carries `provenance`/`resolution`/`confidence` fields: `tree-sitter`/`name-match`/`heuristic` for a plain name-based CALLS edge, or `lsp`/`semantic-symbol`/`exact` where LSP enrichment (rust-analyzer) verified the reference. Response is capped; check `total_nodes` vs `shown` for truncation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -457,6 +457,54 @@ fn records_to_json(records: &[NodeRecord]) -> Value {
         .collect::<Vec<_>>())
 }
 
+/// Per-node provenance/confidence schema for issue #59: distinguishes a
+/// `CALLS` edge (tree-sitter's static, name-based pass - ambiguous across
+/// files/overloads) from a `CALLS_RESOLVED` edge (issue #10's LSP
+/// enrichment, backed by rust-analyzer's semantic symbol resolution) so an
+/// MCP caller doesn't have to treat every hop in a `trace_call_path` result
+/// as equally certain. See `EdgeKind::CallsResolved` in `graph.rs` and
+/// `GraphStore::trace_calls`'s doc comment for how a node is tagged when it
+/// could in principle be reached via both kinds.
+fn edge_kind_provenance(kind: index::EdgeKind) -> Value {
+    match kind {
+        index::EdgeKind::CallsResolved => json!({
+            "provenance": "lsp",
+            "resolution": "semantic-symbol",
+            "confidence": "exact",
+        }),
+        // Calls, and any other non-resolved kind reaching this path -
+        // conservative default rather than a panic on a future EdgeKind
+        // variant this function hasn't been told about yet.
+        _ => json!({
+            "provenance": "tree-sitter",
+            "resolution": "name-match",
+            "confidence": "heuristic",
+        }),
+    }
+}
+
+fn traced_nodes_to_json(traced: &[index::TracedNode]) -> Value {
+    json!(traced
+        .iter()
+        .map(|t| {
+            let mut obj = json!({
+                "kind": format!("{:?}", t.node.kind),
+                "name": t.node.name,
+                "qualified_name": t.node.qualified_name,
+                "file": t.node.file_path,
+                "start_line": t.node.start_line,
+                "end_line": t.node.end_line,
+            });
+            if let Value::Object(ref mut map) = obj {
+                if let Value::Object(prov) = edge_kind_provenance(t.edge_kind) {
+                    map.extend(prov);
+                }
+            }
+            obj
+        })
+        .collect::<Vec<_>>())
+}
+
 fn index_repository(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
     // #10: opt-in only, and only via this explicit argument - the
@@ -523,7 +571,7 @@ fn trace_call_path(args: Value) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
         "total_nodes": total,
         "shown": shown.len(),
-        "nodes": records_to_json(&shown)
+        "nodes": traced_nodes_to_json(&shown)
     }))?)
 }
 
@@ -923,6 +971,65 @@ mod tests {
     fn clamp_depth_caps_requests_above_the_max() {
         assert_eq!(clamp_depth(SERVER_MAX_DEPTH + 1), SERVER_MAX_DEPTH);
         assert_eq!(clamp_depth(100_000), SERVER_MAX_DEPTH);
+    }
+
+    /// Regression tests for issue #59: `trace_call_path`'s JSON response
+    /// must distinguish a name-based (`CALLS`) hop from an LSP-verified
+    /// (`CALLS_RESOLVED`) one. These exercise `edge_kind_provenance` and
+    /// `traced_nodes_to_json` directly against hand-built `TracedNode`s
+    /// rather than through a real indexed project + LSP server - the same
+    /// "don't require a real backend for a response-shape test" approach
+    /// `enrich.rs`'s own tests use for anything that isn't specifically
+    /// testing real rust-analyzer output (those are `#[ignore]`d and gated
+    /// on `NEXUS_TEST_RUST_ANALYZER`/PATH detection).
+    fn traced_function(name: &str, edge_kind: index::EdgeKind) -> index::TracedNode {
+        index::TracedNode {
+            node: NodeRecord {
+                id: 1,
+                kind: index::NodeKind::Function,
+                name: name.to_string(),
+                qualified_name: format!("a.rs::{name}#1"),
+                file_path: "a.rs".to_string(),
+                start_line: 1,
+                end_line: 2,
+            },
+            edge_kind,
+        }
+    }
+
+    #[test]
+    fn a_heuristic_calls_edge_reports_tree_sitter_name_match_confidence() {
+        let provenance = edge_kind_provenance(index::EdgeKind::Calls);
+        assert_eq!(provenance["provenance"], "tree-sitter");
+        assert_eq!(provenance["resolution"], "name-match");
+        assert_eq!(provenance["confidence"], "heuristic");
+    }
+
+    #[test]
+    fn an_lsp_resolved_edge_reports_exact_semantic_confidence() {
+        let provenance = edge_kind_provenance(index::EdgeKind::CallsResolved);
+        assert_eq!(provenance["provenance"], "lsp");
+        assert_eq!(provenance["resolution"], "semantic-symbol");
+        assert_eq!(provenance["confidence"], "exact");
+    }
+
+    #[test]
+    fn traced_nodes_to_json_carries_per_node_provenance_through_to_the_response() {
+        let traced = vec![
+            traced_function("heuristic_callee", index::EdgeKind::Calls),
+            traced_function("resolved_callee", index::EdgeKind::CallsResolved),
+        ];
+        let json = traced_nodes_to_json(&traced);
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        assert_eq!(arr[0]["name"], "heuristic_callee");
+        assert_eq!(arr[0]["confidence"], "heuristic");
+        assert_eq!(arr[0]["provenance"], "tree-sitter");
+
+        assert_eq!(arr[1]["name"], "resolved_callee");
+        assert_eq!(arr[1]["confidence"], "exact");
+        assert_eq!(arr[1]["provenance"], "lsp");
     }
 
     #[test]

@@ -71,6 +71,13 @@ impl EdgeKind {
             EdgeKind::CallsResolved => "CALLS_RESOLVED",
         }
     }
+
+    fn from_edges_kind_str(s: &str) -> Self {
+        match s {
+            "CALLS_RESOLVED" => EdgeKind::CallsResolved,
+            _ => EdgeKind::Calls,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +95,15 @@ pub struct NodeRecord {
     pub file_path: String,
     pub start_line: u32,
     pub end_line: u32,
+}
+
+/// A node reached by `trace_calls`, tagged with which edge kind first
+/// reached it during the BFS - see `trace_calls`'s doc comment for why
+/// "first reached" (not "all kinds that link to it") is the rule.
+#[derive(Debug, Clone)]
+pub struct TracedNode {
+    pub node: NodeRecord,
+    pub edge_kind: EdgeKind,
 }
 
 #[derive(Debug, Clone)]
@@ -604,12 +620,25 @@ impl GraphStore {
     }
 
     /// `trace_call_path`-equivalent: BFS over CALLS edges up to `max_depth`.
+    ///
+    /// Each returned node is tagged with the `EdgeKind` of the edge that
+    /// *first* reached it during the BFS (issue #59). A node can in
+    /// principle be reachable via both a `Calls` (tree-sitter, name-based)
+    /// edge and a `CallsResolved` (LSP-verified) edge from different
+    /// callers/layers - rather than reporting every kind that ever links to
+    /// it (which would turn one node into a set of provenance tags and
+    /// complicate every consumer), this reports the kind of whichever edge
+    /// the standard BFS visited it through first. Since a node is only ever
+    /// enqueued once (the existing `visited` dedup), "first reached" and
+    /// "the edge that produced this BFS result" are the same edge - so this
+    /// adds provenance without changing which nodes come back or in what
+    /// count, only how each one is labeled.
     pub fn trace_calls(
         &self,
         function_name: &str,
         direction: Direction,
         max_depth: u32,
-    ) -> Result<Vec<NodeRecord>> {
+    ) -> Result<Vec<TracedNode>> {
         let start_ids: Vec<i64> = {
             let mut stmt = self
                 .conn
@@ -621,6 +650,8 @@ impl GraphStore {
         let mut visited: std::collections::HashSet<i64> = start_ids.iter().copied().collect();
         let mut frontier = start_ids;
         let mut result_ids = Vec::new();
+        let mut result_kinds: std::collections::HashMap<i64, EdgeKind> =
+            std::collections::HashMap::new();
 
         // One batched IN (...) query per BFS level, not one query per
         // frontier node - matches the pattern `subgraph_edges` already uses.
@@ -655,23 +686,28 @@ impl GraphStore {
                 Direction::Inbound => "src_id",
             };
             // Unions CALLS_RESOLVED alongside the static CALLS edges - see
-            // EdgeKind::CallsResolved. Issue #10.
+            // EdgeKind::CallsResolved. Issue #10. The edge's own `kind` is
+            // also selected now (issue #59) so each newly-visited neighbor
+            // can be tagged with the provenance of the edge that found it.
             let sql = format!(
-                "SELECT {select} FROM edges WHERE kind IN ('CALLS', 'CALLS_RESOLVED') AND {column} IN ({placeholders})"
+                "SELECT {select}, kind FROM edges WHERE kind IN ('CALLS', 'CALLS_RESOLVED') AND {column} IN ({placeholders})"
             );
             let mut stmt = self.conn.prepare(&sql)?;
             let params: Vec<&dyn rusqlite::ToSql> = frontier
                 .iter()
                 .map(|id| id as &dyn rusqlite::ToSql)
                 .collect();
-            let rows = stmt.query_map(params.as_slice(), |row| row.get::<_, i64>(0))?;
+            let rows = stmt.query_map(params.as_slice(), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
 
             let mut next_frontier = Vec::new();
-            for neighbor in rows {
-                let neighbor = neighbor?;
+            for row in rows {
+                let (neighbor, kind_str) = row?;
                 if visited.insert(neighbor) {
                     next_frontier.push(neighbor);
                     result_ids.push(neighbor);
+                    result_kinds.insert(neighbor, EdgeKind::from_edges_kind_str(&kind_str));
                 }
             }
             frontier = next_frontier;
@@ -692,18 +728,35 @@ impl GraphStore {
             .map(|id| id as &dyn rusqlite::ToSql)
             .collect();
         let rows = stmt.query_map(params.as_slice(), |row| {
-            Ok(NodeRecord {
-                id: row.get(0)?,
-                kind: NodeKind::from_str(&row.get::<_, String>(1)?),
-                name: row.get(2)?,
-                qualified_name: row.get(3)?,
-                file_path: row.get(4)?,
-                start_line: row.get(5)?,
-                end_line: row.get(6)?,
-            })
+            let id: i64 = row.get(0)?;
+            Ok((
+                id,
+                NodeRecord {
+                    id,
+                    kind: NodeKind::from_str(&row.get::<_, String>(1)?),
+                    name: row.get(2)?,
+                    qualified_name: row.get(3)?,
+                    file_path: row.get(4)?,
+                    start_line: row.get(5)?,
+                    end_line: row.get(6)?,
+                },
+            ))
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
+            .map_err(anyhow::Error::from)
+            .map(|nodes: Vec<(i64, NodeRecord)>| {
+                nodes
+                    .into_iter()
+                    .map(|(id, node)| TracedNode {
+                        node,
+                        // Defaults to Calls if somehow missing (shouldn't
+                        // happen: every id in result_ids came from
+                        // result_kinds in the same loop iteration) - a safe,
+                        // conservative fallback rather than a panic.
+                        edge_kind: result_kinds.get(&id).copied().unwrap_or(EdgeKind::Calls),
+                    })
+                    .collect()
+            })
     }
 }
 
@@ -923,7 +976,7 @@ mod trace_calls_tests {
 
         let result = store.trace_calls("root", Direction::Outbound, 3).unwrap();
         let names: std::collections::HashSet<&str> =
-            result.iter().map(|n| n.name.as_str()).collect();
+            result.iter().map(|n| n.node.name.as_str()).collect();
         assert_eq!(names, ["a", "b", "c", "leaf"].into_iter().collect());
         assert_eq!(
             result.len(),
@@ -947,7 +1000,7 @@ mod trace_calls_tests {
 
         let result = store.trace_calls("target", Direction::Inbound, 3).unwrap();
         let names: std::collections::HashSet<&str> =
-            result.iter().map(|n| n.name.as_str()).collect();
+            result.iter().map(|n| n.node.name.as_str()).collect();
         assert_eq!(names, ["a", "b", "c"].into_iter().collect());
     }
 
@@ -962,11 +1015,46 @@ mod trace_calls_tests {
 
         let one_level = store.trace_calls("a", Direction::Outbound, 1).unwrap();
         assert_eq!(one_level.len(), 1);
-        assert_eq!(one_level[0].name, "b");
+        assert_eq!(one_level[0].node.name, "b");
 
         let two_levels = store.trace_calls("a", Direction::Outbound, 2).unwrap();
         let names: std::collections::HashSet<&str> =
-            two_levels.iter().map(|n| n.name.as_str()).collect();
+            two_levels.iter().map(|n| n.node.name.as_str()).collect();
         assert_eq!(names, ["b", "c"].into_iter().collect());
+    }
+
+    /// Regression tests for issue #59: a `TracedNode` must carry the kind of
+    /// the edge that reached it, since a plain `CALLS` (tree-sitter,
+    /// name-based) hop is far less trustworthy than a `CALLS_RESOLVED`
+    /// (LSP-verified, issue #10) one.
+    #[test]
+    fn a_node_reached_only_via_calls_is_tagged_heuristic() {
+        let store = temp_store("provenance_heuristic");
+        let a = func(&store, "a");
+        let b = func(&store, "b");
+        store.insert_edge(a, b, EdgeKind::Calls).unwrap();
+
+        let result = store.trace_calls("a", Direction::Outbound, 1).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].node.name, "b");
+        assert_eq!(result[0].edge_kind, EdgeKind::Calls);
+    }
+
+    #[test]
+    fn a_node_reached_via_calls_resolved_is_tagged_lsp_verified() {
+        let store = temp_store("provenance_resolved");
+        let a = func(&store, "a");
+        let b = func(&store, "b");
+        // No plain `Calls` edge here at all - this call was only ever found
+        // by LSP enrichment (e.g. a cross-file reference the static,
+        // same-file-only pass missed), matching how `enrich_with_lsp` only
+        // ever *adds* `CallsResolved` edges alongside (or instead of, when
+        // the static pass found nothing) `Calls` edges.
+        store.insert_edge(a, b, EdgeKind::CallsResolved).unwrap();
+
+        let result = store.trace_calls("a", Direction::Outbound, 1).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].node.name, "b");
+        assert_eq!(result[0].edge_kind, EdgeKind::CallsResolved);
     }
 }
