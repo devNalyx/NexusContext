@@ -107,7 +107,11 @@ impl Language {
     /// tools like GitHub's code navigation follow.
     fn tags_query(&self) -> String {
         match self {
-            Language::Rust => tree_sitter_rust::TAGS_QUERY.to_string(),
+            Language::Rust => format!(
+                "{}\n{}",
+                tree_sitter_rust::TAGS_QUERY,
+                RUST_SCOPED_CALL_QUERY
+            ),
             Language::Python => tree_sitter_python::TAGS_QUERY.to_string(),
             Language::JavaScript => tree_sitter_javascript::TAGS_QUERY.to_string(),
             Language::TypeScript | Language::Tsx => format!(
@@ -130,6 +134,26 @@ impl Language {
             .map_err(|err| anyhow!("failed to build tags config for {self:?}: {err}"))
     }
 }
+
+/// `tree-sitter-rust`'s bundled tags.scm only captures bare-identifier and
+/// `self.method()`-style calls as `@reference.call` (see its `queries/
+/// tags.scm`) - a path-qualified call like `module::function()` or
+/// `nexus_index::run_cypher_query(...)` uses a `scoped_identifier` node as
+/// the call's `function`, which that upstream query doesn't match at all,
+/// so the call site is invisible to the graph entirely (not just
+/// unresolved - never even recorded as a pending call). That's a real gap
+/// independent of issue #67's re-export-alias bug, but it's exactly what
+/// made #67's own real-world case (`nexus_index::run_cypher_query(...)` in
+/// `nexusd`/`nexus-cli`) produce a false dead-code positive even after
+/// alias resolution was added: the alias could never be reached because no
+/// call edge existed to resolve in the first place. This extra pattern
+/// captures just the final path segment (`run_cypher_query`, not
+/// `nexus_index::run_cypher_query`) as the call name, matching the
+/// unqualified-name convention every other call site in this graph already
+/// uses.
+const RUST_SCOPED_CALL_QUERY: &str = "(call_expression
+    function: (scoped_identifier
+        name: (identifier) @name)) @reference.call";
 
 /// `tree-sitter-c-sharp` 0.23.5's bundled tags.scm (the latest published
 /// version - there's no newer one to pick up a fix) has one malformed
