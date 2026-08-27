@@ -531,7 +531,13 @@ VmData:\t   10000 kB
 
     /// Sanity check against the real thing on the CI/dev Linux box this
     /// runs on - this process definitely has *some* resident memory.
+    /// `read_rss_kb` itself is `#[cfg(unix)]` (this whole module is), but
+    /// `/proc` only exists on Linux - on macOS this correctly returns
+    /// `None` rather than reading anything, so this test (which asserts
+    /// the Linux-only success path) is `target_os = "linux"`-gated too,
+    /// not just `cfg(unix)`.
     #[test]
+    #[cfg(target_os = "linux")]
     fn read_rss_kb_reads_a_plausible_value_from_the_real_proc_self() {
         let rss = read_rss_kb().expect("expected /proc/self/status to be readable on Linux CI");
         assert!(rss > 0);
