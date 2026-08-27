@@ -942,7 +942,21 @@ mod supersession_tests {
         let _guard = statics_test_lock();
         reset_statics();
         let dir = temp_dir("end_to_end_locked");
-        for i in 0..(crate::ingest::SUPERSESSION_CHECK_INTERVAL * 4) {
+        // `CURRENT_REINDEX_ROOT` is only `Some(dir)` for the actual wall-
+        // clock duration of `index_project_locked`'s file walk - on a fast
+        // or lightly-loaded machine, a small handful of one-line files can
+        // finish indexing before the racer thread below is even scheduled
+        // for its first poll, closing the window before it ever sees
+        // `is_current == true`. That's exactly what caused this test to be
+        // flaky on CI's macOS/Windows runners (a single-poll miss then
+        // spins uselessly through the rest of its budget). Writing enough
+        // files - each parsed by tree-sitter, not just written to disk -
+        // widens that window comfortably past realistic scheduling latency
+        // without ballooning the test's own runtime (tree-sitter parsing a
+        // few thousand trivial one-line files is still well under a
+        // second).
+        let file_count = crate::ingest::SUPERSESSION_CHECK_INTERVAL * 200;
+        for i in 0..file_count {
             fs::write(dir.join(format!("f{i}.rs")), format!("fn f{i}() {{}}\n")).unwrap();
         }
 
@@ -950,8 +964,12 @@ mod supersession_tests {
         let racer = std::thread::spawn(move || {
             // Wait until this project is actually the one in flight, then
             // fire a superseding change for it - polling rather than a
-            // fixed sleep so this isn't flaky under load.
-            for _ in 0..500 {
+            // fixed sleep so this isn't flaky under load. Budget is
+            // generous (10s) since the failure mode isn't "polling is too
+            // slow", it's "the window closed before the first poll" - see
+            // the file_count comment above for the actual fix; this is
+            // just a sane upper bound on top of it.
+            for _ in 0..10_000 {
                 let is_current = CURRENT_REINDEX_ROOT
                     .lock()
                     .unwrap()
