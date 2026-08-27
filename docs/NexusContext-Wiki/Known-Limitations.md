@@ -13,6 +13,18 @@ same-named function, with no local match in the caller's own file, stays
 oversight. This is the single biggest accuracy ceiling on
 `trace_call_path`/`search_graph`/`detect_dead_code`.
 
+Concretely: `module_a.rs` and `module_b.rs` each define `pub fn foo()`, and
+`caller.rs` (which defines no `foo` of its own) calls `foo()`. No `CALLS`
+edge is created for that call site at all — not to `module_a::foo`, not to
+`module_b::foo`, not to both. Both candidates then read as dead code if
+nothing else calls them, even though one of them genuinely is called by
+`caller.rs`; the graph just can't say which. Pinned down by
+`ambiguous_resolution_tests` in `crates/nexus-index/src/ingest.rs` (issue
+#59). Nothing in `trace_call_path`/`search_graph`/`detect_dead_code` today
+distinguishes "ambiguous call site, silently dropped" from "no call site
+found here" — a richer confidence marker for this case is future work, not
+yet built.
+
 One narrow exception (issue #67): a Rust `pub use path::name as alias;` (or
 brace-list `pub use path::{name as alias, ...};`) re-export is recognized
 via a lightweight regex scan — not real `use`-declaration parsing — and the

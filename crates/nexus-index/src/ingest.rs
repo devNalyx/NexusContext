@@ -724,6 +724,152 @@ mod reexport_alias_tests {
     }
 }
 
+/// Issue #59's "add tests for ambiguous symbol resolution": pins down the
+/// *actual* current behavior when a call site's callee name matches more
+/// than one function defined project-wide, with no same-file match to break
+/// the tie. Read straight from `index_directory_inner` above (this is not
+/// guessed): same-file resolution is tried first; only calls that don't
+/// resolve in-file fall through to the cross-file pass, which resolves a
+/// name against `global_fn_registry` **only when exactly one id is
+/// registered under that name** (`ids.len() == 1`). Two or more candidates
+/// means `resolved` is `None` and no `CALLS` edge is inserted at all - not
+/// to the first candidate found, not to every candidate, not even
+/// deterministically to "whichever the walker happened to visit first".
+/// The call site is silently dropped from the graph.
+///
+/// This is a deliberate, documented choice (see
+/// `docs/NexusContext-Wiki/Known-Limitations.md`, "stays unresolved rather
+/// than guessed wrong") and arguably the *right* one for an honest
+/// name-based heuristic - but it is also a real, user-visible gap: nothing
+/// in `trace_call_path`, `search_graph`, or `detect_dead_code` today
+/// signals "this call site exists but its target was ambiguous" versus "no
+/// call site was found here at all". Both same-named candidate functions
+/// end up indistinguishable from genuinely-dead code if nothing else calls
+/// them, even though one of them almost certainly *is* being called by
+/// `main` - the graph just can't say which. Surfacing that distinction
+/// (e.g. a dedicated `ambiguous`/`ambiguity` confidence marker instead of
+/// silent omission) is exactly the kind of richer provenance/confidence
+/// modeling issue #59 flags as future work, not something this test
+/// attempts to fix.
+#[cfg(test)]
+mod ambiguous_resolution_tests {
+    use super::index_directory;
+    use crate::graph::GraphStore;
+    use std::fs;
+
+    fn temp_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_index_ambiguous_resolution_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// `foo` is defined in two different files (`module_a.rs`,
+    /// `module_b.rs`), and a third file calls `foo()` with no local
+    /// definition of its own to resolve against in-file. Current, actual
+    /// behavior: neither definition gets a `CALLS` edge, so both show up as
+    /// dead even though the call site is real. This is the "same-named
+    /// function in two modules" scenario from issue #59's own example
+    /// (`module_a.foo` / `module_b.foo`).
+    #[test]
+    fn a_call_to_a_name_defined_in_two_modules_resolves_to_neither() {
+        let dir = temp_project("two_modules");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("src/module_a.rs"),
+            "pub fn foo() {\n    println!(\"from module_a\");\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/module_b.rs"),
+            "pub fn foo() {\n    println!(\"from module_b\");\n}\n",
+        )
+        .unwrap();
+        fs::write(dir.join("src/caller.rs"), "fn main() {\n    foo();\n}\n").unwrap();
+
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        index_directory(&dir, &store).unwrap();
+
+        // No CALLS edge was created for this call site at all - not to
+        // module_a::foo, not to module_b::foo, not to both.
+        let edges = store.all_call_edges().unwrap();
+        assert!(
+            edges.is_empty(),
+            "an ambiguous cross-file call must not resolve to any candidate: {edges:?}"
+        );
+
+        // Both same-named candidates therefore read as dead, even though
+        // one of them is genuinely called by `main` - this is the real,
+        // user-visible cost of "unresolved rather than guessed wrong".
+        let dead: Vec<String> = store
+            .dead_functions()
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(
+            dead.iter().filter(|n| *n == "foo").count(),
+            2,
+            "both ambiguous same-named candidates should read as dead under current \
+             name-based resolution: {dead:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Same fixture, but the caller's own file also defines a `foo` - the
+    /// same-file match wins deterministically over the cross-file ambiguity,
+    /// exactly per the "same-file matches win" rule. This isn't an
+    /// ambiguous case at all once a same-file candidate exists; included to
+    /// make that precedence explicit and contrast with the fully-ambiguous
+    /// case above.
+    #[test]
+    fn a_same_file_definition_wins_over_other_same_named_candidates_elsewhere() {
+        let dir = temp_project("same_file_wins");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("src/module_a.rs"),
+            "pub fn foo() {\n    println!(\"from module_a\");\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/caller.rs"),
+            "fn foo() {\n    println!(\"local\");\n}\n\nfn main() {\n    foo();\n}\n",
+        )
+        .unwrap();
+
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        index_directory(&dir, &store).unwrap();
+
+        let edges = store.all_call_edges().unwrap();
+        assert_eq!(
+            edges.len(),
+            1,
+            "the same-file foo should resolve deterministically: {edges:?}"
+        );
+
+        // module_a::foo is never called and is genuinely dead here; the
+        // caller's own local foo is not (it has an inbound CALLS edge).
+        let dead: Vec<String> = store
+            .dead_functions()
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(
+            dead.iter().filter(|n| *n == "foo").count(),
+            1,
+            "only the never-called module_a::foo should be dead, not the called local one: \
+             {dead:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
 #[cfg(test)]
 mod index_markdown_file_tests {
     use super::index_markdown_file;
