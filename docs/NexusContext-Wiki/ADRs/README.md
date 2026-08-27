@@ -62,6 +62,7 @@ history stays legible.
 | [0010](0010-remove-embeddings-subsystem.md) | Remove the optional embeddings/semantic-search subsystem entirely | Accepted |
 | [0011](0011-explicit-bounds-on-repo-size-dependent-operations.md) | Every repository-size/agent-request-dependent operation gets an explicit bound | Accepted |
 | [0012](0012-allowed-roots-enforced-uniformly-across-repo-path-tools.md) | `allowed_roots` is enforced uniformly across every `repo_path`-accepting MCP tool, via one shared check | Accepted |
+| [0013](0013-provenance-confidence-surfaced-through-trace-call-path.md) | `CALLS` vs `CALLS_RESOLVED` provenance/confidence is surfaced through `trace_call_path`'s JSON response | Accepted |
 
 ## Related
 

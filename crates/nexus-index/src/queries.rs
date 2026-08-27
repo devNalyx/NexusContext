@@ -107,7 +107,7 @@ pub fn call_graph_dot(
     let neighbors = store.trace_calls(function_name, direction, depth)?;
 
     let mut nodes = start_nodes;
-    nodes.extend(neighbors);
+    nodes.extend(neighbors.into_iter().map(|traced| traced.node));
     let ids: Vec<i64> = nodes.iter().map(|n| n.id).collect();
     let edges = store.subgraph_edges(&ids, "CALLS")?;
     let by_id: std::collections::HashMap<i64, &NodeRecord> =

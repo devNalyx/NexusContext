@@ -11,7 +11,7 @@ pub mod queries;
 
 pub use cypher::run_query as run_cypher_query;
 pub use enrich::{enrich_with_lsp, EnrichmentReport};
-pub use graph::{CodeSearchHit, Direction, EdgeKind, GraphStore, NodeKind, NodeRecord};
+pub use graph::{CodeSearchHit, Direction, EdgeKind, GraphStore, NodeKind, NodeRecord, TracedNode};
 pub use ingest::{content_signature, estimate_watch_count, index_directory, IndexStats};
 pub use language::Language;
 pub use obsidian::export_obsidian;
