@@ -356,14 +356,39 @@ fn index_directory_inner(
     // isn't found (typo, external crate, macro-generated, etc.) the alias
     // is silently skipped - same "don't guess" posture as the rest of this
     // name-based pass.
-    for (alias, original_name) in &reexport_aliases {
-        if let Some(target_ids) = global_fn_registry.get(original_name).cloned() {
-            let entry = global_fn_registry.entry(alias.clone()).or_default();
-            for id in target_ids {
-                if !entry.contains(&id) {
-                    entry.push(id);
+    //
+    // Iterated to a fixed point rather than a single pass over
+    // `reexport_aliases` (issue #78's independent review): a chain like
+    // `pub use a::b as c;` followed by `pub use c as d;` needs `c` resolved
+    // before `d` can be, and `reexport_aliases`' order is whatever
+    // `extract_reexport_aliases`' final `.sort()` produced (alphabetical by
+    // `(alias, original_name)`, not dependency order) - a single pass only
+    // resolved a chain when alphabetical luck happened to visit it in the
+    // right order. Every pass still folds every `(alias, original_name)`
+    // pair unconditionally, same as the original single-pass version
+    // (rather than skipping an alias once it has any entry at all), so two
+    // different original names re-exported under the same alias name both
+    // still contribute their ids - `entry.push`'s own `contains` check
+    // already makes re-processing an already-resolved pair a cheap no-op.
+    // Bounded at `reexport_aliases.len()` passes: a chain can be at most
+    // that long, and `any_grew` exits as soon as a full pass adds nothing
+    // new, so this can't loop needlessly even on a pathological/cyclic
+    // input.
+    for _ in 0..reexport_aliases.len().max(1) {
+        let mut any_grew = false;
+        for (alias, original_name) in &reexport_aliases {
+            if let Some(target_ids) = global_fn_registry.get(original_name).cloned() {
+                let entry = global_fn_registry.entry(alias.clone()).or_default();
+                for id in target_ids {
+                    if !entry.contains(&id) {
+                        entry.push(id);
+                        any_grew = true;
+                    }
                 }
             }
+        }
+        if !any_grew {
+            break;
         }
     }
 
@@ -423,37 +448,89 @@ struct FileIndexResult {
 /// need to be: the call-site name already matches the definition's name,
 /// so the existing name-based resolution already handles it correctly.
 ///
-/// Comment-only lines (`//`/`///`/`//!`) are stripped before matching -
-/// this is a raw-text regex scan, not a real parse, so without that a
-/// doc-comment example of the exact re-export syntax (like this very
-/// function's own doc comment above) would otherwise be picked up as if it
-/// were real code. Deduped on return: the same `(alias, original_name)`
+/// Comments are stripped before matching via `strip_comments` - both `//`
+/// line comments and `/* ... */` block comments (including multi-line
+/// ones) - since this is a raw-text regex scan, not a real parse, and
+/// without that a doc-comment example of the exact re-export syntax (like
+/// this very function's own doc comment above, or a `/* pub use x as y; */`
+/// commented-out import) would otherwise be picked up as if it were real
+/// code. Issue #78's independent review caught the block-comment gap: only
+/// `//`-prefixed lines were being stripped, so code inside a `/* */` block
+/// was still scanned and could produce a spurious alias for a re-export
+/// that isn't actually live. Deduped on return: the same `(alias, original_name)`
 /// pair can otherwise appear more than once (e.g. matched by both the
 /// simple and brace patterns, or if source happens to repeat the same
 /// re-export text), and a duplicate would make the alias's merged id list
 /// in `index_directory_inner` look spuriously ambiguous even when every
 /// duplicate points at the same, genuinely-unique definition.
+///
+/// Strips both `//` line comments and `/* ... */` block comments from
+/// `text`, replacing stripped content with nothing (not even whitespace
+/// preserved) except that a block comment spanning a `;`-terminated
+/// statement boundary still leaves the surrounding code's line structure
+/// intact for the caller's regexes, which tolerate arbitrary whitespace
+/// between tokens via `\s`. Deliberately non-nesting (Rust technically
+/// allows nested `/* /* */ */` block comments, but that's rare enough in
+/// practice that handling it would meaningfully complicate this without a
+/// corresponding real-world payoff for a "not a real parser" scan) - an
+/// unterminated or nested block comment degrades to stripping through the
+/// first `*/` it finds, which is always a safe direction to err in for
+/// this function's purpose (a spurious strip can only make it miss a real
+/// alias, never fabricate one; the reverse - `/* */` not being stripped
+/// at all - was the actual bug, since it can fabricate one).
+fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.char_indices().peekable();
+    let bytes = text.as_bytes();
+    while let Some((i, c)) = chars.next() {
+        if c == '/' && bytes.get(i + 1) == Some(&b'/') {
+            // Line comment - skip to (not including) the next newline, so
+            // the newline itself still lands in `out` and later line-based
+            // reasoning elsewhere isn't affected.
+            for (_, c2) in chars.by_ref() {
+                if c2 == '\n' {
+                    out.push('\n');
+                    break;
+                }
+            }
+        } else if c == '/' && bytes.get(i + 1) == Some(&b'*') {
+            chars.next(); // consume the '*'
+            let mut prev_star = false;
+            for (_, c2) in chars.by_ref() {
+                if prev_star && c2 == '/' {
+                    break;
+                }
+                // Newlines inside the block comment are preserved so a
+                // multi-line block comment doesn't fuse two unrelated
+                // lines of real code together on either side of it.
+                if c2 == '\n' {
+                    out.push('\n');
+                }
+                prev_star = c2 == '*';
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn extract_reexport_aliases(text: &str) -> Vec<(String, String)> {
     static SIMPLE: OnceLock<Regex> = OnceLock::new();
     static BRACE: OnceLock<Regex> = OnceLock::new();
+    // `\s*::\s*` rather than `::` between path segments, and around the
+    // leading `::` before the final segment - real code sometimes wraps a
+    // long `use` path across lines (`\s` matches newlines), and without
+    // this the whole match silently failed rather than just losing the
+    // line break. See issue #78's independent review.
     let simple = SIMPLE.get_or_init(|| {
-        Regex::new(r"pub\s+use\s+(?:[\w]+::)*(\w+)\s+as\s+(\w+)\s*;").expect("valid regex")
+        Regex::new(r"pub\s+use\s+(?:[\w]+\s*::\s*)*(\w+)\s+as\s+(\w+)\s*;").expect("valid regex")
     });
     let brace = BRACE.get_or_init(|| {
-        Regex::new(r"pub\s+use\s+(?:[\w]+::)*\{([^}]*)\}\s*;").expect("valid regex")
+        Regex::new(r"pub\s+use\s+(?:[\w]+\s*::\s*)*\{([^}]*)\}\s*;").expect("valid regex")
     });
 
-    let code_only: String = text
-        .lines()
-        .map(|line| {
-            if line.trim_start().starts_with("//") {
-                ""
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let code_only = strip_comments(text);
 
     let mut aliases = Vec::new();
     for caps in simple.captures_iter(&code_only) {
@@ -702,6 +779,64 @@ mod reexport_alias_tests {
         assert!(aliases.is_empty());
     }
 
+    /// Regression for issue #78's independent review: a `pub use ... as
+    /// alias;` shape sitting inside a `/* ... */` block comment (commented
+    /// out, or a doc-comment example using this exact block-comment style
+    /// instead of `//`) must not be picked up as a real re-export - only
+    /// `//` line comments were being stripped before, so this used to
+    /// fabricate a spurious alias for dead/non-existent code.
+    #[test]
+    fn a_pub_use_inside_a_block_comment_is_not_extracted() {
+        let aliases =
+            extract_reexport_aliases("/* pub use cypher::run_query as run_cypher_query; */");
+        assert!(
+            aliases.is_empty(),
+            "commented-out code must not produce an alias: {aliases:?}"
+        );
+    }
+
+    #[test]
+    fn a_pub_use_inside_a_multiline_block_comment_is_not_extracted() {
+        let aliases = extract_reexport_aliases(
+            "/*\n * Example:\n * pub use cypher::run_query as run_cypher_query;\n */\n",
+        );
+        assert!(
+            aliases.is_empty(),
+            "commented-out code must not produce an alias: {aliases:?}"
+        );
+    }
+
+    /// A block comment sitting *between* two real, separate `pub use`
+    /// statements must not fuse them together or swallow the second one.
+    #[test]
+    fn a_block_comment_between_two_real_reexports_does_not_swallow_either() {
+        let aliases = extract_reexport_aliases(
+            "pub use a::x as y;\n/* an explanatory note */\npub use b::p as q;\n",
+        );
+        assert_eq!(
+            aliases,
+            vec![
+                ("q".to_string(), "p".to_string()),
+                ("y".to_string(), "x".to_string()),
+            ]
+        );
+    }
+
+    /// Regression for issue #78's independent review: a `use` path wrapped
+    /// across multiple lines (a real rustfmt output shape for a long path)
+    /// used to silently fail to match at all, since the regex previously
+    /// required `::` segments with no whitespace/newlines around them.
+    #[test]
+    fn a_pub_use_with_the_path_wrapped_across_lines_is_still_extracted() {
+        let aliases = extract_reexport_aliases(
+            "pub use some::deeply::nested::\n    cypher::run_query as run_cypher_query;\n",
+        );
+        assert_eq!(
+            aliases,
+            vec![("run_cypher_query".to_string(), "run_query".to_string())]
+        );
+    }
+
     /// The end-to-end case: `lib.rs` re-exports `helper` (defined in
     /// `inner.rs`) as `renamed_helper`, and the only call site anywhere in
     /// the project uses the alias. Without alias resolution, `helper` shows
@@ -783,6 +918,58 @@ mod reexport_alias_tests {
         assert!(
             !dead.contains(&"run_query".to_string()),
             "run_query is live via its qualified, re-exported alias and must not be flagged \
+             dead: {dead:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Regression for issue #78's independent review: a two-hop alias
+    /// chain (`inner::helper` re-exported as `z_mid` in one file, then
+    /// `z_mid` re-exported again as `a_final` in another) with only the
+    /// final alias actually called anywhere.
+    ///
+    /// The alias names are deliberately chosen so plain alphabetical
+    /// sorting of `(alias, original_name)` pairs visits `("a_final",
+    /// "z_mid")` *before* `("z_mid", "helper")` (verified: `"a_final" <
+    /// "z_mid"` lexicographically) - a single pass over that sorted list
+    /// tries to resolve `a_final` against `z_mid` before `z_mid` itself has
+    /// been resolved against `helper`, so `a_final` was left unresolved and
+    /// `helper` incorrectly flagged dead under the old single-pass code.
+    /// The fixed-point loop's second pass catches it.
+    #[test]
+    fn a_two_hop_alias_chain_resolves_to_the_real_definition() {
+        let dir = temp_project("alias_chain");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("src/inner.rs"),
+            "pub fn helper() {\n    println!(\"hi\");\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/lib.rs"),
+            "mod inner;\npub use inner::helper as z_mid;\n\
+             pub use z_mid as a_final;\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/caller.rs"),
+            "fn main() {\n    a_final();\n}\n",
+        )
+        .unwrap();
+
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        index_directory(&dir, &store).unwrap();
+
+        let dead: Vec<String> = store
+            .dead_functions(None)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert!(
+            !dead.contains(&"helper".to_string()),
+            "helper is live via a two-hop re-exported alias chain and must not be flagged \
              dead: {dead:?}"
         );
 

@@ -739,10 +739,24 @@ impl GraphStore {
             let mut next_frontier = Vec::new();
             for row in rows {
                 let (neighbor, kind_str) = row?;
+                let kind = EdgeKind::from_edges_kind_str(&kind_str);
                 if visited.insert(neighbor) {
                     next_frontier.push(neighbor);
                     result_ids.push(neighbor);
-                    result_kinds.insert(neighbor, EdgeKind::from_edges_kind_str(&kind_str));
+                    result_kinds.insert(neighbor, kind);
+                } else if kind == EdgeKind::CallsResolved {
+                    // Already visited (this level or an earlier one) - but
+                    // this row shows it's also reachable via a
+                    // higher-confidence CALLS_RESOLVED edge. Upgrade
+                    // deterministically rather than leaving the reported
+                    // provenance dependent on unordered SQL row arrival:
+                    // without this, whichever of a duplicate CALLS/
+                    // CALLS_RESOLVED pair SQLite happened to return first
+                    // silently decided "exact" vs "heuristic" confidence -
+                    // see issue #78's independent review. Never downgrades
+                    // an already-CallsResolved entry back to Calls, since
+                    // this branch only ever writes CallsResolved.
+                    result_kinds.insert(neighbor, EdgeKind::CallsResolved);
                 }
             }
             frontier = next_frontier;
@@ -1259,5 +1273,63 @@ mod trace_calls_tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].node.name, "b");
         assert_eq!(result[0].edge_kind, EdgeKind::CallsResolved);
+    }
+
+    /// Regression for issue #78's independent review: when a node is
+    /// reachable via *both* a `Calls` and a `CallsResolved` edge in the
+    /// same BFS level, the reported provenance must deterministically be
+    /// `CallsResolved` regardless of which row SQLite's unordered `SELECT`
+    /// happens to return first - not an accident of row-arrival order.
+    /// This test and the one below it insert the two edges in opposite
+    /// orders, so a regression that only breaks one insertion order can't
+    /// hide.
+    #[test]
+    fn a_callee_reached_via_calls_and_calls_resolved_in_the_same_level_upgrades_to_resolved() {
+        let store = temp_store("provenance_upgrade_same_level");
+        let root = func(&store, "root");
+        let shared_target = func(&store, "shared_target");
+        // Two distinct edges from the same root to the same target - one
+        // heuristic, one LSP-resolved (a plausible real shape: the static
+        // pass found a name-based match, and LSP enrichment separately
+        // confirmed the same call). Insert CallsResolved first here, the
+        // opposite order from the next test, to prove the outcome doesn't
+        // depend on insertion/row order.
+        store
+            .insert_edge(root, shared_target, EdgeKind::CallsResolved)
+            .unwrap();
+        store
+            .insert_edge(root, shared_target, EdgeKind::Calls)
+            .unwrap();
+
+        let result = store.trace_calls("root", Direction::Outbound, 1).unwrap();
+        assert_eq!(result.len(), 1, "the same target must not be duplicated");
+        assert_eq!(
+            result[0].edge_kind,
+            EdgeKind::CallsResolved,
+            "CallsResolved must win over Calls regardless of which edge SQLite's \
+             unordered SELECT happens to return first"
+        );
+    }
+
+    #[test]
+    fn a_callee_reached_via_calls_and_calls_resolved_upgrades_regardless_of_insert_order() {
+        let store = temp_store("provenance_upgrade_reverse_order");
+        let root = func(&store, "root");
+        let shared_target = func(&store, "shared_target");
+        // Same shape as above, Calls inserted first this time.
+        store
+            .insert_edge(root, shared_target, EdgeKind::Calls)
+            .unwrap();
+        store
+            .insert_edge(root, shared_target, EdgeKind::CallsResolved)
+            .unwrap();
+
+        let result = store.trace_calls("root", Direction::Outbound, 1).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].edge_kind,
+            EdgeKind::CallsResolved,
+            "CallsResolved must win over Calls regardless of insertion order either"
+        );
     }
 }
