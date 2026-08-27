@@ -38,11 +38,24 @@ fn scratch_dir(label: &str) -> PathBuf {
     ))
 }
 
-/// Sets up a fake `$HOME` with `~/.config/nexuscontext/config.toml`
-/// configured with `allowed_roots = [allowed_root]`, and returns the fake
-/// home dir plus a guard that restores the previous `$HOME` on drop.
+/// Sets up a fake `$HOME` with `config.toml` configured with
+/// `allowed_roots = [allowed_root]` at whatever path
+/// `nexus_core::Paths::resolve()` actually resolves for that `$HOME`, and
+/// returns the fake home dir plus a guard that restores the previous
+/// `$HOME`/`$XDG_CONFIG_HOME` on drop.
+///
+/// This must go through `Paths::resolve()` itself rather than hardcoding
+/// `$HOME/.config/nexuscontext` - `directories::ProjectDirs` (what
+/// `Paths::resolve()` uses) honors `$XDG_CONFIG_HOME` over `$HOME` on
+/// Linux when set (as some CI runners do), and uses an entirely different
+/// layout on macOS (`~/Library/Application Support`, not `~/.config`).
+/// Hardcoding the Linux path silently no-ops the whole test on both: the
+/// fake config is never found, `allowed_roots` falls back to "unrestricted"
+/// (its documented behavior for an absent/empty config), and every
+/// "must be rejected" assertion below fails as "the call succeeded".
 struct FakeHome {
     prev_home: Option<std::ffi::OsString>,
+    prev_xdg_config_home: Option<std::ffi::OsString>,
     _dir: PathBuf,
 }
 
@@ -52,25 +65,32 @@ impl Drop for FakeHome {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
         }
+        match &self.prev_xdg_config_home {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 }
 
 fn setup_fake_home(label: &str, allowed_root: &Path) -> FakeHome {
     let home = scratch_dir(&format!("home-{label}"));
     std::fs::create_dir_all(&home).unwrap();
-    let config_dir = home.join(".config").join("nexuscontext");
-    std::fs::create_dir_all(&config_dir).unwrap();
-    let config_toml = format!(
-        "allowed_roots = [{:?}]\n",
-        allowed_root.to_string_lossy()
-    );
-    std::fs::write(config_dir.join("config.toml"), config_toml).unwrap();
 
     let prev_home = std::env::var_os("HOME");
+    let prev_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
     std::env::set_var("HOME", &home);
+    // A stray XDG_CONFIG_HOME from the outer environment would otherwise
+    // keep pointing at the real config dir even after $HOME is redirected.
+    std::env::remove_var("XDG_CONFIG_HOME");
+
+    let config_file = nexus_core::Paths::resolve().config_file();
+    std::fs::create_dir_all(config_file.parent().unwrap()).unwrap();
+    let config_toml = format!("allowed_roots = [{:?}]\n", allowed_root.to_string_lossy());
+    std::fs::write(&config_file, config_toml).unwrap();
 
     FakeHome {
         prev_home,
+        prev_xdg_config_home,
         _dir: home,
     }
 }

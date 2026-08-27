@@ -742,7 +742,10 @@ mod query_timeout_tests {
         let elapsed = start.elapsed();
 
         store.clear_query_timeout();
-        assert!(result.is_err(), "pathological query should be interrupted, not complete");
+        assert!(
+            result.is_err(),
+            "pathological query should be interrupted, not complete"
+        );
         assert!(
             elapsed < Duration::from_secs(5),
             "interrupt took too long: {elapsed:?}"
@@ -754,8 +757,7 @@ mod query_timeout_tests {
         let store = temp_store("fast");
         store.set_query_timeout(Duration::from_secs(30));
 
-        let result: rusqlite::Result<i64> =
-            store.conn.query_row("SELECT 1", [], |row| row.get(0));
+        let result: rusqlite::Result<i64> = store.conn.query_row("SELECT 1", [], |row| row.get(0));
 
         store.clear_query_timeout();
         assert_eq!(result.unwrap(), 1);
