@@ -8,6 +8,7 @@ pub mod lsp;
 pub mod obsidian;
 pub mod project;
 pub mod queries;
+pub mod secure_fs;
 
 pub use cypher::run_query as run_cypher_query;
 pub use enrich::{enrich_with_lsp, EnrichmentReport};

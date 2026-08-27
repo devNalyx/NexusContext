@@ -239,19 +239,30 @@ they're easy to conflate:
   a `file` argument), and — the reverse case — a symlink pointing
   elsewhere inside the same allowed root is correctly still allowed, not
   falsely rejected.
-- **TOCTOU races (NOT defended today — tracked separately).** A
-  fundamentally different scenario: an attacker with *concurrent
-  filesystem write access* swaps a real file/directory for a symlink
-  *during* a request, between the canonicalize+check step and the actual
-  `fs::read`/DB open that follows it. That needs a co-resident malicious
-  process racing the daemon's own check-then-use window — a much higher
-  bar than "repository content steered an agent's request" — and fixing
-  it properly is platform-specific (`openat2`/`O_NOFOLLOW` + inode
-  comparison on Linux, different and mostly-unavailable mechanisms on
-  macOS, yet another approach on Windows). Split out into
-  [issue #72](https://github.com/devNalyx/NexusContext/issues/72) rather
-  than bundled with the confused-deputy work below, since it's a
-  different threat model with a different (lower, but real) priority.
+- **TOCTOU races (partially defended, 2026-08-27; not fully closed).** A
+  fundamentally different scenario from symlink escape above: an attacker
+  with *concurrent filesystem write access* swaps a real file/directory
+  for a symlink *during* a request, between the canonicalize+check step
+  and the actual `fs::read`/DB open that follows it. That needs a
+  co-resident malicious process racing the daemon's own check-then-use
+  window — a much higher bar than "repository content steered an agent's
+  request." [Issue #72](https://github.com/devNalyx/NexusContext/issues/72)
+  originally scoped a full fix here (`openat2`/`O_NOFOLLOW` + inode
+  comparison on Linux, per-platform elsewhere) but that was deliberately
+  re-scoped down: NexusContext now opens both filesystem-read hot paths
+  (`get_file_context`'s file read and the indexer's `read_source_capped`)
+  with `O_NOFOLLOW` on Unix, via `nexus-index::secure_fs`. That closes the
+  *cheapest* TOCTOU shape — the path being swapped for a symlink between
+  check and read — with a clean error instead of a raw errno. It does
+  **not** close the race where the path is swapped for a *different
+  regular file or directory* at the same name — `O_NOFOLLOW` only rejects
+  symlinks, so that substitution still isn't caught. Fully closing that
+  needs atomic check-and-open (`openat2(RESOLVE_NO_SYMLINKS)` and
+  path resolution relative to an already-open directory fd throughout),
+  which remains out of scope. Unix-only: Windows and macOS are unchanged,
+  with no equivalent guard attempted on either. See
+  [[ADRs/README|ADR 0015]] for the full before/after and the remaining
+  gap.
 - **Prompt-injection / confused-deputy (defended by design).** Issue
   #61's actual framing: repository content might try to manipulate the
   calling agent into requesting a path outside the project it was invoked

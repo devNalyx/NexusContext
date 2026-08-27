@@ -42,6 +42,7 @@ tree-sitter-c-sharp = "0.23"
 tree-sitter-ruby = "0.23"
 tree-sitter-php = "0.23"
 zstd = "0.13"
+libc = "0.2"
 notify-debouncer-mini = "0.7"
 regex = "1"
 gtk4 = { version = "0.11", features = ["v4_12"] }

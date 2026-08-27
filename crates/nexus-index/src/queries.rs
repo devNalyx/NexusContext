@@ -250,7 +250,11 @@ pub fn get_file_context(
         bail!("file path escapes project root: {file}");
     }
 
-    let content = std::fs::read_to_string(&canonical_file)?;
+    // `read_to_string_verified` uses O_NOFOLLOW on Unix as defense-in-depth
+    // against `canonical_file` being swapped for a symlink between the
+    // canonicalize/allowed_roots check above and this read - see issue #72
+    // and `secure_fs` module docs for what this does/doesn't close.
+    let content = crate::secure_fs::read_to_string_verified(&canonical_file)?;
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len();
 

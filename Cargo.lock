@@ -916,6 +916,7 @@ version = "0.1.17"
 dependencies = [
  "anyhow",
  "ignore",
+ "libc",
  "nexus-core",
  "regex",
  "rusqlite",
