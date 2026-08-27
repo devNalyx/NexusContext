@@ -68,6 +68,30 @@ fixed by a dedicated review pass rather than designed in from the start.
   `ProtectSystem=strict`, `ProtectHome=read-only`, with explicit
   `ReadWritePaths` for just the config/data dirs it actually needs.
 
+## Observability (issue #58 close-out)
+
+Bounds only help if pressure against them is actually visible - the
+control API's `status.get` (`crates/nexusd/src/control.rs`) reports:
+
+- **`rss_kb`** - this process's resident set size, read from
+  `/proc/self/status`'s `VmRSS` line. Linux-only (`None` on a non-Linux
+  Unix where `/proc` doesn't exist); the control API itself is already
+  `#[cfg(unix)]`-only (see [[ADRs/README|ADR 0009]]), so there's no
+  Windows gap to document separately here.
+- **`watch_budget.queue_depth`/`queue_bound`/`queue_full_events`** - live
+  depth of the bounded watcher channel (`WATCHER_CHANNEL_BOUND`, 256,
+  see above), plus a lifetime count of times it was observed at that
+  bound. Zero/low in the overwhelming majority of setups; a
+  `queue_full_events` that keeps climbing is the loud signal that
+  backpressure is real on this machine, not just a theoretical ceiling.
+- **`indexing.active`/`completed_count`** - whether a full-rebuild reindex
+  (MCP `index_repository`, watcher auto-reindex, or `projects.reindex`) is
+  running right now, and a lifetime completed-job count.
+  `REINDEX_LOCK` (`crates/nexus-index/src/project.rs`) already serializes
+  every caller process-wide, so `active` is a 0/1 flag, not a real queue
+  depth - there is never more than one indexing job in flight in a given
+  `nexusd` process.
+
 ## What's opt-in (off unless you turn it on)
 
 - **`allowed_roots`** — empty by default (unrestricted), matching the
