@@ -527,25 +527,60 @@ impl GraphStore {
     /// name-based pass alone would have missed it and flagged a false
     /// positive; this is the concrete case enrichment is proven against
     /// (see the `lsp` module's dead-code regression test).
-    pub fn dead_functions(&self) -> Result<Vec<NodeRecord>> {
+    ///
+    /// `path_prefix`, when given, restricts results to functions whose
+    /// `file_path` is under that subdirectory (or is that exact file).
+    /// Matched as `file_path = prefix OR file_path LIKE prefix || '/%'` -
+    /// not a naive `LIKE prefix || '%'` - so a prefix like `pkg/events`
+    /// only matches `pkg/events` itself and paths under `pkg/events/`, not
+    /// a sibling directory that merely shares the string prefix (e.g.
+    /// `pkg/events-old/foo.rs`). `file_path` is stored relative to the repo
+    /// root with `/` separators (see `ingest.rs`), so the prefix is
+    /// normalized the same way: backslashes swapped to `/` and any
+    /// trailing slash trimmed, so `dir/`, `dir\`, and `dir` all behave
+    /// identically regardless of caller platform.
+    pub fn dead_functions(&self, path_prefix: Option<&str>) -> Result<Vec<NodeRecord>> {
+        let trimmed_prefix = path_prefix
+            .map(|p| p.replace('\\', "/"))
+            .map(|p| p.trim_end_matches('/').to_string())
+            .filter(|p| !p.is_empty());
+
+        // `has_prefix = 0` short-circuits the OR via `?1 = 1`, so an absent
+        // scope always falls through to the unfiltered branch regardless of
+        // what placeholder values `exact`/`like_pattern` hold - same query
+        // shape and row-mapping closure serve both the scoped and unscoped
+        // cases instead of duplicating them.
+        let has_prefix = trimmed_prefix.is_some();
+        let (exact, like_pattern) = match &trimmed_prefix {
+            Some(prefix) => (
+                prefix.clone(),
+                format!("{}/%", prefix.replace('%', "\\%").replace('_', "\\_")),
+            ),
+            None => (String::new(), String::new()),
+        };
+
         let mut stmt = self.conn.prepare(
             "SELECT id, kind, name, qualified_name, file_path, start_line, end_line
              FROM nodes
              WHERE kind = 'Function' AND name != 'main'
              AND id NOT IN (SELECT dst_id FROM edges WHERE kind IN ('CALLS', 'CALLS_RESOLVED'))
+             AND (?1 = 0 OR file_path = ?2 OR file_path LIKE ?3 ESCAPE '\\')
              ORDER BY file_path, start_line",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(NodeRecord {
-                id: row.get(0)?,
-                kind: NodeKind::from_str(&row.get::<_, String>(1)?),
-                name: row.get(2)?,
-                qualified_name: row.get(3)?,
-                file_path: row.get(4)?,
-                start_line: row.get(5)?,
-                end_line: row.get(6)?,
-            })
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params![has_prefix as i32, exact, like_pattern],
+            |row| {
+                Ok(NodeRecord {
+                    id: row.get(0)?,
+                    kind: NodeKind::from_str(&row.get::<_, String>(1)?),
+                    name: row.get(2)?,
+                    qualified_name: row.get(3)?,
+                    file_path: row.get(4)?,
+                    start_line: row.get(5)?,
+                    end_line: row.get(6)?,
+                })
+            },
+        )?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }
@@ -757,6 +792,174 @@ impl GraphStore {
                     })
                     .collect()
             })
+    }
+}
+
+/// Regression tests for issue #77: `dead_functions` needs a directory-scope
+/// filter so a monorepo's vendored/generated code doesn't drown out the real
+/// package's dead-code candidates, and the prefix match must be a real path
+/// prefix (not a naive string prefix that would false-match a sibling
+/// directory sharing the same leading characters).
+#[cfg(test)]
+mod dead_functions_path_scoping_tests {
+    use super::*;
+
+    fn temp_store(name: &str) -> GraphStore {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_dead_functions_scoping_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        GraphStore::open(&dir.join("graph.db")).unwrap()
+    }
+
+    /// Builds a fixture mirroring the shape that surfaced #77: one real
+    /// package (`pkg/events`) and one vendored subdirectory
+    /// (`pkg/events-vendor` - deliberately a *sibling* whose name shares the
+    /// `pkg/events` string prefix), each with one dead function.
+    fn scoping_fixture(name: &str) -> GraphStore {
+        let store = temp_store(name);
+        store
+            .insert_node(
+                NodeKind::Function,
+                "real_dead",
+                "pkg::events::real_dead",
+                "pkg/events/lib.rs",
+                1,
+                3,
+            )
+            .unwrap();
+        store
+            .insert_node(
+                NodeKind::Function,
+                "vendor_dead",
+                "pkg::events_vendor::vendor_dead",
+                "pkg/events-vendor/lib.js",
+                1,
+                3,
+            )
+            .unwrap();
+        // A caller/callee pair under the real package, so the fixture also
+        // exercises that a call edge still suppresses the *callee* as a
+        // candidate within the scoped subdirectory (the caller itself has
+        // no inbound edge, so it's correctly still flagged dead).
+        let caller = store
+            .insert_node(
+                NodeKind::Function,
+                "caller",
+                "pkg::events::caller",
+                "pkg/events/lib.rs",
+                5,
+                8,
+            )
+            .unwrap();
+        let callee = store
+            .insert_node(
+                NodeKind::Function,
+                "callee",
+                "pkg::events::callee",
+                "pkg/events/lib.rs",
+                10,
+                12,
+            )
+            .unwrap();
+        store.insert_edge(caller, callee, EdgeKind::Calls).unwrap();
+        store
+    }
+
+    #[test]
+    fn unscoped_returns_dead_functions_from_every_directory() {
+        let store = scoping_fixture("unscoped");
+        let dead = store.dead_functions(None).unwrap();
+        let names: Vec<_> = dead.iter().map(|n| n.name.as_str()).collect();
+        assert!(names.contains(&"real_dead"));
+        assert!(names.contains(&"vendor_dead"));
+        assert!(names.contains(&"caller"), "nothing calls caller itself");
+        assert!(
+            !names.contains(&"callee"),
+            "callee has an inbound edge from caller"
+        );
+    }
+
+    #[test]
+    fn scoped_to_the_real_package_excludes_the_vendored_sibling() {
+        let store = scoping_fixture("scoped_real");
+        let dead = store.dead_functions(Some("pkg/events")).unwrap();
+        let names: std::collections::HashSet<&str> = dead.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["real_dead", "caller"].into_iter().collect(),
+            "a naive string-prefix match would also pull in pkg/events-vendor"
+        );
+    }
+
+    #[test]
+    fn scoped_to_the_vendored_sibling_excludes_the_real_package() {
+        let store = scoping_fixture("scoped_vendor");
+        let dead = store.dead_functions(Some("pkg/events-vendor")).unwrap();
+        let names: Vec<_> = dead.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["vendor_dead"]);
+    }
+
+    #[test]
+    fn trailing_slash_and_backslashes_are_normalized() {
+        let store = scoping_fixture("trailing_norm");
+        let with_slash = store.dead_functions(Some("pkg/events/")).unwrap();
+        let with_backslash = store.dead_functions(Some("pkg\\events")).unwrap();
+        let expected: std::collections::HashSet<&str> =
+            ["real_dead", "caller"].into_iter().collect();
+        assert_eq!(
+            with_slash
+                .iter()
+                .map(|n| n.name.as_str())
+                .collect::<std::collections::HashSet<_>>(),
+            expected
+        );
+        assert_eq!(
+            with_backslash
+                .iter()
+                .map(|n| n.name.as_str())
+                .collect::<std::collections::HashSet<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn an_exact_file_path_prefix_matches_only_that_file() {
+        let store = scoping_fixture("exact_file");
+        let dead = store.dead_functions(Some("pkg/events/lib.rs")).unwrap();
+        let names: std::collections::HashSet<&str> = dead.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["real_dead", "caller"].into_iter().collect());
+    }
+
+    #[test]
+    fn a_prefix_containing_like_wildcards_is_treated_literally() {
+        let store = temp_store("wildcards");
+        store
+            .insert_node(
+                NodeKind::Function,
+                "underscore_dead",
+                "pkg::a_b::underscore_dead",
+                "pkg/a_b/lib.rs",
+                1,
+                3,
+            )
+            .unwrap();
+        store
+            .insert_node(
+                NodeKind::Function,
+                "axb_dead",
+                "pkg::axb::axb_dead",
+                "pkg/axb/lib.rs",
+                1,
+                3,
+            )
+            .unwrap();
+        // "pkg/a_b" as a LIKE pattern would (without escaping) also match
+        // "pkg/axb" via SQL's single-character `_` wildcard.
+        let dead = store.dead_functions(Some("pkg/a_b")).unwrap();
+        let names: Vec<_> = dead.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["underscore_dead"]);
     }
 }
 

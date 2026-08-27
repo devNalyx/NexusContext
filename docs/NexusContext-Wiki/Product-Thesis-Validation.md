@@ -242,6 +242,12 @@ errors surfaced in either condition at this scale.
   first. This was the standout win on the small repo (Task 4 in the original results) and is now
   a concrete, reproducible weak point at monorepo scale: the tool needs a path-prefix filter (or
   a same-directory ranking bias) to stay useful once a codebase mixes source and vendored assets.
+  **Fixed** (issue #77): `detect_dead_code`/`dead_functions` now takes an optional `path_prefix`
+  (MCP tool param, `--path-prefix` CLI flag) that scopes candidates to a subdirectory or exact
+  file, using a real path-prefix match rather than a naive string prefix. The numbers above are
+  the pre-fix benchmark result and are left as-is; re-running this task with `path_prefix:
+  "services/probe-go"` is the natural follow-up to confirm the fix restores the tool's value at
+  this scale.
 
 ### Correctness notes (spot-checked)
 

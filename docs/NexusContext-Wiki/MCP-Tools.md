@@ -25,7 +25,7 @@ deliberate, tested property rather than an assumption.
 
 | Tool | What it does |
 |---|---|
-| `detect_dead_code` | Functions with no inbound `CALLS`/`CALLS_RESOLVED` edge (excluding `main`). High false-positive rate is expected and stated in the tool's own description — treat hits as leads, not conclusions. |
+| `detect_dead_code` | Functions with no inbound `CALLS`/`CALLS_RESOLVED` edge (excluding `main`). High false-positive rate is expected and stated in the tool's own description — treat hits as leads, not conclusions. Optional `path_prefix` (e.g. `"pkg/events"`) scopes results to a subdirectory or exact file — a real path-prefix match, not a naive string prefix, so it won't false-match a sibling directory like `pkg/events-vendor`. Fixes issue #77: on a monorepo, an unscoped call was dominated by vendored/generated code. |
 | `detect_changes` | Maps uncommitted git changes to the graph symbols whose line range overlaps a diff hunk. |
 | `query_planner` | Picks the cheapest retrieval strategy (file read / symbol search / keyword fallback) instead of the agent guessing, and returns the actual answer in-band alongside which strategy it used — no second call needed. Also carries `index_freshness`. |
 
