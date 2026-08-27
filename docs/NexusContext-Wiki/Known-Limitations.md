@@ -112,6 +112,28 @@ for the real blocker and what a future port would need. Every MCP tool
 works fully on Windows regardless; the only thing missing is the
 persistent background daemon that keeps a project warm automatically.
 
+## Version control: git-only, but host-agnostic
+
+`detect_changes` (and nothing else - indexing/search/tracing don't touch
+git at all, they walk the filesystem directly) shells out to the local
+`git` binary (`git diff --unified=0`) against whatever repository is on
+disk. It has no dependency on GitHub, GitLab, Bitbucket, or any other
+hosting service's API, and no network calls are ever made - it works
+identically against a repo with no remote at all, a self-hosted Gitea/
+Forgejo instance, or any other git host, because it never looks at the
+remote. The `GitHub` references elsewhere in this project's docs/README
+are about this *project's own* development infrastructure (its CI runs on
+GitHub Actions, its issues are filed on GitHub) — not a requirement on the
+repositories NexusContext indexes.
+
+The one real constraint: it must be a **git** repository specifically
+(`detect_changes` needs `git diff` to exist and succeed) - Mercurial,
+Perforce, Subversion, and other non-git VCSes aren't supported for that one
+tool. Every other tool (`search_graph`, `trace_call_path`, `get_file_context`,
+`get_architecture`, `detect_dead_code`, `search_code`, `index_repository`)
+works on any directory tree regardless of whether it's version-controlled
+at all.
+
 ## Related
 
 [[Indexing-Pipeline]] · [[MCP-Tools]] · [[Watcher-and-Freshness]]
