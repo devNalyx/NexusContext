@@ -106,6 +106,27 @@ static WATCH_ESTIMATE_USED: AtomicUsize = AtomicUsize::new(0);
 /// (Obsidian, an editor) breaks first - see `status.get`'s `watch_status`.
 static WATCH_PRESSURE_EVENTS: AtomicUsize = AtomicUsize::new(0);
 
+/// Live depth of the debounced-event channel (bound `WATCHER_CHANNEL_BOUND`,
+/// see its doc comment), maintained by hand since `SyncSender`/`Receiver`
+/// expose no `len()` of their own - incremented right after every `send` in
+/// the debounce-thread closure below, decremented right after every message
+/// `run`'s loop takes off the channel (both the blocking `recv_timeout` and
+/// the non-blocking drain `try_recv`). Zero for the overwhelming majority of
+/// setups (the receiving loop drains the channel in one pass on every wake,
+/// so depth rarely exceeds 1-2 - see `run`'s doc comment); a depth
+/// approaching `WATCHER_CHANNEL_BOUND` is the "loud" signal that the bound
+/// is actually doing something on this machine rather than sitting unused,
+/// worth surfacing via `status.get` rather than left buried in a log file.
+static WATCHER_QUEUE_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+/// Lifetime count of times the channel was observed at its full bound
+/// (`WATCHER_QUEUE_DEPTH == WATCHER_CHANNEL_BOUND`) right after a send -
+/// i.e. that particular `send` either just filled the last slot or had to
+/// block on a full channel. Same spirit as `WATCH_PRESSURE_EVENTS`: zero in
+/// the common case, a cheap cumulative signal that backpressure has
+/// actually been hit at least once.
+static WATCHER_CHANNEL_FULL_EVENTS: AtomicUsize = AtomicUsize::new(0);
+
 /// For the GUI Dashboard / status.get - lets the control API report
 /// auto-sync watch state without needing its own copy of the
 /// registry-diffing/budget logic.
@@ -114,6 +135,9 @@ pub struct WatchStatus {
     pub estimated_watches_used: usize,
     pub estimated_watches_budget: usize,
     pub pressure_events: usize,
+    pub queue_depth: usize,
+    pub queue_bound: usize,
+    pub queue_full_events: usize,
 }
 
 pub fn watch_status() -> WatchStatus {
@@ -122,6 +146,9 @@ pub fn watch_status() -> WatchStatus {
         estimated_watches_used: WATCH_ESTIMATE_USED.load(Ordering::Relaxed),
         estimated_watches_budget: watch_budget(),
         pressure_events: WATCH_PRESSURE_EVENTS.load(Ordering::Relaxed),
+        queue_depth: WATCHER_QUEUE_DEPTH.load(Ordering::Relaxed),
+        queue_bound: WATCHER_CHANNEL_BOUND,
+        queue_full_events: WATCHER_CHANNEL_FULL_EVENTS.load(Ordering::Relaxed),
     }
 }
 
@@ -148,6 +175,17 @@ fn run() -> anyhow::Result<()> {
     // `WATCHER_CHANNEL_BOUND`'s doc comment.
     let mut debouncer = new_debouncer(DEBOUNCE, move |event| {
         let _ = tx.send(event);
+        // Best-effort depth accounting, not exact under concurrent
+        // sends/receives - only the debounce thread ever calls this
+        // closure, so the increment side is single-writer; the decrement
+        // side (`run`'s receive points) can race it by a step or two under
+        // load, which just means `queue_depth` briefly reads slightly high
+        // or low rather than corrupting anything. Fine for an
+        // observability counter.
+        let depth = WATCHER_QUEUE_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
+        if depth >= WATCHER_CHANNEL_BOUND {
+            WATCHER_CHANNEL_FULL_EVENTS.fetch_add(1, Ordering::Relaxed);
+        }
     })?;
 
     // Report the constraint once at startup rather than only discovering
@@ -171,6 +209,7 @@ fn run() -> anyhow::Result<()> {
     loop {
         match rx.recv_timeout(REGISTRY_RESYNC_INTERVAL) {
             Ok(message) => {
+                WATCHER_QUEUE_DEPTH.fetch_sub(1, Ordering::Relaxed);
                 let mut to_reindex: HashSet<PathBuf> = HashSet::new();
                 let mut hit_watch_limit = collect_dirty_roots(message, &watched, &mut to_reindex);
 
@@ -188,6 +227,7 @@ fn run() -> anyhow::Result<()> {
                 // reindex started after the last of them already captures
                 // every change that arrived before it, so only one is needed.
                 while let Ok(message) = rx.try_recv() {
+                    WATCHER_QUEUE_DEPTH.fetch_sub(1, Ordering::Relaxed);
                     hit_watch_limit |= collect_dirty_roots(message, &watched, &mut to_reindex);
                 }
 
@@ -744,6 +784,73 @@ mod bounded_channel_tests {
         producer.join().unwrap();
         assert_eq!(received.len(), total);
         assert_eq!(received, (0..total).collect::<Vec<_>>());
+    }
+
+    /// Exercises the `WATCHER_QUEUE_DEPTH`/`WATCHER_CHANNEL_FULL_EVENTS`
+    /// bookkeeping in isolation, mirroring the increment-on-send/
+    /// decrement-on-receive pattern used by the real debouncer closure and
+    /// `run`'s drain loop, without needing a live `notify` debouncer or
+    /// daemon. Serialized against the other test in this module (both
+    /// mutate the same process-wide statics) via `depth_counters_test_lock`.
+    #[test]
+    fn queue_depth_tracks_sends_and_receives() {
+        let _guard = depth_counters_test_lock();
+        WATCHER_QUEUE_DEPTH.store(0, Ordering::Relaxed);
+        WATCHER_CHANNEL_FULL_EVENTS.store(0, Ordering::Relaxed);
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<usize>(WATCHER_CHANNEL_BOUND);
+
+        // Simulate 3 sends without any receives yet - depth should track
+        // exactly how many are outstanding.
+        for i in 0..3 {
+            tx.send(i).unwrap();
+            let depth = WATCHER_QUEUE_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
+            if depth >= WATCHER_CHANNEL_BOUND {
+                WATCHER_CHANNEL_FULL_EVENTS.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        assert_eq!(WATCHER_QUEUE_DEPTH.load(Ordering::Relaxed), 3);
+        assert_eq!(WATCHER_CHANNEL_FULL_EVENTS.load(Ordering::Relaxed), 0);
+
+        // Draining mirrors `run`'s recv_timeout + try_recv drain loop.
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), 0);
+        WATCHER_QUEUE_DEPTH.fetch_sub(1, Ordering::Relaxed);
+        while let Ok(_v) = rx.try_recv() {
+            WATCHER_QUEUE_DEPTH.fetch_sub(1, Ordering::Relaxed);
+        }
+        assert_eq!(WATCHER_QUEUE_DEPTH.load(Ordering::Relaxed), 0);
+
+        // Filling the channel to exactly its bound must record at least one
+        // full event.
+        for i in 0..WATCHER_CHANNEL_BOUND {
+            tx.send(i).unwrap();
+            let depth = WATCHER_QUEUE_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
+            if depth >= WATCHER_CHANNEL_BOUND {
+                WATCHER_CHANNEL_FULL_EVENTS.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        assert_eq!(
+            WATCHER_QUEUE_DEPTH.load(Ordering::Relaxed),
+            WATCHER_CHANNEL_BOUND
+        );
+        assert!(WATCHER_CHANNEL_FULL_EVENTS.load(Ordering::Relaxed) >= 1);
+
+        // Clean up so this test doesn't leak nonzero counters into another
+        // test process (they're process-wide statics).
+        while rx.try_recv().is_ok() {
+            WATCHER_QUEUE_DEPTH.fetch_sub(1, Ordering::Relaxed);
+        }
+        WATCHER_QUEUE_DEPTH.store(0, Ordering::Relaxed);
+        WATCHER_CHANNEL_FULL_EVENTS.store(0, Ordering::Relaxed);
+    }
+
+    /// Guards the two tests in this module that touch the process-wide
+    /// `WATCHER_QUEUE_DEPTH`/`WATCHER_CHANNEL_FULL_EVENTS` statics, so
+    /// `cargo test`'s default multi-threaded runner can't interleave them
+    /// and produce a flaky assertion.
+    fn depth_counters_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

@@ -3,6 +3,7 @@ use crate::ingest::{index_directory, IndexStats};
 use anyhow::{bail, Result};
 use nexus_core::{project_hash, Config, Paths, ProjectEntry, Registry, WatcherConfig};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// Serializes full-rebuild reindexes process-wide. The background watcher
@@ -16,6 +17,35 @@ use std::sync::Mutex;
 /// the rare, expensive operation, so serializing it across *all* projects
 /// (not just same-project) costs nothing that matters in practice.
 static REINDEX_LOCK: Mutex<()> = Mutex::new(());
+
+/// Whether a full-rebuild reindex is running right now, for `status.get`'s
+/// observability (issue #58) - since `REINDEX_LOCK` already serializes every
+/// caller (watcher, MCP `index_repository`, control API), this is only ever
+/// 0 or 1 concurrent job, never a real queue depth. Set/cleared around the
+/// actual work inside `index_project_locked`, not around lock acquisition
+/// itself, so a caller blocked waiting on `REINDEX_LOCK` doesn't read as
+/// "indexing" until it actually is.
+static INDEXING_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Lifetime count of completed `index_project`/`index_project_deep` calls
+/// (success or failure), for the same observability surface - lets a GUI or
+/// operator see indexing activity even if they miss the brief window
+/// `INDEXING_ACTIVE` is true for on a fast project.
+static INDEXING_COMPLETED_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Current indexing-activity snapshot for `status.get` (issue #58). See
+/// `INDEXING_ACTIVE`'s doc comment for why `active` is effectively a 0/1
+/// flag rather than a real queue depth.
+pub struct IndexingStatus {
+    pub active: bool,
+    pub completed_count: u64,
+}
+
+pub fn indexing_status() -> IndexingStatus {
+    IndexingStatus {
+        active: INDEXING_ACTIVE.load(Ordering::Relaxed),
+        completed_count: INDEXING_COMPLETED_COUNT.load(Ordering::Relaxed),
+    }
+}
 
 /// Single entry point for "index this directory" used by the CLI, the MCP
 /// `index_repository` tool, and the control API's `projects.reindex` -
@@ -47,7 +77,32 @@ pub fn index_project_deep(repo_path: &Path) -> Result<IndexStats> {
 /// hold `REINDEX_LOCK` across its own "is this still cold?" recheck instead
 /// of just around the rebuild itself - see that function's doc comment for
 /// why the recheck has to happen after the lock is held, not before.
+/// RAII guard clearing `INDEXING_ACTIVE`/bumping `INDEXING_COMPLETED_COUNT`
+/// on drop, so a panic partway through indexing (already tolerated by
+/// `REINDEX_LOCK`'s poison-recovery above) can't leave `status.get`
+/// reporting `active: true` forever.
+struct IndexingGuard;
+
+impl IndexingGuard {
+    fn start() -> Self {
+        INDEXING_ACTIVE.store(true, Ordering::Relaxed);
+        IndexingGuard
+    }
+}
+
+impl Drop for IndexingGuard {
+    fn drop(&mut self) {
+        INDEXING_ACTIVE.store(false, Ordering::Relaxed);
+        INDEXING_COMPLETED_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 fn index_project_locked(repo_path: &Path, deep: bool) -> Result<IndexStats> {
+    let _guard = IndexingGuard::start();
+    index_project_inner(repo_path, deep)
+}
+
+fn index_project_inner(repo_path: &Path, deep: bool) -> Result<IndexStats> {
     let repo_path = canonicalize_for_registry(repo_path)?;
     let repo_path = repo_path.as_path();
 

@@ -249,6 +249,7 @@ fn status_get() -> Result<Value> {
     let paths = Paths::resolve();
     let registry = Registry::load(&paths.registry_file());
     let watch = crate::watcher::watch_status();
+    let indexing = nexus_index::indexing_status();
     Ok(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "data_dir": paths.data_dir.display().to_string(),
@@ -263,9 +264,54 @@ fn status_get() -> Result<Value> {
         "watch_budget": {
             "estimated_watches_used": watch.estimated_watches_used,
             "estimated_watches_budget": watch.estimated_watches_budget,
-            "pressure_events": watch.pressure_events
-        }
+            "pressure_events": watch.pressure_events,
+            // Depth/backpressure of the bounded debounced-event channel
+            // (issue #58 follow-up to PR #64's `sync_channel(256)`) - see
+            // `WATCHER_QUEUE_DEPTH`'s doc comment in watcher.rs.
+            "queue_depth": watch.queue_depth,
+            "queue_bound": watch.queue_bound,
+            "queue_full_events": watch.queue_full_events
+        },
+        // Whether a full-rebuild reindex (MCP `index_repository`, watcher
+        // auto-reindex, or `projects.reindex`) is running right now -
+        // `REINDEX_LOCK` in nexus-index's project.rs already serializes all
+        // of them process-wide, so this is a 0/1 flag, not a real queue
+        // depth (issue #58's "active indexing job state" ask).
+        "indexing": {
+            "active": indexing.active,
+            "completed_count": indexing.completed_count
+        },
+        // Resident set size of this process, for the memory half of issue
+        // #58's observability ask - Linux-only for now (this whole control
+        // module is already `#[cfg(unix)]`-gated at its `mod control`
+        // declaration in main.rs; `rss_kb: None` on a non-Linux Unix, e.g.
+        // macOS, where `/proc` doesn't exist).
+        "rss_kb": read_rss_kb()
     }))
+}
+
+/// Reads this process's resident set size from `/proc/self/status`'
+/// `VmRSS` line (already reported in KiB by the kernel). `None` if `/proc`
+/// isn't available (non-Linux Unix) or the line can't be parsed - a status
+/// response should degrade gracefully, not fail outright, over a
+/// best-effort observability field.
+fn read_rss_kb() -> Option<u64> {
+    let contents = std::fs::read_to_string("/proc/self/status").ok()?;
+    parse_rss_kb(&contents)
+}
+
+/// Parsing logic factored out from `read_rss_kb` so it's testable against
+/// fixture text without depending on `/proc` actually existing (CI runs
+/// this on Linux, but keeping the parser itself Linux-agnostic and testable
+/// in isolation is cheap and matches how the rest of this file separates
+/// I/O from logic).
+fn parse_rss_kb(contents: &str) -> Option<u64> {
+    for line in contents.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            return rest.split_whitespace().next()?.parse().ok();
+        }
+    }
+    None
 }
 
 fn projects_list() -> Result<Value> {
@@ -458,6 +504,43 @@ mod tests {
     /// below sharing one process id.
     fn scratch_dir(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("ncsock-{label}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn parse_rss_kb_extracts_the_vmrss_line() {
+        let fixture = "\
+VmPeak:\t  123456 kB
+VmSize:\t  123000 kB
+VmRSS:\t    45678 kB
+VmData:\t   10000 kB
+";
+        assert_eq!(parse_rss_kb(fixture), Some(45678));
+    }
+
+    #[test]
+    fn parse_rss_kb_returns_none_without_a_vmrss_line() {
+        let fixture = "VmPeak:\t  123456 kB\nVmSize:\t  123000 kB\n";
+        assert_eq!(parse_rss_kb(fixture), None);
+    }
+
+    #[test]
+    fn parse_rss_kb_returns_none_on_garbage_input() {
+        assert_eq!(parse_rss_kb(""), None);
+        assert_eq!(parse_rss_kb("VmRSS:\tnot-a-number kB\n"), None);
+    }
+
+    /// Sanity check against the real thing on the CI/dev Linux box this
+    /// runs on - this process definitely has *some* resident memory.
+    /// `read_rss_kb` itself is `#[cfg(unix)]` (this whole module is), but
+    /// `/proc` only exists on Linux - on macOS this correctly returns
+    /// `None` rather than reading anything, so this test (which asserts
+    /// the Linux-only success path) is `target_os = "linux"`-gated too,
+    /// not just `cfg(unix)`.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn read_rss_kb_reads_a_plausible_value_from_the_real_proc_self() {
+        let rss = read_rss_kb().expect("expected /proc/self/status to be readable on Linux CI");
+        assert!(rss > 0);
     }
 
     #[test]
