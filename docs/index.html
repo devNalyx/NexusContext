@@ -35,7 +35,7 @@
   "name": "NexusContext",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Linux, macOS, Windows",
-  "softwareVersion": "0.1.17",
+  "softwareVersion": "0.1.18",
   "description": "A self-hosted MCP daemon that gives AI coding agents a real knowledge graph over your codebase — structural search, call tracing, and LSP-resolved symbols — no embeddings, no vector store.",
   "url": "https://nc.nalyx.dev/",
   "image": "https://nc.nalyx.dev/og-image.png",
@@ -658,7 +658,7 @@
 
 <main>
   <section class="hero">
-    <div class="badge"><span class="node"></span>v0.1.17 &middot; self-hosted &middot; MCP-native</div>
+    <div class="badge"><span class="node"></span>v0.1.18 &middot; self-hosted &middot; MCP-native</div>
     <h1 class="hero-title">Your agent stops grepping blind and starts tracing a <span class="accent-word">real graph</span></h1>
     <p class="lede">
       NexusContext parses your codebase into functions, types, and call edges — resolved
@@ -998,7 +998,7 @@
       Windows doesn't have <code>serve</code> (the control API, background watcher, GUI target) yet - see <a href="https://github.com/devNalyx/NexusContext/issues/16">issue #16</a>. Every MCP tool works fully without it; reindex manually rather than relying on the background watcher.
     </p>
     <div class="code-block">
-      <div class="code-head"><span>v0.1.17</span><span>bash</span></div>
+      <div class="code-head"><span>v0.1.18</span><span>bash</span></div>
       <pre><span class="cmt"># build &amp; package</span>
 cargo build --release
 cargo deb -p nexusd --no-build
