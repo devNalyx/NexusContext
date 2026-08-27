@@ -5,13 +5,28 @@ Stated plainly, not smoothed over — matching how this project's own
 
 ## Call resolution is name-based, not import-aware
 
-No `use`/`import` parsing, no module-path resolution (see
+No general `use`/`import` parsing, no module-path resolution (see
 [[Indexing-Pipeline]]). Same-file matches win; a cross-file call resolves
 only when the callee name is unique project-wide. Two files each defining a
 same-named function, with no local match in the caller's own file, stays
 **unresolved rather than guessed wrong** — a deliberate choice, not an
 oversight. This is the single biggest accuracy ceiling on
 `trace_call_path`/`search_graph`/`detect_dead_code`.
+
+One narrow exception (issue #67): a Rust `pub use path::name as alias;` (or
+brace-list `pub use path::{name as alias, ...};`) re-export is recognized
+via a lightweight regex scan — not real `use`-declaration parsing — and the
+alias is linked back to the original definition, so a call site written
+against the alias resolves the same way a call to the original name would.
+This fixed a real false positive: `nexus_index::run_cypher_query(...)` (the
+re-exported alias for `cypher::run_query`) previously left `run_query`
+looking dead. Fixing that case also required teaching the Rust tags query
+to recognize path-qualified calls (`module::function()`) as call sites at
+all — the upstream `tree-sitter-rust` tags query only captures bare-
+identifier and `self.method()`-style calls; see `RUST_SCOPED_CALL_QUERY` in
+`crates/nexus-index/src/language.rs`. Only Rust re-exports are covered;
+other languages' equivalent constructs (JS/TS `export { x as y }`, Python
+`from foo import bar as baz`, etc.) aren't handled by this fix.
 
 There's an open, explicitly-not-yet-pursued proposal to close part of this
 gap by optionally enriching the graph with LSP-provided resolved symbols

@@ -2,8 +2,10 @@ use crate::graph::{EdgeKind, GraphStore, NodeKind};
 use crate::language::{self, Language};
 use anyhow::{bail, Result};
 use ignore::WalkBuilder;
+use regex::Regex;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 
 /// Ceiling on a single file's size before this pipeline will read and parse
@@ -193,12 +195,18 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
     let mut files_indexed = 0;
     let mut global_fn_registry: HashMap<String, Vec<i64>> = HashMap::new();
     let mut pending_calls: Vec<PendingCall> = Vec::new();
+    // `(alias, original_name)` pairs collected from every file's `pub use
+    // ... as alias;` re-exports (see `extract_reexport_aliases` / issue
+    // #67) - merged into `global_fn_registry` below only once every file's
+    // definitions are known, since the re-exported symbol is very often
+    // defined in a different file than the `pub use` that renames it.
 
     // Building a TagsConfiguration recompiles that language's query, so it's
     // cached per-language rather than rebuilt for every single file; the
     // TagsContext (parser + query cursor) is likewise reused across files.
     let mut tags_configs: HashMap<Language, TagsConfiguration> = HashMap::new();
     let mut tags_context = TagsContext::new();
+    let mut reexport_aliases: Vec<(String, String)> = Vec::new();
 
     let walker = WalkBuilder::new(root)
         .add_custom_ignore_filename(".nexusignore")
@@ -242,6 +250,7 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
                         .or_default()
                         .push(*id);
                 }
+                reexport_aliases.extend(result.reexport_aliases);
                 // Same-file resolution wins when available (preserves the
                 // original, more-certain behavior) - resolved here, once
                 // per call, against this file's own name map rather than
@@ -271,6 +280,26 @@ fn index_directory_inner(root: &Path, store: &GraphStore) -> Result<IndexStats> 
             }
         }
         files_indexed += 1;
+    }
+
+    // Fold `pub use ... as alias;` re-exports into the registry (issue #67):
+    // once every file's definitions are known, an alias whose original name
+    // resolves to a real definition gets that same set of ids registered
+    // under the alias too, so a call site written against the alias (like
+    // `run_cypher_query`, re-exported from `run_query`) resolves exactly
+    // like a call to the original name would. If the original name itself
+    // isn't found (typo, external crate, macro-generated, etc.) the alias
+    // is silently skipped - same "don't guess" posture as the rest of this
+    // name-based pass.
+    for (alias, original_name) in &reexport_aliases {
+        if let Some(target_ids) = global_fn_registry.get(original_name).cloned() {
+            let entry = global_fn_registry.entry(alias.clone()).or_default();
+            for id in target_ids {
+                if !entry.contains(&id) {
+                    entry.push(id);
+                }
+            }
+        }
     }
 
     for call in pending_calls {
@@ -303,6 +332,82 @@ struct FileIndexResult {
     /// (caller_id, callee_name) for every call site, left unresolved until
     /// the project-wide pass in `index_directory`.
     pending_calls: Vec<(i64, String)>,
+    /// `(alias, original_name)` pairs from this file's `pub use ... as
+    /// alias;` re-exports (see `extract_reexport_aliases`, issue #67).
+    reexport_aliases: Vec<(String, String)>,
+}
+
+/// Extracts `pub use ... as alias;` re-export aliases from a file's raw
+/// text via a lightweight regex scan. This is deliberately *not* a general
+/// `use`-declaration parser: the indexer runs on each language's bundled
+/// tree-sitter *tags* query (see `language.rs`'s module docs), which
+/// doesn't capture `use`/import statements at all, and building real
+/// module-path resolution on top of that would be a much bigger project
+/// (see issue #59). What this covers is the concrete, common shape from
+/// issue #67 - a crate-root re-export that renames a symbol:
+///
+/// ```text
+/// pub use path::to::original_name as alias_name;
+/// pub use path::to::{original_name as alias_name, other_item};
+/// ```
+///
+/// Each match yields `(alias, original_name)` so the alias can be linked
+/// back to the real definition for call-graph/dead-code purposes. A plain
+/// `pub use path::name;` (no rename) isn't covered here because it doesn't
+/// need to be: the call-site name already matches the definition's name,
+/// so the existing name-based resolution already handles it correctly.
+///
+/// Comment-only lines (`//`/`///`/`//!`) are stripped before matching -
+/// this is a raw-text regex scan, not a real parse, so without that a
+/// doc-comment example of the exact re-export syntax (like this very
+/// function's own doc comment above) would otherwise be picked up as if it
+/// were real code. Deduped on return: the same `(alias, original_name)`
+/// pair can otherwise appear more than once (e.g. matched by both the
+/// simple and brace patterns, or if source happens to repeat the same
+/// re-export text), and a duplicate would make the alias's merged id list
+/// in `index_directory_inner` look spuriously ambiguous even when every
+/// duplicate points at the same, genuinely-unique definition.
+fn extract_reexport_aliases(text: &str) -> Vec<(String, String)> {
+    static SIMPLE: OnceLock<Regex> = OnceLock::new();
+    static BRACE: OnceLock<Regex> = OnceLock::new();
+    let simple = SIMPLE.get_or_init(|| {
+        Regex::new(r"pub\s+use\s+(?:[\w]+::)*(\w+)\s+as\s+(\w+)\s*;").expect("valid regex")
+    });
+    let brace = BRACE.get_or_init(|| {
+        Regex::new(r"pub\s+use\s+(?:[\w]+::)*\{([^}]*)\}\s*;").expect("valid regex")
+    });
+
+    let code_only: String = text
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("//") {
+                ""
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut aliases = Vec::new();
+    for caps in simple.captures_iter(&code_only) {
+        aliases.push((caps[2].to_string(), caps[1].to_string()));
+    }
+    for caps in brace.captures_iter(&code_only) {
+        for item in caps[1].split(',') {
+            let item = item.trim();
+            if let Some((name, alias)) = item.split_once(" as ") {
+                let name = name.trim();
+                let alias = alias.trim();
+                if !name.is_empty() && !alias.is_empty() {
+                    aliases.push((alias.to_string(), name.to_string()));
+                }
+            }
+        }
+    }
+    aliases.sort();
+    aliases.dedup();
+    aliases
 }
 
 fn index_file(
@@ -408,9 +513,12 @@ fn index_file(
         }
     }
 
+    let reexport_aliases = extract_reexport_aliases(&text);
+
     Ok(FileIndexResult {
         fn_nodes: fn_nodes.into_iter().map(|(n, _, id)| (n, id)).collect(),
         pending_calls,
+        reexport_aliases,
     })
 }
 
@@ -468,6 +576,7 @@ fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<F
     Ok(FileIndexResult {
         fn_nodes: Vec::new(),
         pending_calls: Vec::new(),
+        reexport_aliases: Vec::new(),
     })
 }
 
@@ -477,6 +586,144 @@ fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<F
 /// the underlying node-extraction behavior this guards (one `Section` node
 /// for a flat file, regardless of its size) is still real and worth
 /// covering directly.
+/// Regression test for issue #67: a function only ever called through a
+/// `pub use original as alias;` re-export must not be flagged dead, since
+/// it genuinely has a live caller - just one that spells its name
+/// differently than the definition does. Modeled directly on the real
+/// `nexus_index::cypher::run_query` / `run_cypher_query` case that exposed
+/// this (`crates/nexus-index/src/lib.rs`'s own re-export), but as a
+/// self-contained synthetic fixture rather than indexing this crate's own
+/// source, so the test doesn't depend on this crate's real layout staying
+/// exactly as-is.
+#[cfg(test)]
+mod reexport_alias_tests {
+    use super::{extract_reexport_aliases, index_directory};
+    use crate::graph::GraphStore;
+    use std::fs;
+
+    fn temp_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_index_reexport_alias_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn extracts_a_simple_pub_use_as_alias() {
+        let aliases = extract_reexport_aliases("pub use cypher::run_query as run_cypher_query;");
+        assert_eq!(
+            aliases,
+            vec![("run_cypher_query".to_string(), "run_query".to_string())]
+        );
+    }
+
+    #[test]
+    fn extracts_aliases_from_a_brace_list_and_ignores_unaliased_items() {
+        let aliases =
+            extract_reexport_aliases("pub use foo::{run_query as run_cypher_query, other_fn};");
+        assert_eq!(
+            aliases,
+            vec![("run_cypher_query".to_string(), "run_query".to_string())]
+        );
+    }
+
+    #[test]
+    fn plain_pub_use_with_no_rename_yields_no_alias() {
+        let aliases = extract_reexport_aliases("pub use cypher::run_query;");
+        assert!(aliases.is_empty());
+    }
+
+    /// The end-to-end case: `lib.rs` re-exports `helper` (defined in
+    /// `inner.rs`) as `renamed_helper`, and the only call site anywhere in
+    /// the project uses the alias. Without alias resolution, `helper` shows
+    /// up as dead (no `CALLS` edge matches its name); with it, the alias's
+    /// call site resolves back to `helper`'s real definition.
+    #[test]
+    fn a_function_only_called_via_its_reexported_alias_is_not_flagged_dead() {
+        let dir = temp_project("end_to_end");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("src/inner.rs"),
+            "pub fn helper() {\n    println!(\"hi\");\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/lib.rs"),
+            "mod inner;\npub use inner::helper as renamed_helper;\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/caller.rs"),
+            "fn main() {\n    renamed_helper();\n}\n",
+        )
+        .unwrap();
+
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        index_directory(&dir, &store).unwrap();
+
+        let dead: Vec<String> = store
+            .dead_functions()
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert!(
+            !dead.contains(&"helper".to_string()),
+            "helper is live via its re-exported alias and must not be flagged dead: {dead:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The exact real-world shape from issue #67: the call site is
+    /// path-qualified (`crate_name::run_cypher_query(...)`, mirroring
+    /// `nexus_index::run_cypher_query(...)` in `nexusd`/`nexus-cli`), not a
+    /// bare identifier. This also exercises the companion fix in
+    /// `language.rs` (`RUST_SCOPED_CALL_QUERY`): without it, a
+    /// path-qualified call is never even recorded as a call site, so alias
+    /// resolution alone wouldn't be enough to un-deaden `run_query` here.
+    #[test]
+    fn a_function_only_called_via_a_qualified_reexported_alias_is_not_flagged_dead() {
+        let dir = temp_project("qualified_end_to_end");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("src/cypher.rs"),
+            "pub fn run_query() {\n    println!(\"hi\");\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/lib.rs"),
+            "mod cypher;\npub use cypher::run_query as run_cypher_query;\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/caller.rs"),
+            "fn main() {\n    nexus_index::run_cypher_query();\n}\n",
+        )
+        .unwrap();
+
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        index_directory(&dir, &store).unwrap();
+
+        let dead: Vec<String> = store
+            .dead_functions()
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert!(
+            !dead.contains(&"run_query".to_string()),
+            "run_query is live via its qualified, re-exported alias and must not be flagged \
+             dead: {dead:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
 #[cfg(test)]
 mod index_markdown_file_tests {
     use super::index_markdown_file;
