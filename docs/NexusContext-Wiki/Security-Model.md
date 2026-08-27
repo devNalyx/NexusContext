@@ -84,13 +84,26 @@ control API's `status.get` (`crates/nexusd/src/control.rs`) reports:
   bound. Zero/low in the overwhelming majority of setups; a
   `queue_full_events` that keeps climbing is the loud signal that
   backpressure is real on this machine, not just a theoretical ceiling.
-- **`indexing.active`/`completed_count`** - whether a full-rebuild reindex
-  (MCP `index_repository`, watcher auto-reindex, or `projects.reindex`) is
-  running right now, and a lifetime completed-job count.
-  `REINDEX_LOCK` (`crates/nexus-index/src/project.rs`) already serializes
-  every caller process-wide, so `active` is a 0/1 flag, not a real queue
-  depth - there is never more than one indexing job in flight in a given
-  `nexusd` process.
+- **`indexing.active`/`completed_count`/`superseded_count`** - whether a
+  full-rebuild reindex (MCP `index_repository`, watcher auto-reindex, or
+  `projects.reindex`) is running right now, a lifetime completed-job count,
+  and a lifetime count of in-flight passes that bailed out early because a
+  newer request for the *same* project superseded them mid-run (issue #58,
+  see [[ADRs/README|ADR 0014]]'s amendment). `REINDEX_LOCK`
+  (`crates/nexus-index/src/project.rs`) already serializes every caller
+  process-wide, so `active` is a 0/1 flag, not a real queue depth - there is
+  never more than one indexing job in flight in a given `nexusd` process.
+  `superseded_count` is zero in the common case: every change made during
+  an in-flight reindex is already guaranteed to be picked up by a follow-up
+  pass (the watcher's debounce thread keeps queuing events even while the
+  main loop is blocked indexing, and drains/re-triggers on resumption) -
+  the supersession checkpoint
+  (`REINDEX_GENERATION`/`note_possible_supersession`, checked every 25
+  files in `nexus_index::ingest::index_directory_inner`'s per-file loop)
+  exists purely to stop that in-flight pass from wastefully finishing a
+  rebuild that's already known to be stale, not to prevent any data loss.
+  A nonzero count means that's actually happening on a project whose edit
+  bursts outlast a single reindex pass.
 
 ## What's opt-in (off unless you turn it on)
 

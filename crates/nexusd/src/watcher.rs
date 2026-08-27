@@ -173,20 +173,39 @@ fn run() -> anyhow::Result<()> {
     // bounded channel blocks the calling thread (notify's internal
     // debounce thread here) rather than growing without limit - see
     // `WATCHER_CHANNEL_BOUND`'s doc comment.
-    let mut debouncer = new_debouncer(DEBOUNCE, move |event| {
-        let _ = tx.send(event);
-        // Best-effort depth accounting, not exact under concurrent
-        // sends/receives - only the debounce thread ever calls this
-        // closure, so the increment side is single-writer; the decrement
-        // side (`run`'s receive points) can race it by a step or two under
-        // load, which just means `queue_depth` briefly reads slightly high
-        // or low rather than corrupting anything. Fine for an
-        // observability counter.
-        let depth = WATCHER_QUEUE_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
-        if depth >= WATCHER_CHANNEL_BOUND {
-            WATCHER_CHANNEL_FULL_EVENTS.fetch_add(1, Ordering::Relaxed);
-        }
-    })?;
+    let mut debouncer = new_debouncer(
+        DEBOUNCE,
+        move |event: notify_debouncer_mini::DebounceEventResult| {
+            // This closure runs on notify's own debounce thread, which keeps
+            // firing on every real file change even while `run`'s main loop
+            // below is blocked inside a (possibly minutes-long) call to
+            // `nexus_index::index_project` - exactly the window a supersession
+            // needs to be caught in, since the main loop itself can't observe
+            // anything until that call returns. See issue #58 / ADR 0014's
+            // amendment: this is what lets an in-flight reindex notice a newer
+            // change for its own project and bail out cooperatively instead of
+            // running to completion on data it already knows is stale.
+            if let Ok(events) = &event {
+                for e in events {
+                    if !is_noise(&e.path) {
+                        nexus_index::note_possible_supersession(&e.path);
+                    }
+                }
+            }
+            let _ = tx.send(event);
+            // Best-effort depth accounting, not exact under concurrent
+            // sends/receives - only the debounce thread ever calls this
+            // closure, so the increment side is single-writer; the decrement
+            // side (`run`'s receive points) can race it by a step or two under
+            // load, which just means `queue_depth` briefly reads slightly high
+            // or low rather than corrupting anything. Fine for an
+            // observability counter.
+            let depth = WATCHER_QUEUE_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
+            if depth >= WATCHER_CHANNEL_BOUND {
+                WATCHER_CHANNEL_FULL_EVENTS.fetch_add(1, Ordering::Relaxed);
+            }
+        },
+    )?;
 
     // Report the constraint once at startup rather than only discovering
     // it via a WARN buried in the log the first time something doesn't
