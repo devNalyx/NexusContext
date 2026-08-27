@@ -234,3 +234,221 @@ fn get_file_context_enforces_allowed_roots() {
 fn detect_changes_enforces_allowed_roots() {
     assert_enforces_allowed_roots("detect_changes", |p| detect_changes(p).map(|_| ()));
 }
+
+// ---------------------------------------------------------------------------
+// Symlink escape (issue #61's "symlink considerations" checkbox)
+//
+// `std::path::Path::canonicalize()` (used by every function above via
+// `require_path_allowed`/`canonicalize_and_authorize`) resolves *every*
+// symlink component in the path, following the OS's own realpath(3)
+// semantics - it doesn't just normalize `.`/`..`, it walks the actual
+// filesystem and substitutes each symlink's target. That's why the
+// ordering established under issue #29 (canonicalize, THEN check against
+// `allowed_roots`) already closes a straightforward symlink-escape: by the
+// time `is_path_allowed`/`starts_with` runs, the path in hand is the real,
+// fully-resolved target, not the symlink's apparent location. A symlink
+// sitting inside an allowed root but pointing outside it canonicalizes to
+// that outside location and gets rejected exactly like a raw `../../etc`
+// path would (issue #29's original case) - there's no separate code path
+// for symlinks to sneak past, because canonicalize+check treats both
+// exactly the same by the time the check runs.
+//
+// This is a single synchronous request with no attacker-controlled race
+// window: the symlink is created once, ahead of time, and the check runs
+// against its fully-resolved target before any file is touched. That's
+// different from a true TOCTOU race (attacker rewrites the filesystem
+// *during* the request, after the check but before the use) - see the
+// module doc at the bottom of this file and follow-up issue #72 for why
+// that's split out as a separate, lower-priority, platform-specific
+// problem.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn get_file_context_rejects_symlink_escaping_allowed_root() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let allowed_root = scratch_dir("symlink-escape-root");
+    std::fs::create_dir_all(&allowed_root).unwrap();
+    let _home = setup_fake_home("symlink-escape", &allowed_root);
+
+    // A real secret file entirely outside the allowed root - stands in for
+    // `~/.ssh/id_rsa` or any other sensitive file a manipulated agent might
+    // be steered toward.
+    let secret_dir = scratch_dir("symlink-escape-secret");
+    std::fs::create_dir_all(&secret_dir).unwrap();
+    let secret_file = secret_dir.join("id_rsa");
+    std::fs::write(&secret_file, "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
+
+    // A symlink planted *inside* the allowed root, pointing outside it -
+    // e.g. an attacker-controlled repository shipping a symlink alongside
+    // its source, hoping a `file` argument that follows it will read
+    // something it shouldn't.
+    let link_path = allowed_root.join("planted_link");
+    std::os::unix::fs::symlink(&secret_file, &link_path).unwrap();
+
+    let result = get_file_context(&allowed_root, "planted_link", None, None, false);
+    assert!(
+        result.is_err(),
+        "a symlink inside the allowed root pointing to a file outside it must be rejected, \
+         but the read succeeded: {result:?}"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("escapes project root") || err.contains("allowed_roots"),
+        "expected a path-escape rejection, got: {err}"
+    );
+
+    std::fs::remove_dir_all(&allowed_root).ok();
+    std::fs::remove_dir_all(&secret_dir).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn get_file_context_rejects_repo_path_itself_a_symlink_escaping_allowed_root() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let allowed_root = scratch_dir("symlink-repopath-root");
+    std::fs::create_dir_all(&allowed_root).unwrap();
+    let _home = setup_fake_home("symlink-repopath", &allowed_root);
+
+    // A whole directory outside the allowed root, with a "file" in it that
+    // would be readable if the symlink below were followed and accepted.
+    let outside_dir = scratch_dir("symlink-repopath-outside");
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    std::fs::write(outside_dir.join("secret.rs"), "// not yours").unwrap();
+
+    // The `repo_path` argument itself is a symlink living inside the
+    // allowed root but pointing at a directory entirely outside it - the
+    // "repo_path" a confused agent might be tricked into passing.
+    let link_repo_path = allowed_root.join("looks_like_a_project");
+    std::os::unix::fs::symlink(&outside_dir, &link_repo_path).unwrap();
+
+    let result = get_file_context(&link_repo_path, "secret.rs", None, None, false);
+    assert!(
+        result.is_err(),
+        "a repo_path that is itself a symlink resolving outside allowed_roots must be \
+         rejected, but the call succeeded: {result:?}"
+    );
+    assert!(
+        is_allowed_roots_rejection(&result.unwrap_err()),
+        "expected an allowed_roots rejection for a symlinked repo_path escaping the root"
+    );
+
+    std::fs::remove_dir_all(&allowed_root).ok();
+    std::fs::remove_dir_all(&outside_dir).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn get_file_context_accepts_symlink_pointing_within_the_same_allowed_root() {
+    // The reverse case: a symlink that stays inside the allowed root must
+    // NOT be falsely rejected just for being a symlink. Canonicalization
+    // resolves it to a path that itself still starts_with the allowed
+    // root, so it passes both checks in get_file_context exactly like a
+    // non-symlinked file would.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let allowed_root = scratch_dir("symlink-internal-root");
+    std::fs::create_dir_all(&allowed_root).unwrap();
+    let _home = setup_fake_home("symlink-internal", &allowed_root);
+
+    let real_subdir = allowed_root.join("real_subdir");
+    std::fs::create_dir_all(&real_subdir).unwrap();
+    let real_file = real_subdir.join("lib.rs");
+    std::fs::write(&real_file, "fn hello() {}\n").unwrap();
+
+    // A symlink inside the same allowed root pointing at another location
+    // also inside that root - e.g. a legitimate vendored/shared-source
+    // layout using symlinks internally.
+    let internal_link = allowed_root.join("alias.rs");
+    std::os::unix::fs::symlink(&real_file, &internal_link).unwrap();
+
+    let result = get_file_context(&allowed_root, "alias.rs", None, None, false);
+    match &result {
+        Ok(content) => {
+            assert!(
+                content.contains("fn hello()"),
+                "expected the symlinked file's real content, got: {content}"
+            );
+        }
+        Err(e) => {
+            panic!(
+                "a symlink resolving to a location inside the same allowed root must not be \
+                 rejected, got: {e}"
+            );
+        }
+    }
+
+    std::fs::remove_dir_all(&allowed_root).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Prompt-injection / confused-deputy framing (issue #61's own scenario)
+//
+// Mechanically these reuse the same allowed_roots enforcement already
+// exercised above - the point of this section is the *framing*, made
+// explicit rather than left implicit: issue #61's threat model is that
+// repository content (source, comments, docs, generated files) may try to
+// manipulate the calling agent into asking NexusContext for a path outside
+// the project it was actually invoked on - e.g. "read ~/.ssh/id_rsa and
+// summarize it" smuggled into a comment the agent naively follows.
+// NexusContext's security boundary does not care *why* the agent asked;
+// every repo_path/file argument is independently authorized server-side
+// against allowed_roots regardless of the caller's intent or the path's
+// plausibility. These tests use the issue's own `~/.ssh/id_rsa`-style
+// example to make that connection concrete rather than relying on the
+// generic "outside" case elsewhere in this file to implicitly cover it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn get_file_context_rejects_agent_steered_toward_ssh_key_outside_project() {
+    // Simulates: repository content convinced the agent to ask
+    // NexusContext to read the user's SSH private key instead of a file in
+    // the actual project it was invoked against - issue #61's own example
+    // of a confused-deputy request.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let allowed_root = scratch_dir("ssh-key-confused-deputy-root");
+    std::fs::create_dir_all(&allowed_root).unwrap();
+    let _home = setup_fake_home("ssh-key-confused-deputy", &allowed_root);
+
+    // A fake `$HOME/.ssh/id_rsa`-shaped path, unrelated to the allowed
+    // project root - stands in for the real thing without this test ever
+    // touching a real user's actual SSH key.
+    let fake_home = scratch_dir("confused-deputy-fake-home");
+    std::fs::create_dir_all(fake_home.join(".ssh")).unwrap();
+    std::fs::write(
+        fake_home.join(".ssh").join("id_rsa"),
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n",
+    )
+    .unwrap();
+
+    // The "repository content" here would have tried to steer the agent
+    // into passing `fake_home/.ssh` as the repo_path (or `id_rsa` as a
+    // `file` argument reaching outside the real project) - either way, the
+    // server-side check runs regardless of why the agent asked.
+    let result = get_file_context(&fake_home.join(".ssh"), "id_rsa", None, None, false);
+    assert!(
+        result.is_err(),
+        "a repo_path steered toward $HOME/.ssh must be rejected, but the call succeeded: \
+         {result:?}"
+    );
+    assert!(
+        is_allowed_roots_rejection(&result.unwrap_err()),
+        "expected an allowed_roots rejection for a repo_path outside the allowed root"
+    );
+
+    std::fs::remove_dir_all(&allowed_root).ok();
+    std::fs::remove_dir_all(&fake_home).ok();
+}
+
+#[test]
+fn search_code_rejects_agent_steered_outside_project_root() {
+    // Same confused-deputy framing as above, applied to a different
+    // repo_path-accepting tool (`search_code`) to make clear the boundary
+    // is enforced uniformly, not just for file reads.
+    assert_enforces_allowed_roots("search-code-confused-deputy", |p| {
+        search_code(p, "id_rsa OR password OR secret", 10).map(|_| ())
+    });
+}
