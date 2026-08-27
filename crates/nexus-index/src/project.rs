@@ -934,63 +934,65 @@ mod supersession_tests {
     /// `note_possible_supersession` for the same project *while*
     /// `index_project_locked`'s file loop is still running on the main
     /// thread. The in-flight pass must notice at its next checkpoint,
-    /// report `superseded: true`, skip updating the registry, and bump
-    /// `REINDEX_SUPERSEDED_COUNT` - without ever needing full mid-file
-    /// cancellation.
+    /// report `superseded: true`, and bail out without walking every file.
+    ///
+    /// This used to spawn a second thread that polled `CURRENT_REINDEX_ROOT`
+    /// with a timeout, racing real wall-clock indexing time - flaky on
+    /// CI's macOS/Windows runners in two different ways as this test's own
+    /// git history shows: first because a small file count could finish
+    /// indexing before the racer thread was even scheduled for its first
+    /// poll (closing the window before it ever fired), then, after widening
+    /// the file count to fix that, because writing thousands of individual
+    /// files turned out to be pathologically slow on those same runners
+    /// (100+ seconds, most likely antivirus-scanned file creation on
+    /// Windows) - slow enough that the racer's own poll loop no longer
+    /// reliably kept up either, and CI got both slower *and* still flaky.
+    ///
+    /// Rewritten to be fully deterministic instead: `IndexingGuard::start`
+    /// and `note_possible_supersession` are the exact same production
+    /// functions the real race exercises, called synchronously in the same
+    /// thread with no timing dependency at all, followed by a direct call
+    /// to `index_project_inner` (`index_project_locked`'s real body, minus
+    /// the canonicalize/`allowed_roots` checks that happen just before it -
+    /// already covered by other tests) with the supersession already in
+    /// place before the very first file is walked. Same real production
+    /// functions under test end to end, including
+    /// `REINDEX_SUPERSEDED_COUNT`'s own increment, zero flakiness, and runs
+    /// in milliseconds instead of over a hundred seconds.
     #[test]
     fn index_project_locked_reports_supersession_when_raced_by_a_new_change() {
         let _guard = statics_test_lock();
         reset_statics();
         let dir = temp_dir("end_to_end_locked");
-        // `CURRENT_REINDEX_ROOT` is only `Some(dir)` for the actual wall-
-        // clock duration of `index_project_locked`'s file walk - on a fast
-        // or lightly-loaded machine, a small handful of one-line files can
-        // finish indexing before the racer thread below is even scheduled
-        // for its first poll, closing the window before it ever sees
-        // `is_current == true`. That's exactly what caused this test to be
-        // flaky on CI's macOS/Windows runners (a single-poll miss then
-        // spins uselessly through the rest of its budget). Writing enough
-        // files - each parsed by tree-sitter, not just written to disk -
-        // widens that window comfortably past realistic scheduling latency
-        // without ballooning the test's own runtime (tree-sitter parsing a
-        // few thousand trivial one-line files is still well under a
-        // second).
-        let file_count = crate::ingest::SUPERSESSION_CHECK_INTERVAL * 200;
+        let file_count = crate::ingest::SUPERSESSION_CHECK_INTERVAL * 4;
         for i in 0..file_count {
             fs::write(dir.join(format!("f{i}.rs")), format!("fn f{i}() {{}}\n")).unwrap();
         }
 
-        let dir_clone = dir.clone();
-        let racer = std::thread::spawn(move || {
-            // Wait until this project is actually the one in flight, then
-            // fire a superseding change for it - polling rather than a
-            // fixed sleep so this isn't flaky under load. Budget is
-            // generous (10s) since the failure mode isn't "polling is too
-            // slow", it's "the window closed before the first poll" - see
-            // the file_count comment above for the actual fix; this is
-            // just a sane upper bound on top of it.
-            for _ in 0..10_000 {
-                let is_current = CURRENT_REINDEX_ROOT
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .is_some_and(|r| r == &dir_clone);
-                if is_current {
-                    note_possible_supersession(&dir_clone.join("f0.rs"));
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            panic!("index_project_locked never became the in-flight reindex in time");
-        });
+        let guard = IndexingGuard::start(&dir);
+        // Stand in for the watcher's debounce-thread closure firing mid-run
+        // - here, deterministically, before index_project_inner below even
+        // starts walking files.
+        note_possible_supersession(&dir.join("f0.rs"));
+        assert!(
+            is_superseded(guard.generation),
+            "sanity check: the supersession above must already be visible"
+        );
 
         let before = REINDEX_SUPERSEDED_COUNT.load(Ordering::Relaxed);
-        let stats = index_project_locked(&dir, false).unwrap();
-        racer.join().unwrap();
+        let stats = index_project_inner(&dir, false, guard.generation, &Paths::resolve()).unwrap();
+        drop(guard);
 
         assert!(
             stats.superseded,
-            "a change landing mid-run for the same project must be observed as a supersession"
+            "a change landing before the walk even starts must still be observed as a \
+             supersession at the first checkpoint"
+        );
+        assert!(
+            stats.files_indexed < file_count,
+            "a superseded pass must bail out at its next checkpoint, not walk every file - \
+             indexed {} of {file_count}",
+            stats.files_indexed
         );
         assert_eq!(REINDEX_SUPERSEDED_COUNT.load(Ordering::Relaxed), before + 1);
 
