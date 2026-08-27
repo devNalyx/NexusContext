@@ -265,6 +265,43 @@ they're easy to conflate:
 
 See [[ADRs/README|ADR 0012]]'s 2026-08-27 update for the full reasoning.
 
+## Adversarial security test coverage: Unix-only today, and why (2026-08-27, #83)
+
+`crates/nexus-index/tests/path_security.rs` - the adversarial suite above
+covering outside-root rejection, `..`-traversal, symlink escape, and the
+confused-deputy scenario - is entirely `#[cfg(unix)]`-gated, so none of it
+runs on the `test-windows` CI job. Investigated directly rather than left
+as an unexplained gap:
+
+- **Symlink creation on Windows CI is not the blocker.** A throwaway probe
+  (`std::os::windows::fs::symlink_file`) was run on this repo's own
+  `windows-latest` `test-windows` job and succeeded without elevation or a
+  Developer Mode step - the assumption that symlinks need admin rights on
+  CI doesn't hold, at least not on GitHub Actions' current Windows runners.
+- **The actual blocker is config injection, and it affects every test in
+  the file, not just the symlink ones.** Every case - including the
+  non-symlink outside-root/`..`-traversal/confused-deputy ones - depends on
+  redirecting `$HOME`/`$XDG_CONFIG_HOME` so `nexus_core::Paths::resolve()`
+  (via `directories::ProjectDirs`) picks up a scratch `config.toml` with a
+  controlled `allowed_roots`. That only works on Unix: `directories`'
+  Windows backend resolves through the Win32 known-folder API
+  (`SHGetKnownFolderPath`), not any environment variable, and there is no
+  other test-only override hook for `config_dir` in the codebase today.
+  Splitting the file by "does this case use a symlink" wouldn't have
+  produced a runnable Windows subset - the whole file is blocked on the
+  same missing piece.
+- **Not fixed in this pass.** A proper cross-platform config-injection test
+  harness is a real, separately-scoped change (touches every
+  `Paths::resolve()` call site in `nexus-index`), not a test tweak - filed
+  as [issue #85](https://github.com/devNalyx/NexusContext/issues/85). Once
+  it exists, the symlink-creation finding above means the symlink-specific
+  cases can extend to Windows immediately alongside the rest, with no
+  further platform investigation needed.
+
+The general CI matrix (`test-windows`) does exercise the rest of the
+workspace's test suite on Windows already - this gap is specific to this
+one security-focused adversarial file, not a general Windows-support gap.
+
 ## Trust boundary, stated plainly
 
 The MCP tools trust the calling agent, not arbitrary network input — there

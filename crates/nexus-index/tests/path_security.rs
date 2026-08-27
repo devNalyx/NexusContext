@@ -13,9 +13,37 @@
 //! write a `config.toml` there with a controlled `allowed_roots`. That env
 //! var is process-global, so `ENV_LOCK` below serializes every test in this
 //! binary against it (integration test binaries otherwise run their `#[test]`
-//! functions on multiple threads); it's still `#[cfg(unix)]`-only because
-//! Windows' known-folder config lookup isn't `HOME`-overridable the same
-//! way (see `nexus_core::paths::Paths::resolve`).
+//! functions on multiple threads).
+//!
+//! ## Why this whole file, not just the symlink cases, is `#[cfg(unix)]`
+//!
+//! Investigated for issue #83: it's tempting to assume only the
+//! `std::os::unix::fs::symlink` cases below need Unix and the rest (outside-
+//! root rejection, `..`-traversal, the confused-deputy case) could run
+//! unconditionally. They can't, today - every single test in this file,
+//! symlink or not, goes through `setup_fake_home`/`FakeHome`, which only
+//! works because `directories::ProjectDirs`'s *Unix* backends resolve
+//! through `$HOME`/`$XDG_CONFIG_HOME`. Its Windows backend
+//! (`directories-5.0.1/src/win.rs`) calls
+//! `dirs_sys::known_folder_roaming_app_data()`, which goes through the Win32
+//! known-folder API (`SHGetKnownFolderPath`) - not an environment variable a
+//! test process can override. Setting `HOME` before calling
+//! `nexus_core::Paths::resolve()` on Windows has no effect on where it looks
+//! for `config.toml`. There's also no test-only override hook anywhere in
+//! this codebase for `config_dir` specifically (`NEXUS_CACHE_DIR` only
+//! overrides `data_dir`), so there is currently no way to inject a
+//! controlled `allowed_roots` into these functions on Windows at all - a
+//! more fundamental blocker than "symlinks need elevation."
+//!
+//! Symlink creation itself, separately, turns out **not** to be the
+//! blocker it looked like: probed directly against this repo's own
+//! `test-windows` CI job (`windows-latest` GitHub Actions runner) with a
+//! throwaway `std::os::windows::fs::symlink_file` call, which succeeded
+//! without any elevation or Developer Mode step. So if/when a
+//! cross-platform config-injection mechanism exists (tracked as issue #85,
+//! not attempted here - it's a real harness change, not a test tweak), the
+//! symlink-specific cases below should extend to Windows too, not stay
+//! Unix-only.
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
