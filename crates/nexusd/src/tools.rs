@@ -193,10 +193,15 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "detect_changes",
-            "description": "Map uncommitted git changes to affected graph symbols (functions/types whose line range overlaps a diff hunk).",
+            "description": "Map uncommitted git changes to affected graph symbols (functions/types whose line range overlaps a diff hunk). Optional `blast_radius=true` additionally walks inbound callers (direct and transitive) of each changed function via the same BFS `trace_call_path` uses, up to `depth` hops - each transitive node carries the same `provenance`/`resolution`/`confidence` fields `trace_call_path` returns. Default (`blast_radius=false`) response and cost are unchanged from the plain symbol list.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "repo_path": { "type": "string" } },
+                "properties": {
+                    "repo_path": { "type": "string" },
+                    "blast_radius": { "type": "boolean", "default": false },
+                    "depth": { "type": "integer", "default": 3 },
+                    "limit": { "type": "integer", "default": 100 }
+                },
                 "required": ["repo_path"]
             }
         },
@@ -884,8 +889,38 @@ fn query_graph(args: Value) -> Result<String> {
 
 fn detect_changes(args: Value) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
-    let affected = index::detect_changes(&repo_path)?;
-    Ok(serde_json::to_string_pretty(&records_to_json(&affected))?)
+    let blast_radius = args
+        .get("blast_radius")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // blast_radius=false (the default) must stay byte-for-byte identical to
+    // the tool's pre-#89 response and cost - this branch calls the same
+    // plain `detect_changes` it always has, never touching the BFS below.
+    if !blast_radius {
+        let affected = index::detect_changes(&repo_path)?;
+        return Ok(serde_json::to_string_pretty(&records_to_json(&affected))?);
+    }
+
+    let depth = clamp_depth(args.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as u32);
+    let limit =
+        clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as u32) as usize;
+
+    let result = index::detect_changes_blast_radius(&repo_path, depth)?;
+    let direct_count = result.direct.len();
+    let transitive_total = result.transitive.len();
+    let transitive_shown: Vec<_> = result.transitive.into_iter().take(limit).collect();
+    Ok(serde_json::to_string_pretty(&json!({
+        "direct": records_to_json(&result.direct),
+        "transitive_total": transitive_total,
+        "transitive_shown": transitive_shown.len(),
+        "transitive": traced_nodes_to_json(&transitive_shown),
+        "summary": {
+            "direct_count": direct_count,
+            "transitive_count": transitive_total,
+            "files_touched": result.files_touched,
+        }
+    }))?)
 }
 
 #[cfg(test)]

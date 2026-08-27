@@ -65,6 +65,7 @@ history stays legible.
 | [0013](0013-provenance-confidence-surfaced-through-trace-call-path.md) | `CALLS` vs `CALLS_RESOLVED` provenance/confidence is surfaced through `trace_call_path`'s JSON response | Accepted |
 | [0014](0014-resource-observability-and-closing-out-58.md) | Resource observability closes out issue #58, with two items explicitly deferred | Accepted |
 | [0015](0015-o-nofollow-defense-in-depth-not-full-toctou-proofing.md) | O_NOFOLLOW is defense-in-depth against symlink-substitution TOCTOU, not full TOCTOU-proofing | Accepted |
+| [0016](0016-blast-radius-mode-reuses-trace-calls-not-a-new-subsystem.md) | Blast-radius mode for `detect_changes` reuses `trace_calls`/clamping, not a new subsystem | Accepted |
 | [0017](0017-grouped-architecture-view-is-path-based-not-semantic.md) | `get_architecture`'s grouped mode is directory/path-based, never semantic subsystem inference | Accepted |
 
 ## Related

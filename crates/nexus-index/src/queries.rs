@@ -1,4 +1,4 @@
-use crate::graph::{Direction, GraphStore};
+use crate::graph::{Direction, GraphStore, TracedNode};
 use crate::project::graph_db_path;
 use crate::{CodeSearchHit, NodeRecord};
 use anyhow::{bail, Result};
@@ -178,6 +178,16 @@ pub fn search_code(repo_path: &Path, query: &str, limit: u32) -> Result<Vec<Code
 }
 
 pub fn detect_changes(repo_path: &Path) -> Result<Vec<NodeRecord>> {
+    Ok(detect_changes_direct(repo_path)?.0)
+}
+
+/// Shared setup for `detect_changes`/`detect_changes_blast_radius`: resolves
+/// and authorizes `repo_path`, runs `git diff --unified=0`, and maps the
+/// touched hunks to the directly-overlapping graph symbols. Returns the
+/// direct symbols alongside the opened `GraphStore` so the blast-radius path
+/// can reuse the same store for its `trace_calls` walk instead of opening it
+/// twice.
+fn detect_changes_direct(repo_path: &Path) -> Result<(Vec<NodeRecord>, GraphStore)> {
     // Canonicalize *before* the allowed_roots check, not after - see the
     // matching comment in `get_file_context` below for why the ordering
     // itself is the bug (issue #29).
@@ -205,7 +215,66 @@ pub fn detect_changes(repo_path: &Path) -> Result<Vec<NodeRecord>> {
             affected.extend(store.nodes_overlapping(&file, start, end)?);
         }
     }
-    Ok(affected)
+    Ok((affected, store))
+}
+
+/// Result of `detect_changes_blast_radius`: the directly-changed symbols
+/// (identical to plain `detect_changes`) plus everything transitively
+/// affected by them (their inbound callers, direct and indirect, found by
+/// walking `GraphStore::trace_calls` from each directly-changed function).
+pub struct BlastRadiusResult {
+    pub direct: Vec<NodeRecord>,
+    /// Transitively-affected callers, deduped against each other and
+    /// against `direct` (a node already in `direct` is never repeated here,
+    /// even if it's also a caller of another directly-changed symbol).
+    /// Carries the same `TracedNode` provenance (`edge_kind`) that
+    /// `trace_call_path` already surfaces, tagged with whichever edge kind
+    /// first reached it during the BFS - see `GraphStore::trace_calls`'s doc
+    /// comment.
+    pub transitive: Vec<TracedNode>,
+    /// Distinct files touched across `direct` and `transitive` combined.
+    pub files_touched: usize,
+}
+
+/// Blast-radius mode for `detect_changes` (issue #89): in addition to the
+/// directly-changed symbols, walks `GraphStore::trace_calls` in the Inbound
+/// direction ("who calls this changed thing") from each directly-changed
+/// function, at `depth`, reusing the exact same BFS/provenance machinery
+/// `trace_call_path` already exposes rather than a new traversal. `depth` is
+/// expected to already be clamped by the caller (mirrors `trace_call_path`'s
+/// own clamping convention - this function does no clamping of its own so
+/// library callers control that policy).
+pub fn detect_changes_blast_radius(repo_path: &Path, depth: u32) -> Result<BlastRadiusResult> {
+    let (direct, store) = detect_changes_direct(repo_path)?;
+
+    let direct_ids: HashSet<i64> = direct.iter().map(|n| n.id).collect();
+    let mut seen_transitive: HashSet<i64> = HashSet::new();
+    let mut transitive: Vec<TracedNode> = Vec::new();
+
+    // One `trace_calls` walk per directly-changed *function* - types don't
+    // have callers in the CALLS graph, `trace_calls` itself only starts from
+    // nodes named like a Function (see its `WHERE kind = 'Function'`), so
+    // non-function direct nodes simply contribute nothing here rather than
+    // erroring.
+    for node in &direct {
+        for traced in store.trace_calls(&node.name, Direction::Inbound, depth)? {
+            let id = traced.node.id;
+            if direct_ids.contains(&id) || !seen_transitive.insert(id) {
+                continue;
+            }
+            transitive.push(traced);
+        }
+    }
+
+    let mut files: HashSet<&str> = direct.iter().map(|n| n.file_path.as_str()).collect();
+    files.extend(transitive.iter().map(|t| t.node.file_path.as_str()));
+    let files_touched = files.len();
+
+    Ok(BlastRadiusResult {
+        direct,
+        transitive,
+        files_touched,
+    })
 }
 
 /// Minimal unified-diff hunk parser: pulls (file, [(start_line, end_line)])
@@ -692,5 +761,207 @@ mod plan_query_tests {
         assert_eq!(plan.file_content.as_deref(), Some(direct.as_str()));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// Tests for issue #89: blast-radius mode. Builds a real git repo + graph
+/// index (not mocked) so `detect_changes_blast_radius` exercises the actual
+/// `git diff` parsing, `nodes_overlapping` mapping, and `trace_calls` BFS
+/// together, the same way an MCP caller would hit them.
+#[cfg(test)]
+mod blast_radius_tests {
+    use super::*;
+    use std::process::Command;
+
+    /// Isolates each test from the real user config (and from each other)
+    /// the same way `path_security.rs` does - `NEXUS_CONFIG_DIR` pointed at
+    /// a scratch dir with no `config.toml` written, so
+    /// `require_path_allowed` falls back to `Config::default()`'s empty
+    /// `allowed_roots`, which permits everything (see
+    /// `nexus_core::config::empty_allowed_roots_permits_everything_unrestricted`).
+    struct FakeConfigDir {
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl FakeConfigDir {
+        fn set(label: &str) -> Self {
+            let prev = std::env::var_os("NEXUS_CONFIG_DIR");
+            let dir = std::env::temp_dir().join(format!(
+                "nexus_blast_radius_test_config_{label}_{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::env::set_var("NEXUS_CONFIG_DIR", &dir);
+            Self { prev }
+        }
+    }
+
+    impl Drop for FakeConfigDir {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var("NEXUS_CONFIG_DIR", v),
+                None => std::env::remove_var("NEXUS_CONFIG_DIR"),
+            }
+        }
+    }
+
+    /// Serializes every test in this module against the process-global
+    /// `NEXUS_CONFIG_DIR` mutation `FakeConfigDir` performs.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .expect("git must be on PATH for this test");
+        assert!(status.success(), "git {args:?} failed in {dir:?}");
+    }
+
+    const SRC: &str = "\
+fn helper() {
+    let x = 1;
+}
+
+fn caller_a() {
+    helper();
+}
+
+fn caller_b() {
+    helper();
+}
+
+fn caller_c() {
+    caller_a();
+}
+
+fn isolated() {
+    let y = 2;
+}
+";
+
+    /// Sets up a committed git repo with `SRC` indexed, ready for a caller
+    /// to make an uncommitted edit and call `detect_changes`/
+    /// `detect_changes_blast_radius`.
+    fn setup_repo(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_blast_radius_test_repo_{label}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("lib.rs"), SRC).unwrap();
+
+        run_git(&dir, &["init", "-q"]);
+        run_git(&dir, &["config", "user.email", "test@example.com"]);
+        run_git(&dir, &["config", "user.name", "test"]);
+        run_git(&dir, &["add", "."]);
+        run_git(&dir, &["commit", "-q", "-m", "initial"]);
+
+        crate::project::index_project(&dir).expect("indexing the test repo must succeed");
+        dir
+    }
+
+    #[test]
+    fn a_widely_called_function_surfaces_its_multi_hop_caller_set() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _fake_config = FakeConfigDir::set("widely_called");
+        let dir = setup_repo("widely_called");
+
+        // Edit only inside `helper`'s body, same line count, so every other
+        // function's indexed line range is untouched - the diff hunk lands
+        // squarely on `helper` alone.
+        let edited = SRC.replace("let x = 1;", "let x = 2;");
+        std::fs::write(dir.join("lib.rs"), edited).unwrap();
+
+        let result = detect_changes_blast_radius(&dir, 3).unwrap();
+
+        assert_eq!(result.direct.len(), 1, "only `helper` was directly edited");
+        assert_eq!(result.direct[0].name, "helper");
+
+        let transitive_names: HashSet<&str> = result
+            .transitive
+            .iter()
+            .map(|t| t.node.name.as_str())
+            .collect();
+        // caller_a/caller_b call helper directly (depth 1); caller_c calls
+        // caller_a, so it's only reachable at depth 2 - asserting it's
+        // present proves this is a real multi-hop walk, not just depth-1
+        // direct callers.
+        assert!(transitive_names.contains("caller_a"));
+        assert!(transitive_names.contains("caller_b"));
+        assert!(
+            transitive_names.contains("caller_c"),
+            "caller_c is a depth-2 (transitive) caller of helper via caller_a - expected it in the blast radius, got: {transitive_names:?}"
+        );
+        assert!(!transitive_names.contains("isolated"));
+        // `helper` itself must never appear in its own transitive set even
+        // though it's technically reachable if the graph had a cycle back
+        // to it - the direct/transitive sets must stay disjoint.
+        assert!(!transitive_names.contains("helper"));
+
+        assert_eq!(result.direct.len() + result.transitive.len(), 4);
+        // Everything lives in the one file in this fixture.
+        assert_eq!(result.files_touched, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_isolated_leaf_change_reports_an_empty_transitive_set_not_an_error() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _fake_config = FakeConfigDir::set("isolated_leaf");
+        let dir = setup_repo("isolated_leaf");
+
+        let edited = SRC.replace("let y = 2;", "let y = 3;");
+        std::fs::write(dir.join("lib.rs"), edited).unwrap();
+
+        let result = detect_changes_blast_radius(&dir, 3).unwrap();
+
+        assert_eq!(result.direct.len(), 1);
+        assert_eq!(result.direct[0].name, "isolated");
+        assert!(
+            result.transitive.is_empty(),
+            "a function with no callers must not over-report a transitive set: {:?}",
+            result
+                .transitive
+                .iter()
+                .map(|t| &t.node.name)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(result.files_touched, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn default_detect_changes_output_is_unchanged_by_blast_radius_existing() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _fake_config = FakeConfigDir::set("default_unchanged");
+        let dir = setup_repo("default_unchanged");
+
+        let edited = SRC.replace("let x = 1;", "let x = 2;");
+        std::fs::write(dir.join("lib.rs"), edited).unwrap();
+
+        // The plain call and the `.0` half of the blast-radius call must
+        // agree exactly - proves `detect_changes` still returns just the
+        // directly-changed symbols, unaffected by the blast-radius code
+        // path existing alongside it.
+        let plain = detect_changes(&dir).unwrap();
+        let blast = detect_changes_blast_radius(&dir, 3).unwrap();
+
+        assert_eq!(plain.len(), blast.direct.len());
+        for (a, b) in plain.iter().zip(blast.direct.iter()) {
+            assert_eq!(a.id, b.id);
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.file_path, b.file_path);
+            assert_eq!(a.start_line, b.start_line);
+            assert_eq!(a.end_line, b.end_line);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -26,7 +26,7 @@ deliberate, tested property rather than an assumption.
 | Tool | What it does |
 |---|---|
 | `detect_dead_code` | Functions with no inbound `CALLS`/`CALLS_RESOLVED` edge (excluding `main`). High false-positive rate is expected and stated in the tool's own description — treat hits as leads, not conclusions. Optional `path_prefix` (e.g. `"pkg/events"`) scopes results to a subdirectory or exact file — a real path-prefix match, not a naive string prefix, so it won't false-match a sibling directory like `pkg/events-vendor`. Fixes issue #77: on a monorepo, an unscoped call was dominated by vendored/generated code. |
-| `detect_changes` | Maps uncommitted git changes to the graph symbols whose line range overlaps a diff hunk. |
+| `detect_changes` | Maps uncommitted git changes to the graph symbols whose line range overlaps a diff hunk. Default response/cost is just that list, unchanged. Optional `blast_radius=true` (issue #89) additionally walks inbound callers of each changed function — direct and transitive, via the same `trace_calls` BFS `trace_call_path` uses, with the same `depth`/`limit` clamping (see [[Security-Model]]) and the same per-node `provenance`/`resolution`/`confidence` tagging. Response then has `direct` (the changed symbols), `transitive`/`transitive_total`/`transitive_shown` (its inbound callers, capped by `limit`), and a `summary` (`direct_count`, `transitive_count`, `files_touched`). |
 | `query_planner` | Picks the cheapest retrieval strategy (file read / symbol search / keyword fallback) instead of the agent guessing, and returns the actual answer in-band alongside which strategy it used — no second call needed. Also carries `index_freshness`. |
 
 ## Observability
