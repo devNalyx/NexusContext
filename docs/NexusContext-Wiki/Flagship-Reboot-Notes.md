@@ -57,8 +57,8 @@ the plugin scaffold uses the current V2 API (see below).
 
 ## Known traps
 
-- `README.md`'s historical phase log is intentionally frozen; do not "fix" its old
-  tool counts or embeddings references.
+- `docs/Phase-History.md` is a frozen historical log; do not "fix" its old tool
+  counts or embeddings references. README sections 1-3/5-6 are the current overview.
 - Myelin has no `license` field; NC is MIT with a `LICENSE` file. Set MIT in the
   merged workspace before copying code (ADR 0018).
 - NC's `get_session_usage` is per-MCP-process, not harness-session keyed; the plugin

@@ -71,8 +71,8 @@ cd integrations/opencode-nexuscontext && npm test
 ```
 
 Use targeted crate tests while iterating, but keep full checks green before
-merge. `README.md` section 4 is historical; update current-state docs in this
-wiki or README sections 1-3/5-6.
+merge. `docs/Phase-History.md` is a frozen historical log; update current-state
+docs in this wiki or README sections 1-3/5-6.
 
 ## 6. Good agent habits
 
