@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "myelin-cli"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "clap",
@@ -955,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "myelin-core"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "directories",
@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "myelin-index"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "chrono",
@@ -979,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "myelind"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "clap",
@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cli"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "clap",
@@ -1008,7 +1008,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-core"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "directories",
@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-gui"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "gtk4",
@@ -1031,7 +1031,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-index"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "ignore",
@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "nexusd"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "clap",
