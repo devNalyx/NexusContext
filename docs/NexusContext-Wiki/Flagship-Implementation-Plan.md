@@ -205,6 +205,10 @@ builds) and GitHub's retirement of the `macos-14` label — are fixed in v0.1.22
 - Released v0.1.20 (flagship) → v0.1.21 (redaction fix) → v0.1.22 (real-harness
   injection, `myelind` Windows gate, macOS runner fix) → v0.1.23 (second Windows
   gate, in `myelin-cli`'s Unix-only status client; v0.1.22's release build was
-  rejected before publish). Installed locally from the tagged source with
-  `cargo install --path ... --locked` and dogfooded as above. Release/publish
-  status is tracked in GitHub Actions for tag `v0.1.23`.
+  rejected before publish) → v0.1.24 (human-gated skill signposts: promotion is
+  not consent; only `human:<name>` sign-off makes active non-atrophied skills
+  injectable, separately labelled and budget-trimmed before facts, exact bytes
+  + `skill_ids` ledgered). v0.1.23 release run `45549280753` published all 9
+  assets green. PR #98 merged as `b650f7d`; CI green after Windows SQLite tempdir
+  cleanup fix; isolated signpost dogfood passed (before approval excluded, after
+  human approval present/labelled/under budget, after revoke excluded).
