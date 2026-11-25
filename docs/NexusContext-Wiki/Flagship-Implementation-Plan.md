@@ -193,6 +193,8 @@ builds) and GitHub's retirement of the `macos-14` label — are fixed in v0.1.22
   Full Linux verification green: 303 tests passed, 1 ignored, fmt + clippy -D
   warnings clean, plugin `npm test` green.
 - Released v0.1.20 (flagship) → v0.1.21 (redaction fix) → v0.1.22 (real-harness
-  injection, Windows build, and macOS runner fixes). Installed locally from the
-  v0.1.22 source with `cargo install --path ... --locked` and dogfooded as above.
-  Release/publish status is tracked in GitHub Actions for tag `v0.1.22`.
+  injection, `myelind` Windows gate, macOS runner fix) → v0.1.23 (second Windows
+  gate, in `myelin-cli`'s Unix-only status client; v0.1.22's release build was
+  rejected before publish). Installed locally from the tagged source with
+  `cargo install --path ... --locked` and dogfooded as above. Release/publish
+  status is tracked in GitHub Actions for tag `v0.1.23`.
