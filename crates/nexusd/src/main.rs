@@ -12,6 +12,7 @@ mod cache;
 #[cfg(unix)]
 mod control;
 mod mcp;
+mod memory_tools;
 mod tools;
 #[cfg(unix)]
 mod watcher;

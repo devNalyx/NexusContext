@@ -4,6 +4,7 @@ use nexus_index::{
     delete_project, export_project, get_architecture, graph_db_path, import_project, index_project,
     project_disk_usage, GraphStore,
 };
+use nexus_memory::{InjectionRecord, Ledger, UsageTokens};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -150,6 +151,16 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
         "search.adhoc" => search_adhoc(params),
         "viz.call_graph" => viz_call_graph(params),
         "stats.get" => stats_get(),
+        // Flagship plug + GUI read paths. The daemon performs recall and
+        // records it itself: a plugin cannot report an injection it never
+        // made, or re-label an estimate as provider tokens.
+        "review.list" => review_list(params),
+        "memory.recall" => memory_recall(params),
+        "ledger.inject" => ledger_inject(params),
+        "ledger.usage" => ledger_usage(params),
+        "ledger.tool" => ledger_tool(params),
+        "ledger.get" => ledger_get(params),
+        "ledger.latest" => ledger_latest(),
         _ => bail!("unknown control method: {method}"),
     };
 
@@ -175,6 +186,212 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
     }
 
     result
+}
+
+fn loaded_config() -> Config {
+    Config::load(&Paths::resolve().config_file()).unwrap_or_default()
+}
+
+fn control_str(params: &Value, key: &str) -> anyhow::Result<String> {
+    params
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("missing '{key}' argument"))
+}
+
+fn control_u64(params: &Value, key: &str, default: u64) -> anyhow::Result<u64> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Number(n)) => n
+            .as_u64()
+            .ok_or_else(|| anyhow!("'{key}' must be a non-negative integer")),
+        _ => bail!("'{key}' must be a non-negative integer"),
+    }
+}
+
+fn control_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn open_ledger() -> anyhow::Result<Ledger> {
+    Ledger::open(&Paths::resolve().ledger_db_file())
+}
+
+/// One queue, two memories. Facts carry anchor staleness; skill candidates
+/// have no atrophy data yet (not promoted) and say so explicitly. Promoted
+/// skills carry their own atrophy flag — deliberately a different label from
+/// a fact's anchor staleness.
+fn review_list(params: Value) -> anyhow::Result<Value> {
+    let limit = control_u64(&params, "limit", 50)?.clamp(1, 200) as i64;
+    let config = loaded_config();
+    let now = control_now();
+
+    let facts = match params.get("repo_path").and_then(Value::as_str) {
+        Some(repo) => {
+            crate::memory_tools::list_facts_value(&json!({ "repo_path": repo }), &config, now)?
+        }
+        None => json!({ "facts": [], "note": "no repo_path supplied" }),
+    };
+
+    let pending_raw = myelind::tools::call(json!({
+        "name": "list_pending_review",
+        "arguments": { "limit": limit }
+    }))?;
+    let skills_raw = myelind::tools::call(json!({
+        "name": "list_skills",
+        "arguments": {}
+    }))?;
+    let pending: Vec<Value> = pending_raw["pending"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .take(limit as usize)
+        .map(|mut item| {
+            item["freshness_label"] = json!("skill candidate — no atrophy data (not promoted)");
+            item
+        })
+        .collect();
+    let promoted: Vec<Value> = skills_raw["skills"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .take(limit as usize)
+        .map(|mut item| {
+            let atrophied = item["stale"].as_bool().unwrap_or(false);
+            item["freshness_label"] = json!(if atrophied {
+                "skill — atrophied (last used too long ago)"
+            } else {
+                "skill — active"
+            });
+            item
+        })
+        .collect();
+
+    Ok(json!({
+        "facts": facts["facts"],
+        "fact_stale_count": facts["stale_count"],
+        "fact_trust_counts": facts["by_trust"],
+        "skill_candidates": pending,
+        "promoted_skills": promoted,
+        "labels": {
+            "fact": "staleness = anchored file changed or stale_after elapsed",
+            "skill": "atrophy = skill not used within its window (independent of fact staleness)",
+        },
+        "note": "read-only review feed: listing never promotes any candidate",
+    }))
+}
+
+fn memory_recall(params: Value) -> anyhow::Result<Value> {
+    // Never accept `include_lower_trust` over this surface: auto-injection
+    // is for verified facts only. An agent can pull lower-trust candidates
+    // explicitly through the MCP tool, labelled, but not into context.
+    let mut safe = params;
+    if let Some(obj) = safe.as_object_mut() {
+        obj.remove("include_lower_trust");
+        obj.remove("budget_tokens"); // capped inside recall_value
+    }
+    crate::memory_tools::recall_value(&safe, &loaded_config(), control_now())
+}
+
+/// The daemon runs recall, renders the exact injection text, and writes the
+/// ledger entry in one place. The adapter injects `text` verbatim, so it can
+/// neither widen the budget nor claim an injection it did not perform.
+fn ledger_inject(params: Value) -> anyhow::Result<Value> {
+    let session_id = control_str(&params, "session_id")?;
+    let repo_path = control_str(&params, "repo_path")?;
+    let query = params
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .chars()
+        .take(2000)
+        .collect::<String>();
+    let budget = control_u64(
+        &params,
+        "budget_tokens",
+        nexus_memory::DEFAULT_INJECTION_BUDGET_TOKENS,
+    )?
+    .min(nexus_memory::DEFAULT_INJECTION_BUDGET_TOKENS);
+    let recall = crate::memory_tools::recall_value(
+        &json!({
+            "repo_path": repo_path,
+            "query": query,
+            "budget_tokens": budget,
+            "include_lower_trust": false,
+        }),
+        &loaded_config(),
+        control_now(),
+    )?;
+    let injection = nexus_memory::render_injection(&recall, budget)?;
+    let entry = open_ledger()?.record_injection(InjectionRecord {
+        session_id: &session_id,
+        repo_path: &repo_path,
+        query: &query,
+        fact_ids: &injection.fact_ids,
+        injected_bytes: injection.bytes,
+        budget_tokens: budget,
+        now: control_now(),
+    })?;
+    let mut result = injection.to_json();
+    result["ledger"] = entry;
+    result["recall_excluded"] = recall["excluded"].clone();
+    Ok(result)
+}
+
+fn ledger_usage(params: Value) -> anyhow::Result<Value> {
+    let session_id = control_str(&params, "session_id")?;
+    let tokens = params
+        .get("tokens")
+        .ok_or_else(|| anyhow!("missing 'tokens' argument"))?;
+    let tokens = UsageTokens::from_json(tokens)?;
+    let cost = params
+        .get("cost_usd")
+        .and_then(Value::as_f64)
+        .filter(|c| c.is_finite() && *c >= 0.0);
+    let event_id = open_ledger()?.record_usage(&session_id, tokens, cost, control_now())?;
+    Ok(json!({ "event_id": event_id, "source": "harness" }))
+}
+
+fn ledger_tool(params: Value) -> anyhow::Result<Value> {
+    let session_id = control_str(&params, "session_id")?;
+    let tool = control_str(&params, "tool")?;
+    let status = params
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("completed")
+        .to_string();
+    if !matches!(status.as_str(), "completed" | "error") {
+        bail!("status must be completed or error");
+    }
+    let bytes = control_u64(&params, "bytes", 0)?.min(1_000_000);
+    let event_id = open_ledger()?.record_tool(&session_id, &tool, &status, bytes, control_now())?;
+    Ok(json!({ "event_id": event_id, "source": "estimate" }))
+}
+
+fn ledger_get(params: Value) -> anyhow::Result<Value> {
+    let session_id = control_str(&params, "session_id")?;
+    open_ledger()?.summary(&session_id)
+}
+
+/// Read-only status feed for the TUI footer, which has no session id of its
+/// own. Reports the most recent session the daemon saw; never writes.
+fn ledger_latest() -> anyhow::Result<Value> {
+    let ledger = open_ledger()?;
+    match ledger.latest_session()? {
+        Some(session_id) => ledger.summary(&session_id),
+        None => Ok(json!({
+            "session_id": null,
+            "harness": { "token_source": "provider-reported", "available": false },
+            "estimate": { "token_source": "bytes/4", "injected_tokens": 0 },
+        })),
+    }
 }
 
 /// Backs the GUI's Usage tab: lifetime aggregate call/latency/output-size

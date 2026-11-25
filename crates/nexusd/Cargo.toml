@@ -57,6 +57,8 @@ graphviz = "*"
 [dependencies]
 nexus-core.workspace = true
 nexus-index.workspace = true
+nexus-memory.workspace = true
+myelind.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true

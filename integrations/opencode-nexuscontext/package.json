@@ -1,0 +1,22 @@
+{
+  "name": "opencode-nexuscontext",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "NexusContext Brain plug for OpenCode V2: bounded verified-memory injection with a separated token ledger",
+  "exports": {
+    ".": "./src/index.js",
+    "./tui": "./src/tui.tsx"
+  },
+  "files": [
+    "src"
+  ],
+  "peerDependencies": {
+    "@opentui/core": ">=0.6.6",
+    "@opentui/solid": ">=0.6.6",
+    "solid-js": ">=1.9.0"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs"
+  }
+}

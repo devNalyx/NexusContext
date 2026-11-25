@@ -1,6 +1,8 @@
+use crate::memory_tools;
 use anyhow::{anyhow, bail, Result};
 use nexus_core::{project_hash, Config, Paths, Registry, WatcherConfig};
 use nexus_index::{self as index, index_project, Direction, NodeRecord};
+use nexus_memory::Ledger;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -122,7 +124,7 @@ fn estimate_tokens(bytes: u64) -> u64 {
 }
 
 pub fn tool_definitions() -> Value {
-    json!([
+    let structural = json!([
         {
             "name": "index_repository",
             "description": "Build or rebuild the knowledge graph for a directory. Run this before other tools on a project you haven't indexed yet. `deep: true` also runs LSP-resolved-symbol enrichment if configured - see README.md.",
@@ -270,19 +272,43 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "get_session_usage",
-            "description": "How much data NexusContext has sent back in this session so far, per tool, with a rough token estimate - useful for keeping an eye on your own context budget. Scoped to this session only (since this MCP connection started, not lifetime totals across every session), and counts only NexusContext's own MCP responses - not your system prompt, conversation history, or any other tool's output.",
+            "description": "How much data NexusContext has sent back in this session so far, per tool, with a rough token estimate - useful for keeping an eye on your own context budget. Also reports provider-reported harness tokens/cost when a harness session id is available (pass session_id explicitly, or omit it to use the most recent session the daemon saw). The two sources are kept separate: bytes/4 estimates are NEVER added to provider token counts. Counts only NexusContext's own output - not your system prompt or other tools' output.",
             "inputSchema": {
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Harness session id whose provider-reported tokens/cost to show. Omit to use the most recent session recorded by the plug."
+                    }
+                }
             }
         }
-    ])
+    ]);
+    let mut all = structural
+        .as_array()
+        .expect("structural tools are always a JSON array")
+        .clone();
+    // Myelin's procedural-memory tools are now advertised from the same
+    // daemon and the same catalog, so the ledger and presets see one surface.
+    all.extend(
+        myelind::tools::tool_definitions()
+            .as_array()
+            .expect("Myelin tools are always a JSON array")
+            .iter()
+            .cloned(),
+    );
+    // Curated declarative memory joins the same catalog. `recall` is the
+    // only one of these in `standard`; every writing/review tool is opt-in.
+    all.extend(memory_tools::definitions());
+    Value::Array(all)
 }
 
 /// Source of truth for every tool `tool_definitions()` can return - kept in
-/// sync via `full_preset_matches_all_tool_names` below, so a 14th tool added
+/// sync via `full_preset_matches_all_tool_names` below, so a new tool added
 /// to `tool_definitions()` without also being added to a preset fails a test
-/// instead of silently vanishing from every preset.
+/// instead of silently vanishing from every preset. Includes the absorbed
+/// Myelin procedural-memory tools; the default preset deliberately advertises
+/// only one of them (see `STANDARD_EXTRA_TOOLS`).
 const ALL_TOOL_NAMES: &[&str] = &[
     "index_repository",
     "search_graph",
@@ -296,6 +322,23 @@ const ALL_TOOL_NAMES: &[&str] = &[
     "query_planner",
     "query_graph",
     "get_session_usage",
+    "record_observation",
+    "list_warmup_queue",
+    "list_skills",
+    "promote_skill",
+    "record_skill_feedback",
+    "mark_skill_used",
+    "list_pending_review",
+    "dismiss_pending_review",
+    "archive_skill",
+    "restore_skill",
+    "render_skill_graph",
+    "recall",
+    "list_facts",
+    "curate_fact",
+    "review_fact",
+    "export_memory",
+    "import_memory",
 ];
 
 /// A read-heavy coding session's core loop: bootstrap the index, then read
@@ -316,12 +359,38 @@ const STANDARD_EXTRA_TOOLS: &[&str] = &[
     "detect_dead_code",
     "query_planner",
     "get_session_usage",
+    // The one procedural tool worth a default slot: pure consumption of
+    // already-promoted skills, no curation and no learning side effects.
+    "list_skills",
+    // Curated facts: pure budgeted read, admission gate enforced in nexus-memory.
+    "recall",
 ];
 
-/// Admin/destructive (`delete_project`) tools, plus the niche ad-hoc
-/// `query_graph` DSL - opt-in via `preset = "full"` or an explicit
-/// `enabled` list, not advertised by default.
-const FULL_EXTRA_TOOLS: &[&str] = &["delete_project", "query_graph"];
+/// Admin/destructive (`delete_project`) tools, the niche ad-hoc `query_graph`
+/// DSL, and Myelin's curation/ingestion tools - opt-in via `preset = "full"`
+/// or an explicit `enabled` list, not advertised by default. Keeping these
+/// out of `standard` is what stops the absorbed memory engine from raising
+/// every session's schema tax.
+const FULL_EXTRA_TOOLS: &[&str] = &[
+    "delete_project",
+    "query_graph",
+    "record_observation",
+    "list_warmup_queue",
+    "promote_skill",
+    "record_skill_feedback",
+    "mark_skill_used",
+    "list_pending_review",
+    "dismiss_pending_review",
+    "archive_skill",
+    "restore_skill",
+    "render_skill_graph",
+    // Curated-memory curation/review/OKF I/O: opt-in from the default preset.
+    "list_facts",
+    "curate_fact",
+    "review_fact",
+    "export_memory",
+    "import_memory",
+];
 
 fn resolved_tool_names(config: &Config) -> std::collections::HashSet<&'static str> {
     if let Some(explicit) = &config.tools.enabled {
@@ -363,7 +432,7 @@ pub fn enabled_tool_definitions(config: &Config) -> Value {
     )
 }
 
-pub fn call(params: Value) -> Result<Value> {
+pub fn call(params: Value, config: &Config) -> Result<Value> {
     let name = params
         .get("name")
         .and_then(|n| n.as_str())
@@ -406,7 +475,28 @@ pub fn call(params: Value) -> Result<Value> {
         "search_code" => search_code(args),
         "query_graph" => query_graph(args),
         "query_planner" => query_planner(args),
-        "get_session_usage" => get_session_usage(args),
+        "get_session_usage" => get_session_usage(args, config),
+        // Procedural memory now lives behind this daemon's single MCP surface;
+        // the absorbed engine keeps its own store/config but not a second
+        // tool catalog for the agent to pay for.
+        "record_observation"
+        | "list_warmup_queue"
+        | "list_skills"
+        | "promote_skill"
+        | "record_skill_feedback"
+        | "mark_skill_used"
+        | "list_pending_review"
+        | "dismiss_pending_review"
+        | "archive_skill"
+        | "restore_skill"
+        | "render_skill_graph" => {
+            // Myelin returns a raw JSON value; NC tools return a pretty-printed
+            // string that the common MCP `content` wrapper below text-frames.
+            let value = myelind::tools::call(json!({ "name": name, "arguments": args }))?;
+            Ok(serde_json::to_string_pretty(&value)?)
+        }
+        "recall" | "list_facts" | "curate_fact" | "review_fact" | "export_memory"
+        | "import_memory" => memory_tools::call(name, args, config),
         _ => bail!("unknown tool: {name}"),
     };
 
@@ -605,7 +695,60 @@ fn get_file_context(args: Value) -> Result<String> {
 
 /// Takes no arguments deliberately - this reports on the session itself,
 /// not on any one project, so there's nothing to scope it by.
-fn get_session_usage(_args: Value) -> Result<String> {
+/// The fixed per-session schema cost, measured two ways: the ceiling of every
+/// tool `tool_definitions()` knows about, and the set this connection actually
+/// advertised (`config.tools.preset` or an explicit `tools.enabled` list).
+/// Factored out of `get_session_usage` so the relationship between the two can
+/// be asserted directly in tests instead of parsing a JSON string.
+fn schema_tax_json(config: &Config) -> Value {
+    let ceiling_bytes = tool_definitions().to_string().len() as u64;
+    let advertised_bytes = enabled_tool_definitions(config).to_string().len() as u64;
+    json!({
+        "bytes_ceiling": ceiling_bytes,
+        "estimated_tokens_ceiling": estimate_tokens(ceiling_bytes),
+        "bytes_advertised": advertised_bytes,
+        "estimated_tokens_advertised": estimate_tokens(advertised_bytes),
+        "note": "Fixed cost of tool names+descriptions+params, paid once per session regardless of tool usage. 'ceiling' is the full unfiltered tool_definitions() catalog; 'advertised' is the schema this session actually received after config.tools.preset/enabled filtering, so advertised <= ceiling. Both are bytes/4 estimates, not provider token counts.",
+    })
+}
+
+/// Provider-reported tokens/cost from the harness event stream, exposed in
+/// the same response as NC's own bytes/4 counters but under a distinct source.
+/// The ledger file is only opened when it already exists, so a plain MCP
+/// session that never installed the plug has no side effects here.
+fn harness_usage_json(session_arg: Option<&str>) -> Value {
+    let unavailable = |reason: &str| {
+        json!({
+            "token_source": "provider-reported",
+            "available": false,
+            "note": reason,
+        })
+    };
+    let path = Paths::resolve().ledger_db_file();
+    if !path.exists() {
+        return unavailable("No ledger yet: no harness tokens/cost have been reported. The bytes/4 numbers below are estimates only.");
+    }
+    let Ok(ledger) = Ledger::open(&path) else {
+        return unavailable("Ledger could not be opened; no harness tokens/cost are reported.");
+    };
+    let session_id = match session_arg
+        .map(str::to_string)
+        .or_else(|| ledger.latest_session().ok().flatten())
+    {
+        Some(id) => id,
+        None => return unavailable("No harness session has been recorded yet."),
+    };
+    match ledger.summary(&session_id) {
+        Ok(summary) => {
+            let mut harness = summary["harness"].clone();
+            harness["session_id"] = json!(session_id);
+            harness
+        }
+        Err(_) => unavailable("Ledger summary could not be read."),
+    }
+}
+
+fn get_session_usage(args: Value, config: &Config) -> Result<String> {
     let map = SESSION_USAGE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     let map = map.lock().unwrap();
 
@@ -634,14 +777,12 @@ fn get_session_usage(_args: Value) -> Result<String> {
 
     let (reads_avoided, bytes_avoided) = reads_avoided_summary(&map);
 
-    // #40 follow-up 1: the fixed per-session cost every tool schema (name +
-    // description + params) adds to the context regardless of whether any
-    // tool is ever called - previously acknowledged in README's Phase 21/22
-    // notes but never actually measured. `enabled_tool_definitions` isn't
-    // reachable from here without the resolved config/preset this call
-    // doesn't have, so this reports the unfiltered `tool_definitions()` size
-    // (the ceiling every preset is a subset of), noted as such below.
-    let schema_tax_bytes = tool_definitions().to_string().len() as u64;
+    // #40 follow-up 1 + flagship P0: the fixed per-session schema cost now
+    // reports both the catalog ceiling and the filtered set this connection
+    // was actually given (see `schema_tax_json`). The ledger needs the real
+    // number a session pays, not just an upper bound.
+    let schema_tax = schema_tax_json(config);
+    let harness = harness_usage_json(args.get("session_id").and_then(Value::as_str));
 
     Ok(serde_json::to_string_pretty(&json!({
         "session_started_unix": session_started_unix(),
@@ -649,10 +790,11 @@ fn get_session_usage(_args: Value) -> Result<String> {
         "total_output_bytes": total_output_bytes,
         "total_estimated_tokens": estimate_tokens(total_output_bytes),
         "by_tool": by_tool,
-        "schema_tax": {
-            "bytes": schema_tax_bytes,
-            "estimated_tokens": estimate_tokens(schema_tax_bytes),
-            "note": "Fixed cost of every tool's name+description+params schema, paid once per session regardless of tool usage - this is the full unfiltered tool_definitions() size (config.tools.preset/enabled trims what's actually sent, so a Minimal/Standard session's real tax is <= this number, not exactly it).",
+        "schema_tax": schema_tax,
+        "harness": harness,
+        "sources": {
+            "estimate": "total_output_bytes / total_estimated_tokens / schema_tax / reads_avoided are NC's own bytes/4 approximations, never provider token counts",
+            "harness": "provider-reported tokens and cost from the harness event stream, kept in a separate object and never summed with the estimates above",
         },
         "reads_avoided": {
             "count": reads_avoided,
@@ -961,7 +1103,7 @@ mod tests {
     fn get_session_usage_reports_a_recorded_call_with_its_token_estimate() {
         record_session_call("__test_only_tool_b__", 40, false);
 
-        let output = get_session_usage(Value::Null).unwrap();
+        let output = get_session_usage(Value::Null, &Config::default()).unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         let by_tool = parsed["by_tool"].as_array().unwrap();
         let entry = by_tool
@@ -1004,12 +1146,71 @@ mod tests {
     fn get_session_usage_reports_a_nonzero_schema_tax() {
         // Not asserting an exact byte count - that would just re-encode
         // tool_definitions()'s current size and break on every schema edit.
-        // The property that matters here (#40 follow-up 1) is that the tax
-        // is actually measured and reported, not left implied.
-        let output = get_session_usage(Value::Null).unwrap();
+        // The property that matters is that both numbers are measured and
+        // reported, not left implied, and that the advertised one is the
+        // smaller, honest cost of the tools actually sent this session.
+        let output = get_session_usage(Value::Null, &Config::default()).unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
-        assert!(parsed["schema_tax"]["bytes"].as_u64().unwrap() > 0);
+        assert!(parsed["schema_tax"]["bytes_ceiling"].as_u64().unwrap() > 0);
+        assert!(parsed["schema_tax"]["bytes_advertised"].as_u64().unwrap() > 0);
         assert!(parsed["reads_avoided"]["counted_tools"].is_array());
+    }
+
+    #[test]
+    fn schema_tax_advertised_is_never_more_than_the_ceiling() {
+        let ceiling = schema_tax_json(&Config::default());
+        let ceiling_bytes = ceiling["bytes_ceiling"].as_u64().unwrap();
+        assert_eq!(ceiling_bytes, tool_definitions().to_string().len() as u64);
+
+        for preset in [
+            ToolsPreset::Minimal,
+            ToolsPreset::Standard,
+            ToolsPreset::Full,
+        ] {
+            let config = Config {
+                tools: nexus_core::ToolsConfig {
+                    preset,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let tax = schema_tax_json(&config);
+            let advertised = tax["bytes_advertised"].as_u64().unwrap();
+            assert!(advertised > 0, "preset {preset:?} advertises no schema");
+            assert!(
+                advertised <= ceiling_bytes,
+                "preset {preset:?} advertised schema exceeds the catalog ceiling"
+            );
+            assert_eq!(
+                tax["estimated_tokens_advertised"].as_u64().unwrap(),
+                estimate_tokens(advertised)
+            );
+            assert_eq!(tax["bytes_ceiling"], ceiling_bytes);
+        }
+
+        // An explicit `enabled` list overrides the preset for tools/list, so
+        // the advertised tax must follow the same resolution.
+        let config = Config {
+            tools: nexus_core::ToolsConfig {
+                preset: ToolsPreset::Full,
+                enabled: Some(vec!["search_code".to_string()]),
+            },
+            ..Default::default()
+        };
+        let tax = schema_tax_json(&config);
+        let advertised = tax["bytes_advertised"].as_u64().unwrap();
+        let one_tool = serde_json::to_string(
+            &enabled_tool_definitions(&config)
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == "search_code")
+                .unwrap(),
+        )
+        .unwrap()
+        .len() as u64;
+        assert_eq!(advertised, one_tool + 2, "array brackets around one tool");
+        assert!(advertised < ceiling_bytes);
     }
 
     #[test]
@@ -1169,13 +1370,18 @@ mod tests {
     }
 
     #[test]
-    fn default_config_resolves_to_standard_ten_tools() {
+    fn default_config_resolves_to_standard_twelve_tools() {
         let config = Config::default();
         let filtered = tool_names(&enabled_tool_definitions(&config));
-        assert_eq!(filtered.len(), 10);
+        assert_eq!(filtered.len(), 12);
         assert!(filtered.contains("search_code"));
         assert!(filtered.contains("get_session_usage"));
+        assert!(filtered.contains("recall"));
+        // The only procedural tool in the default preset: pure consumption of
+        // already-promoted skills, no curation side effects.
+        assert!(filtered.contains("list_skills"));
         assert!(!filtered.contains("delete_project"));
+        assert!(!filtered.contains("record_observation"));
     }
 
     #[test]

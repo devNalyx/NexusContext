@@ -107,10 +107,17 @@ fn dispatch(method: &str, params: Value) -> Result<Value, RpcError> {
                 .unwrap_or_default();
             Ok(json!({ "tools": crate::tools::enabled_tool_definitions(&config) }))
         }
-        "tools/call" => crate::tools::call(params).map_err(|err| RpcError {
-            code: -32000,
-            message: err.to_string(),
-        }),
+        "tools/call" => {
+            // Same resolved config `tools/list` uses to advertise schemas, so
+            // `get_session_usage`'s advertised schema tax always describes
+            // the tool set this session was actually given.
+            let config = nexus_core::Config::load(&nexus_core::Paths::resolve().config_file())
+                .unwrap_or_default();
+            crate::tools::call(params, &config).map_err(|err| RpcError {
+                code: -32000,
+                message: err.to_string(),
+            })
+        }
         _ => Err(RpcError {
             code: -32601,
             message: format!("method not found: {method}"),
