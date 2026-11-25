@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS skills (
     observation_count INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     last_invoked_at TEXT,
-    status TEXT NOT NULL DEFAULT 'active'
+    status TEXT NOT NULL DEFAULT 'active',
+    approved_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS corrections (
@@ -166,6 +167,10 @@ pub struct SkillView {
     /// `active` (live in `~/.claude/skills/`) or `archived` (moved out,
     /// via `archive_skill` - always an explicit action, never automatic).
     pub status: String,
+    /// `human:<name>` sign-off. Promotion alone is agent/automatic judgment;
+    /// only a human-approved skill may be re-injected into model context.
+    /// `None` means "not verified for injection", not "rejected".
+    pub approved_by: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -268,6 +273,7 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         ensure_column(&conn, "skills", "last_invoked_at", "TEXT")?;
         ensure_column(&conn, "skills", "status", "TEXT NOT NULL DEFAULT 'active'")?;
+        ensure_column(&conn, "skills", "approved_by", "TEXT")?;
         Ok(Self {
             conn,
             promotion_reps: config.promotion_reps,
@@ -519,7 +525,8 @@ impl Store {
             "SELECT s.id, s.candidate_id, s.slug, s.name, s.path, s.promoted_reason,
                     s.observation_count, s.created_at, s.last_invoked_at, s.status,
                     (SELECT COUNT(*) FROM corrections c WHERE c.skill_id = s.id AND c.kind = 'correction'),
-                    (SELECT COUNT(*) FROM corrections c WHERE c.skill_id = s.id AND c.kind = 'confirmation')
+                    (SELECT COUNT(*) FROM corrections c WHERE c.skill_id = s.id AND c.kind = 'confirmation'),
+                    s.approved_by
              FROM skills s ORDER BY s.created_at DESC",
         )?;
         let now = Utc::now();
@@ -543,10 +550,96 @@ impl Store {
                 status: row.get(9)?,
                 correction_count: row.get(10)?,
                 confirmation_count: row.get(11)?,
+                approved_by: row.get(12)?,
                 stale: seconds_since(now, &reference_ts) >= self.stale_after_secs,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(Into::into)
+    }
+
+    /// Human sign-off for procedural memory. Mirrors declarative facts:
+    /// promotion is agent/automatic judgment, but nothing enters model
+    /// context until a real `human:<name>` actor approves it. A non-human
+    /// actor is rejected here, not silently downgraded.
+    pub fn approve_skill(&self, skill_id: i64, actor: &str) -> anyhow::Result<()> {
+        if !actor.starts_with("human:") || actor.len() <= "human:".len() {
+            anyhow::bail!("only a real 'human:<name>' actor can approve a skill");
+        }
+        let updated = self.conn.execute(
+            "UPDATE skills SET approved_by = ?1 WHERE id = ?2",
+            params![actor, skill_id],
+        )?;
+        if updated == 0 {
+            anyhow::bail!("no such skill: {skill_id}");
+        }
+        Ok(())
+    }
+
+    /// Clear a previous sign-off. An agent cannot do this; the human/CLI
+    /// surface can, so a bad skill can be taken out of context immediately
+    /// without waiting for its atrophy window.
+    pub fn revoke_skill_approval(&self, skill_id: i64) -> anyhow::Result<()> {
+        let updated = self.conn.execute(
+            "UPDATE skills SET approved_by = NULL WHERE id = ?1",
+            params![skill_id],
+        )?;
+        if updated == 0 {
+            anyhow::bail!("no such skill: {skill_id}");
+        }
+        Ok(())
+    }
+
+    /// The small set of skills eligible for a context signpost: promoted,
+    /// still active, non-atrophied, and explicitly human-approved. Archived,
+    /// unapproved, and stale skills are excluded here rather than relying on
+    /// the renderer to notice them later. Bounded and deterministically
+    /// ordered by last use (then id); no scoring model is involved.
+    pub fn list_injectable_skills(&self, limit: i64) -> anyhow::Result<Vec<SkillView>> {
+        let limit = limit.clamp(1, 25);
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.candidate_id, s.slug, s.name, s.path, s.promoted_reason,
+                    s.observation_count, s.created_at, s.last_invoked_at, s.status,
+                    (SELECT COUNT(*) FROM corrections c WHERE c.skill_id = s.id AND c.kind = 'correction'),
+                    (SELECT COUNT(*) FROM corrections c WHERE c.skill_id = s.id AND c.kind = 'confirmation'),
+                    s.approved_by
+             FROM skills s
+             WHERE s.status = 'active' AND s.approved_by LIKE 'human:%'
+             ORDER BY COALESCE(s.last_invoked_at, s.created_at) DESC, s.id DESC
+             LIMIT ?1",
+        )?;
+        let now = Utc::now();
+        let rows = stmt.query_map(params![limit], |row| {
+            let created_at: String = row.get(7)?;
+            let last_invoked_at: Option<String> = row.get(8)?;
+            let reference_ts = last_invoked_at
+                .as_deref()
+                .unwrap_or(&created_at)
+                .to_string();
+            Ok(SkillView {
+                id: row.get(0)?,
+                candidate_id: row.get(1)?,
+                slug: row.get(2)?,
+                name: row.get(3)?,
+                path: row.get(4)?,
+                promoted_reason: row.get(5)?,
+                observation_count: row.get(6)?,
+                created_at,
+                last_invoked_at,
+                status: row.get(9)?,
+                correction_count: row.get(10)?,
+                confirmation_count: row.get(11)?,
+                approved_by: row.get(12)?,
+                stale: seconds_since(now, &reference_ts) >= self.stale_after_secs,
+            })
+        })?;
+        let mut out = Vec::new();
+        for skill in rows {
+            let skill = skill?;
+            if !skill.stale {
+                out.push(skill);
+            }
+        }
+        Ok(out)
     }
 
     /// The bounded neighborhood around one skill: its candidate, the
@@ -1300,6 +1393,47 @@ mod tests {
         // last_invoked_at is now "just now", well inside the 60s window.
         assert!(!store.list_skills().unwrap()[0].stale);
         assert!(store.list_skills().unwrap()[0].last_invoked_at.is_some());
+    }
+
+    #[test]
+    fn only_human_approved_active_fresh_skills_are_injectable() {
+        let (db_path, skills_dir) = scratch_dirs("injectable-skills");
+        let store = Store::open(
+            &db_path,
+            StoreConfig {
+                stale_after_secs: 60,
+                ..StoreConfig::default()
+            },
+        )
+        .unwrap();
+        let mut input = obs("rotate leaked api key", "revoke and reissue");
+        input.high_stakes = true;
+        store.record_observation(input, &skills_dir).unwrap();
+        let skill_id = store.list_skills().unwrap()[0].id;
+
+        assert!(store.list_injectable_skills(10).unwrap().is_empty());
+        assert!(store.approve_skill(skill_id, "agent/self").is_err());
+        store.approve_skill(skill_id, "human:alice").unwrap();
+        assert_eq!(store.list_injectable_skills(10).unwrap().len(), 1);
+        store.revoke_skill_approval(skill_id).unwrap();
+        assert!(store.list_injectable_skills(10).unwrap().is_empty());
+        store.approve_skill(skill_id, "human:alice").unwrap();
+
+        store.archive_skill(skill_id, &skills_dir).unwrap();
+        assert!(store.list_injectable_skills(10).unwrap().is_empty());
+        store.restore_skill(skill_id, &skills_dir).unwrap();
+        assert_eq!(store.list_injectable_skills(10).unwrap().len(), 1);
+
+        let two_hours_ago = (Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        store
+            .conn
+            .execute(
+                "UPDATE skills SET created_at = ?1 WHERE id = ?2",
+                params![two_hours_ago, skill_id],
+            )
+            .unwrap();
+        assert!(store.list_injectable_skills(10).unwrap().is_empty());
+        std::fs::remove_dir_all(db_path.parent().unwrap()).ok();
     }
 
     #[test]

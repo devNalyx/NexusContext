@@ -66,6 +66,14 @@ before storage; staleness is last-used atrophy, not code-change based. See
 | `restore_skill` | Reverse an archive. Full preset only. |
 | `render_skill_graph` | Render one skill's bounded neighborhood as PNG/DOT. Full preset only. |
 
+Promotion is agent/automatic judgment, **not** a human sign-off. A promoted
+skill enters model context only after `nexus memory skill-approve <id> --actor
+human:<name>` from the CLI; there is deliberately no MCP tool for an agent to
+approve its own procedural memory. `ledger.inject` signposts at most five
+active, non-atrophied, human-approved skills in a separate, clearly labelled
+section under the same hard ~800-token budget. The full `SKILL.md` is loaded
+only via `list_skills`; a signpost is a pointer, not a dump.
+
 ## Declarative memory (curated facts, OKF v0.3)
 
 Decisions, incidents, lessons, dead ends and owners — never raw transcripts,

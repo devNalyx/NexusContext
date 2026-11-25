@@ -70,6 +70,8 @@ nexus memory reject <id> --actor human:you --project /path/to/repo
 nexus memory skills --project /path/to/repo                         # absorbed Myelin skills
 nexus memory skill-queue --project /path/to/repo       # both queues, labelled
 nexus memory skill-promote <id> --project /path/to/repo # id from skill_candidates_promotable
+nexus memory skill-approve <id> --actor human:you               # eligible for signpost
+nexus memory skill-revoke <id> --actor human:you                # leaves the next injection
 nexus memory bundles --project /path/to/repo --root /path/to/workspace
 ```
 
@@ -82,6 +84,12 @@ interchangeable:
   hook. These are *not* promotable: a human/agent must first judge one and turn
   it into an observation via the agent. Nothing auto-promotes. The promotion
   loop is `SessionEnd` → judgment → `record_observation` → `skill-promote`.
+
+`skill-promote` creates a skill, but it does **not** make it injectable. Use
+`skills` to find its id, then `skill-approve <id> --actor human:you`. Only an
+active, non-atrophied, human-approved skill gets a bounded signpost in
+`ledger.inject`; `skill-revoke` removes that sign-off immediately. There is no
+MCP tool for this — an agent cannot approve its own procedural memory.
 
 `--lower-trust` never bypasses freshness or `allowed_roots`: it only shows
 machine-confirmed/unverified concepts, always labelled as such. A `human:`

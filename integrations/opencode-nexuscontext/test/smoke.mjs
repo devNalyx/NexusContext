@@ -31,7 +31,7 @@ try {
   )
 
   const received = []
-  const INJECTED_TEXT = "## NexusContext verified memory\n- [decision] owner: alice (src/lib.rs)\n"
+  const INJECTED_TEXT = "## NexusContext verified memory\n- [decision] owner: alice (src/lib.rs)\n### Approved skills (procedural memory, not repo-anchored)\n- [skill] rotate a key — revoke first (load with list_skills)\n"
   const responses = {
     "ledger.inject": {
       text: INJECTED_TEXT,
@@ -39,6 +39,7 @@ try {
       estimated_tokens: 30,
       budget_tokens: 800,
       fact_ids: ["f1"],
+      skill_ids: ["s1"],
     },
     "ledger.tool": { event_id: 1, source: "estimate" },
     "ledger.usage": { event_id: 2, source: "harness" },

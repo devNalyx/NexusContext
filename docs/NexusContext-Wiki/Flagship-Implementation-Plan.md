@@ -104,9 +104,11 @@ machine-confirmed facts; no LLM in `nexusd`.
 | ✅ 3.3 | `nexus install opencode` | one command registers MCP + plugin + minimal config; `--uninstall --yes` restores the previous `opencode.json` entry and deletes only files from the install manifest |
 | ✅ 3.4 | Claude Code `SessionEnd` hook → absorbed Myelin pipeline; `recall` via MCP | `nexus install claude --yes` merges a project-local `SessionEnd` command hook; signposted lines are staged into Myelin's pending-review queue (never `record_observation`), so no excerpt auto-promotes. No CLAUDE.md/AGENTS.md takeover |
 | ✅ 3.5 | Multi-repo routing via OKF bundle-root `description` (ADR 0020) | `nexus memory bundles` reads only `index.md` metadata for many repos and marks the active one; injection stays scoped to the active repo and the same hard cap. No cross-repo sync or account |
+| ✅ 3.6 | Human-gated skill signpost in the same injection block | promotion alone never injects; only `skill-approve --actor human:<name>` makes an active, non-atrophied skill eligible. At most five signposts, separately labelled, trimmed before verified facts under the same hard cap, and recorded as exact bytes plus `skill_ids` in the ledger |
 
 **Gate:** one recorded session shows bounded injection + real token number + stale
-fact omitted + reviewed skill promoted, with zero daemon-side LLM calls.
+fact omitted + reviewed skill promoted and human-approved for signposting,
+with zero daemon-side LLM calls.
 
 ## P4 — GUI, portability, budgeting
 
@@ -136,11 +138,14 @@ our own harness when all of the following hold, so speed never buys us confidenc
    harness with no data loss (deleting the plug directory by hand cannot undo a
    config merge; use the uninstall command).
 2. The plugin's hook handlers are real, not the P0 no-ops. Injection is bounded by
-   the hard ~800-token cap and contains only verified, non-stale, current-repo facts.
+   the hard ~800-token cap and contains only verified, non-stale, current-repo
+   facts. Any procedural signpost is separately labelled and human-approved.
 3. The ledger reports a real harness token/cost number when available and labels
    the bytes/4 fallback explicitly — never silently mixes the two.
-4. No auto-promotion into memory without agent judgment + human/CLI review; redaction
-   happens before storage; no raw transcripts or preferences enter NC memory.
+4. No auto-promotion into memory without agent judgment + human/CLI review; a
+   promoted skill still needs human sign-off before it can enter context;
+   redaction happens before storage; no raw transcripts or preferences enter NC
+   memory.
 5. A recorded session shows a stale fact omitted and a machine-confirmed concept not
    auto-injected (ADR 0020), with zero daemon-side LLM calls.
 6. Still local-first: no account, no cloud, no cross-repo sync.
@@ -152,6 +157,11 @@ Gate evidence (2026-11-25, installed v0.1.22 binaries, isolated disposable repos
 - (2) Control-socket test: `ledger.inject` rendered 244 bytes / 61 tokens against an
   800-token cap, bytes equal to the returned text, with a fresh fact admitted and a
   stale anchored fact excluded from the text.
+- (2b) Skill signposts come from a separate renderer section. Store and renderer
+  tests prove that promotion alone, `agent:` approval, archive, and atrophy all
+  keep a skill out of context; only a `human:` sign-off passes. Signposts are
+  trimmed before verified facts when the shared budget is tight, and the ledger
+  records their exact bytes and ids separately from fact ids.
 - (3) Ledger keeps `harness` (provider tokens/cost from `session.usage.recorded`)
   separate from labelled bytes/4 `estimate`; they are never summed.
 - (4) A Claude `SessionEnd` signpost staged one redacted excerpt into
