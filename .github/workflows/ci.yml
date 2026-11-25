@@ -52,7 +52,9 @@ jobs:
       - run: cargo test --workspace --locked
 
   test-macos:
-    runs-on: macos-14
+    # macos-14 was retired by GitHub on 2026-11-02; macos-15 is the
+    # supported arm64 label.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
