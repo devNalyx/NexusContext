@@ -3,6 +3,8 @@
 **Objective:** A self-hosted, lightweight binary daemon that provides a standardized MCP interface for local codebase indexing and structural code intelligence (knowledge graph, optionally enriched with LSP-resolved symbols) — with a native Linux desktop GUI on top.
 
 > **Note on the sections below:** Sections 1-3 and 5-6 describe the *current* system and are kept up to date. Section 4 ("Full Roadmap") is a frozen, phase-by-phase historical log - it legitimately references things (an embeddings/semantic-search subsystem, specific old tool counts) that were true at that phase and were later removed or changed; that's intentional history, not drift. The embeddings/semantic-search subsystem described there was removed entirely (see [`docs/NexusContext-Wiki/ADRs/0010-remove-embeddings-subsystem.md`](docs/NexusContext-Wiki/ADRs/0010-remove-embeddings-subsystem.md)) and is not part of the current product.
+>
+> **Working in this repo with coding agents?** Start with [`AGENTS.md`](AGENTS.md) for build/test/conventions, [`CONTRIBUTING.md`](CONTRIBUTING.md) for PR/release workflow, and [`docs/NexusContext-Wiki/Agentic-Development.md`](docs/NexusContext-Wiki/Agentic-Development.md) for the NexusContext-specific agent workflow.
 
 ---
 

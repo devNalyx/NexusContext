@@ -47,6 +47,7 @@ for the handful of decisions worth defending later.
 - [[Known-Limitations]] — stated plainly, not smoothed over.
 - [[ADRs/README|ADRs]] — the architectural decisions that shaped the above,
   why each was made, and what it commits future work to.
+- [[Agentic-Development]] — install/connect, tool selection, memory trust, and repo workflow.
 - [[Flagship-Proposal]] — where NC goes next: one daemon, two memories, one ledger.
 - [[Flagship-Implementation-Plan]] — phased work tracker and acceptance gates.
 - [[Flagship-Reboot-Notes]] — handoff for a fresh implementation session.
