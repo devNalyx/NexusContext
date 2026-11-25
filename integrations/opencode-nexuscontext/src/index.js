@@ -88,17 +88,31 @@ export default Plugin.define({
 
     const registrations = []
 
+    // The system instruction snapshot is assembled right after the prompt
+    // hook. Putting the entry here (and awaiting it) is what makes the fact
+    // visible to the very first model call; doing it in `context` records the
+    // injection in the ledger but lands after the snapshot was taken, so the
+    // agent never actually sees the text. Real OpenCode v2.4.1 dogfooding
+    // caught that gap: the ledger had an entry, the conversation did not.
     registrations.push(
-      await ctx.session.hook("prompt", (event) => {
+      await ctx.session.hook("prompt", async (event) => {
         const sessionID = event.sessionID
         const text = event.prompt?.text
         if (typeof text === "string" && text.length > 0) {
           remember(sessionID, "query", text.slice(0, MAX_QUERY_CHARS))
         }
+        await refresh(sessionID)
       }),
     )
 
-    registrations.push(await ctx.session.hook("context", (event) => refresh(event.sessionID)))
+    // Synthetic/model-only requests have no prompt hook. Fill the entry for
+    // those; on normal turns the prompt hook already put it, so don't inject
+    // (or ledger-record) the same text twice.
+    registrations.push(
+      await ctx.session.hook("context", async (event) => {
+        if (!injected.has(event.sessionID)) await refresh(event.sessionID)
+      }),
+    )
 
     // Compaction replaces the old transcript with a summary. Re-putting the
     // same keyed entry is idempotent, so NC context cannot accumulate across

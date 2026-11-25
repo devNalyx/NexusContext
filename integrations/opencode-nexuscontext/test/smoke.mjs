@@ -125,20 +125,25 @@ try {
   assert.equal(stored["nexuscontrol.socket"], socketPath)
   assert.ok(usageAborted, "usage stream should be subscribed")
 
-  // prompt only remembers the query; it must not inject anything itself.
-  sessionHooks.get("prompt")({ sessionID: "s1", prompt: { text: "ledger owner" } })
-  assert.equal(entries.length, 0)
-
-  // context asks the daemon for bounded, verified text and puts ONE keyed entry.
-  await sessionHooks.get("context")({ sessionID: "s1" })
+  // The prompt hook puts the entry before the system snapshot is assembled.
+  // A real OpenCode v2.4.1 run showed that doing this only in `context`
+  // produced a ledger entry the agent never received, so this ordering is
+  // part of the contract, not an implementation detail.
+  await sessionHooks.get("prompt")({ sessionID: "s1", prompt: { text: "ledger owner" } })
   assert.equal(entries.length, 1)
   assert.equal(entries[0].key, "nexuscontext.memory")
   assert.equal(entries[0].value, INJECTED_TEXT)
   const injection = received.find((r) => r.method === "ledger.inject")
-  assert.ok(injection, "ledger.inject was called")
+  assert.ok(injection, "ledger.inject was called from the prompt hook")
   assert.equal(injection.params.query, "ledger owner")
   assert.equal(injection.params.budget_tokens, 800)
   assert.equal(injection.params.repo_path, tmp)
+
+  // context must not re-inject a turn the prompt hook already handled, or
+  // the same text would be ledger-recorded twice for one model call.
+  await sessionHooks.get("context")({ sessionID: "s1" })
+  assert.equal(entries.length, 1)
+  assert.equal(received.filter((r) => r.method === "ledger.inject").length, 1)
 
   // compaction refreshes the same key; it must not append or re-run recall.
   await sessionHooks.get("compaction")({ sessionID: "s1" })

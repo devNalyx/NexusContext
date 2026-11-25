@@ -25,12 +25,22 @@ fn main() -> Result<()> {
             tracing::info!("myelind starting as MCP stdio server");
             myelind::mcp::serve_stdio()
         }
+        #[cfg(unix)]
         Command::Serve => {
             let paths = myelin_core::Paths::resolve();
             std::fs::create_dir_all(&paths.data_dir)?;
             init_tracing_file(&paths.log_file())?;
             tracing::info!("myelind starting as background daemon (control API)");
             myelind::control::serve(paths.control_socket())
+        }
+        #[cfg(not(unix))]
+        Command::Serve => {
+            anyhow::bail!(
+                "`myelind serve` (the background daemon / Unix-domain control API) isn't \
+                 supported on this platform yet - see \
+                 https://github.com/devNalyx/NexusContext/issues/16. Use `myelind mcp` \
+                 instead; every MCP tool works without it."
+            )
         }
     }
 }
