@@ -187,7 +187,7 @@ smoke test locking in that ordering. Two release-blocking issues found in the
 same pass — an unguarded `std::os::unix` import in absorbed `myelind` (Windows
 builds) and GitHub's retirement of the `macos-14` label — are fixed in v0.1.22.
 
-## Current status (2026-11-24)
+## Current status (2026-11-25)
 
 - Docs prepared: proposal, plan, ADRs 0018/0019/0020, reboot notes.
 - P0 complete: honest dual schema tax + V2 plugin scaffold.
@@ -208,7 +208,12 @@ builds) and GitHub's retirement of the `macos-14` label — are fixed in v0.1.22
   rejected before publish) → v0.1.24 (human-gated skill signposts: promotion is
   not consent; only `human:<name>` sign-off makes active non-atrophied skills
   injectable, separately labelled and budget-trimmed before facts, exact bytes
-  + `skill_ids` ledgered). v0.1.23 release run `45549280753` published all 9
-  assets green. PR #98 merged as `b650f7d`; CI green after Windows SQLite tempdir
-  cleanup fix; isolated signpost dogfood passed (before approval excluded, after
-  human approval present/labelled/under budget, after revoke excluded).
+  + `skill_ids` ledgered).
+- v0.1.23 release run `45549280753` published all 9 assets green.
+- v0.1.24: PR #98 merged as `b650f7d` (feature) and PR #99 merged as `39130ed`
+  (version bump). Release run `45558470748` completed success with 9 assets.
+  Installed locally via `cargo install --path crates/nexus-cli --locked` and
+  `--path crates/nexusd --locked`; global OpenCode plugin files refreshed.
+  Verification: workspace fmt/clippy/test green, plugin smoke green, isolated
+  signpost dogfood PASS, installed-binary dogfood PASS. No leftover `/tmp/opencode/nc-*`
+  test processes found.
