@@ -22,7 +22,7 @@ for the handful of decisions worth defending later.
 
 - [[Architecture]] — the daemon, its two transports, and how the pieces fit
   together.
-- [[MCP-Tools]] — the 12 tools an agent can call, grouped, and why they're
+- [[MCP-Tools]] — the 29 tools an agent can call, grouped, and why they're
   gated behind presets.
 - [[Indexing-Pipeline]] — how a codebase becomes a graph: tree-sitter,
   two-pass call resolution, per-language quality tiers.
@@ -47,6 +47,9 @@ for the handful of decisions worth defending later.
 - [[Known-Limitations]] — stated plainly, not smoothed over.
 - [[ADRs/README|ADRs]] — the architectural decisions that shaped the above,
   why each was made, and what it commits future work to.
+- [[Flagship-Proposal]] — where NC goes next: one daemon, two memories, one ledger.
+- [[Flagship-Implementation-Plan]] — phased work tracker and acceptance gates.
+- [[Flagship-Reboot-Notes]] — handoff for a fresh implementation session.
 
 ## The one-sentence pitch, held to honestly
 

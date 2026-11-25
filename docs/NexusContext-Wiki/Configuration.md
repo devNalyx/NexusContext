@@ -16,7 +16,7 @@ allowed_roots = []   # if non-empty, every MCP tool/CLI command that takes a
 warm_window_secs = 21600   # 6h default - see Watcher-and-Freshness
 
 [tools]
-preset = "standard"   # "minimal" (5) | "standard" (default, 10) | "full" (12)
+preset = "standard"   # "minimal" (5) | "standard" (default, 12) | "full" (29)
 # enabled = ["search_code", "get_architecture"]   # explicit list, overrides preset
 
 [lsp]
@@ -34,7 +34,7 @@ request_timeout_secs = 10
 - **`[watcher].warm_window_secs`** — how long a project stays "warm"
   (actively watched, auto-reindexed on change) after it was last queried.
   See [[Watcher-and-Freshness]].
-- **`[tools]`** — which of the 12 MCP tools get advertised to a calling
+- **`[tools]`** — which of the 29 MCP tools get advertised to a calling
   agent. See [[MCP-Tools]] for the preset breakdown.
 - **`[lsp]`** — off by default. When on, `index_repository`'s `deep`
   argument (or `nexus reindex --deep`) spawns `server_command` to resolve

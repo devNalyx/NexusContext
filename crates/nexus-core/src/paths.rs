@@ -46,12 +46,25 @@ impl Paths {
         self.data_dir.join(project_hash)
     }
 
+    /// Curated-fact store for one repo. Deliberately distinct from the
+    /// graph's `graph.db`: facts are human-curated and review-gated, the
+    /// graph is machine-derived (ADR 0019, ADR 0020).
+    pub fn memory_db_file(&self, project_hash: &str) -> PathBuf {
+        self.project_data_dir(project_hash).join("memory.db")
+    }
+
     pub fn registry_file(&self) -> PathBuf {
         self.data_dir.join("projects.json")
     }
 
     pub fn usage_stats_file(&self) -> PathBuf {
         self.data_dir.join("usage_stats.json")
+    }
+
+    /// Context-economy ledger: harness-reported tokens/cost and NC's own
+    /// bytes/4 injection estimate, kept in explicitly separate sources.
+    pub fn ledger_db_file(&self) -> PathBuf {
+        self.data_dir.join("ledger.db")
     }
 
     pub fn control_socket(&self) -> PathBuf {

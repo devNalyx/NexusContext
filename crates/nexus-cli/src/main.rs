@@ -1,4 +1,6 @@
 mod install;
+mod memory;
+mod session_end;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -99,8 +101,26 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
-    /// Auto-detect MCP-capable agents on this machine and configure `nexusd mcp` for each.
-    Install,
+    /// Curated facts, trust review, OKF bundles and the absorbed skill tools.
+    Memory {
+        #[command(subcommand)]
+        action: memory::Command,
+    },
+    /// Internal: read a Claude Code SessionEnd hook payload from stdin and
+    /// stage explicitly signposted observations into procedural memory.
+    #[command(hide = true)]
+    SessionEnd,
+    /// Wire `nexusd mcp` into an agent. Default is a dry run; pass --yes to write.
+    Install {
+        /// Agent to wire up: `opencode` (plugin + MCP + config) or `claude`.
+        target: Option<String>,
+        /// Actually write files. Without this flag nothing on disk changes.
+        #[arg(long)]
+        yes: bool,
+        /// Remove a previous `nexus install opencode` from its manifest.
+        #[arg(long)]
+        uninstall: bool,
+    },
     /// Grep-like full-text search over indexed file content (not symbol names).
     SearchCode {
         query: String,
@@ -300,7 +320,22 @@ fn main() -> Result<()> {
             delete_project(&path)?;
             println!("deleted index for {}", path.display());
         }
-        Command::Install => install::run()?,
+        Command::Memory { action } => memory::run(action)?,
+        Command::SessionEnd => session_end::run()?,
+        Command::Install {
+            target,
+            yes,
+            uninstall,
+        } => {
+            if uninstall {
+                if target.as_deref() != Some("opencode") {
+                    anyhow::bail!("--uninstall currently supports only 'opencode'");
+                }
+                install::uninstall_opencode(yes)?;
+            } else {
+                install::run(target.as_deref(), yes)?;
+            }
+        }
         Command::SearchCode {
             query,
             project,

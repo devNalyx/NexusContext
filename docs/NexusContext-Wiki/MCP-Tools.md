@@ -1,9 +1,12 @@
 # MCP Tools
 
-12 tools total, backed by the same SQLite graph — no separate index to keep
-in sync, no silent fallback that hides what actually ran. Every tool caps
-its response somehow; see [[Security-Model]] for why that became a
-deliberate, tested property rather than an assumption.
+29 tools total: 12 structural tools backed by the same SQLite graph, 11
+absorbed Myelin procedural-memory tools backed by their own local SQLite
+store, and 6 curated declarative-memory tools backed by a third local store
+with an OKF v0.3 export. One daemon, one catalog, one ledger — no second MCP
+server for the agent to pay schema tax on. Every tool caps its response somehow; see
+[[Security-Model]] for why that became a deliberate, tested property rather
+than an assumption.
 
 ## Index & read
 
@@ -33,7 +36,7 @@ deliberate, tested property rather than an assumption.
 
 | Tool | What it does |
 |---|---|
-| `get_session_usage` | Per-tool call/error/output-byte counters (plus a rough bytes/4 token estimate) for *this* MCP session only — in-memory, resets when the `nexusd mcp` process does. Also reports `schema_tax` (the fixed per-session cost of every tool's own schema) and `reads_avoided` (an auditable, conservative counterfactual — successful calls to an explicit tool allow-list that plausibly substituted a manual read/grep). Not the lifetime totals `stats.get`/the GUI Usage tab show — see [[Storage-and-Data-Model]] for those. |
+| `get_session_usage` | Per-tool call/error/output-byte counters (plus a rough bytes/4 token estimate) for *this* MCP session only — in-memory, resets when the `nexusd mcp` process does. Also reports `schema_tax` (`bytes_ceiling`/`estimated_tokens_ceiling` for the full catalog, and `bytes_advertised`/`estimated_tokens_advertised` for the preset-filtered set this connection actually received) and `reads_avoided` (an auditable, conservative counterfactual — successful calls to an explicit tool allow-list that plausibly substituted a manual read/grep). When a harness plug has reported usage, a separate `harness` object carries provider-reported tokens/cost and `sources` explains why those numbers are never summed with the bytes/4 estimates. Not the lifetime totals `stats.get`/the GUI Usage tab show — see [[Storage-and-Data-Model]] for those. |
 
 ## Query & manage
 
@@ -42,7 +45,46 @@ deliberate, tested property rather than an assumption.
 | `query_graph` | Minimal ad-hoc Cypher-lite: exactly one pattern shape, `MATCH (a:Kind)-[:EDGE]->(b:Kind) [WHERE ...] RETURN a|b`. `Kind` is `Function`/`Type`/`File`/`Section`. Fails clearly outside that shape rather than guessing. |
 | `delete_project` | Removes a project's indexed data (graph + registry entry). Never touches the source directory. Destructive — gated behind the `full` preset. |
 
-## Why not all 12 are advertised by default
+## Procedural memory (absorbed from Myelin)
+
+These tools operate on learned `SKILL.md` files and a local SQLite store, not
+on the code graph. Agent/human judgment gates promotion; redaction happens
+before storage; staleness is last-used atrophy, not code-change based. See
+[[Flagship-Proposal]] and ADR 0018.
+
+| Tool | What it does |
+|---|---|
+| `list_skills` | List promoted skills with provenance and an informational `stale` flag. The only procedural tool in the default `standard` preset — pure consumption, no learning side effects. |
+| `record_observation` | Record a reusable procedure; similar observations accumulate reps and auto-promote, or promote immediately when `high_stakes` is set. |
+| `record_skill_feedback` | Correction appends into the live `SKILL.md`; confirmation just logs. |
+| `mark_skill_used` | Record use of a promoted skill, independent of feedback. |
+| `list_warmup_queue` | List candidates still accumulating reps. Full preset only. |
+| `list_pending_review` | List redacted excerpts staged from session transcripts, awaiting agent judgment. Full preset only. |
+| `dismiss_pending_review` | Clear a staged review item. Full preset only. |
+| `promote_skill` | Force-promote a candidate. Full preset only. |
+| `archive_skill` | Move a skill out of the live directory without deleting it. Full preset only. |
+| `restore_skill` | Reverse an archive. Full preset only. |
+| `render_skill_graph` | Render one skill's bounded neighborhood as PNG/DOT. Full preset only. |
+
+## Declarative memory (curated facts, OKF v0.3)
+
+Decisions, incidents, lessons, dead ends and owners — never raw transcripts,
+code structure or preferences. SQLite is canonical; `repo/.nexus/memory/` is
+an OKF v0.3 bundle (ADR 0020) that is git-friendly and Obsidian-viewable.
+Trust is a tier (`unverified` / `machine-confirmed` / `human-reviewed`) and
+only a **current** `human:` approval makes a fact injectable. Staleness is
+anchor/file-hash based, distinct from skill atrophy. See [[Flagship-Proposal]].
+
+| Tool | What it does |
+|---|---|
+| `recall` | Budgeted, lexical fact recall with freshness in-band. Hard ~800-token cap; stale facts and anchors outside `allowed_roots` are excluded. Only tool from this group in the default `standard` preset. `include_lower_trust=true` deliberately shows machine-confirmed/unverified candidates, always labelled. |
+| `list_facts` | Read-only review queue: every fact with trust tier, staleness, status and anchors. Full preset only. |
+| `curate_fact` | Stage a code-anchored fact from agent judgment. Always `draft`/unverified, redacted at the store boundary, never auto-promoted. Full preset only. |
+| `review_fact` | Human/CLI gate: only a `human:` actor can `approve`; `reject` clears any earlier sign-off. Full preset only. |
+| `export_memory` | Write the OKF v0.3 bundle (bundle-root `index.md` routing description, standard Markdown links, no wikilinks). Full preset only. |
+| `import_memory` | Read a bundle into SQLite. Unknown concepts are tolerated but not trusted; local staleness and human verification are never downgraded. Full preset only. |
+
+## Why not all 29 are advertised by default
 
 Every MCP session pays a fixed token cost just to load `tools/list`'s
 schemas, regardless of whether that session ever calls most of them. A
@@ -50,16 +92,19 @@ schemas, regardless of whether that session ever calls most of them. A
 
 ```toml
 [tools]
-preset = "standard"   # "minimal" (5) | "standard" (default, 10) | "full" (12)
+preset = "standard"   # "minimal" (5) | "standard" (default, 12) | "full" (29)
 # enabled = ["search_code", "get_architecture"]   # explicit list, overrides preset
 ```
 
 - **`minimal`** (5): `index_repository`, `search_code`, `get_file_context`,
   `get_architecture`, `trace_call_path` — the read-heavy core loop.
-- **`standard`** (10, the default): adds `search_graph`, `detect_changes`,
-  `detect_dead_code`, `query_planner`, `get_session_usage`.
-- **`full`** (12): adds `delete_project` (destructive) and `query_graph`
-  (niche DSL).
+- **`standard`** (12, the default): adds `search_graph`, `detect_changes`,
+  `detect_dead_code`, `query_planner`, `get_session_usage`, `list_skills` and
+  `recall` — the only curated-memory read tool, with the trust gate enforced.
+- **`full`** (29): adds `delete_project` (destructive), `query_graph` (niche
+  DSL), the ten procedural curation/ingestion tools, and the five remaining
+  curated-memory review/OKF tools. Absorbing memory engines must not turn
+  every session into a 17-tool schema tax increase.
 
 This was a deliberate fix, not the original design — see `README.md`
 Phase 21/22 for the token-cost measurement that drove it, Phase 29

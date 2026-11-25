@@ -4,6 +4,7 @@ mod dashboard;
 mod logs;
 mod project_picker;
 mod projects;
+mod review;
 mod search;
 mod usage;
 mod visualize;
@@ -60,6 +61,12 @@ fn build_ui(app: &adw::Application) {
         Some("visualize"),
         "Visualize",
         "network-workgroup-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &review::build(),
+        Some("review"),
+        "Review",
+        "document-edit-symbolic",
     );
     view_stack.add_titled_with_icon(
         &usage::build(),

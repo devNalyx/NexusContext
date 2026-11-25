@@ -1,3 +1,5 @@
+use nexus_core::{project_hash, Paths};
+use nexus_memory::Store;
 use notify_debouncer_mini::new_debouncer;
 use notify_debouncer_mini::notify::RecursiveMode;
 use std::collections::{HashMap, HashSet};
@@ -230,7 +232,12 @@ fn run() -> anyhow::Result<()> {
             Ok(message) => {
                 WATCHER_QUEUE_DEPTH.fetch_sub(1, Ordering::Relaxed);
                 let mut to_reindex: HashSet<PathBuf> = HashSet::new();
-                let mut hit_watch_limit = collect_dirty_roots(message, &watched, &mut to_reindex);
+                // Fact invalidation needs the changed *files*, not just the
+                // dirty root: an anchor on src/a.rs must go stale when that
+                // file changes, without disturbing facts anchored elsewhere.
+                let mut changed_paths: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+                let mut hit_watch_limit =
+                    collect_dirty_roots(message, &watched, &mut to_reindex, &mut changed_paths);
 
                 // A reindex can take far longer than events arrive on a large
                 // project, so while one is running, every separate debounced burst that
@@ -247,8 +254,14 @@ fn run() -> anyhow::Result<()> {
                 // every change that arrived before it, so only one is needed.
                 while let Ok(message) = rx.try_recv() {
                     WATCHER_QUEUE_DEPTH.fetch_sub(1, Ordering::Relaxed);
-                    hit_watch_limit |= collect_dirty_roots(message, &watched, &mut to_reindex);
+                    hit_watch_limit |=
+                        collect_dirty_roots(message, &watched, &mut to_reindex, &mut changed_paths);
                 }
+
+                // Independent of the reindex decision: even a no-op rewrite
+                // (identical content signature) changes the bytes an anchor
+                // refers to, so a stale fact must leave the injection path.
+                invalidate_anchored_facts(&watched, &changed_paths);
 
                 if hit_watch_limit {
                     // The proactive budget in sync_watches already tries to
@@ -391,6 +404,7 @@ fn collect_dirty_roots(
     message: notify_debouncer_mini::DebounceEventResult,
     watched: &HashMap<PathBuf, usize>,
     to_reindex: &mut HashSet<PathBuf>,
+    changed_paths: &mut HashMap<PathBuf, Vec<PathBuf>>,
 ) -> bool {
     match message {
         Ok(events) => {
@@ -400,6 +414,12 @@ fn collect_dirty_roots(
                 }
                 if let Some(root) = watched.keys().find(|root| event.path.starts_with(root)) {
                     to_reindex.insert(root.clone());
+                    let paths = changed_paths.entry(root.clone()).or_default();
+                    // A debounced burst is bounded, but a pathological one
+                    // must not grow this map without limit.
+                    if paths.len() < 256 && !paths.contains(&event.path) {
+                        paths.push(event.path.clone());
+                    }
                 }
             }
             false
@@ -419,6 +439,46 @@ fn collect_dirty_roots(
                 tracing::warn!(error = %err, "file watcher event error");
             }
             hit_watch_limit
+        }
+    }
+}
+
+/// Flip curated facts to `stale` when one of their anchored files changes.
+/// Done here in serve mode's watcher, independent of `recall`: a stale fact
+/// is excluded by the admission gate even before any agent asks for it.
+fn invalidate_anchored_facts(
+    watched: &HashMap<PathBuf, usize>,
+    changed_paths: &HashMap<PathBuf, Vec<PathBuf>>,
+) {
+    for (root, paths) in changed_paths {
+        if !watched.contains_key(root) {
+            continue;
+        }
+        let db = Paths::resolve().memory_db_file(&project_hash(root));
+        if !db.exists() {
+            continue; // no curated memory for this repo yet
+        }
+        let Ok(store) = Store::open(&db) else {
+            tracing::warn!(project = %root.display(), "could not open curated memory for invalidation");
+            continue;
+        };
+        let repo = root.to_string_lossy();
+        for path in paths {
+            match store.mark_anchors_stale(&repo, &path.to_string_lossy()) {
+                Ok(n) if n > 0 => tracing::info!(
+                    project = %root.display(),
+                    file = %path.display(),
+                    facts = n,
+                    "anchored facts marked stale"
+                ),
+                Ok(_) => {}
+                Err(err) => tracing::warn!(
+                    project = %root.display(),
+                    file = %path.display(),
+                    error = %err,
+                    "failed to invalidate anchored facts"
+                ),
+            }
         }
     }
 }
@@ -761,8 +821,42 @@ fn is_noise(path: &Path) -> bool {
         matches!(
             c.as_os_str().to_str(),
             Some(".git") | Some("target") | Some("node_modules") | Some(".nexuscontext")
+            // Our own OKF bundle writes must not trigger a reindex loop.
+            | Some(".nexus")
         )
     })
+}
+
+#[cfg(test)]
+mod dirty_roots_tests {
+    use super::*;
+    use notify_debouncer_mini::{DebouncedEvent, DebouncedEventKind};
+
+    #[test]
+    fn a_change_keeps_the_file_path_as_well_as_the_dirty_root() {
+        let root = std::env::temp_dir().join(format!("nc-watcher-dirty-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(root.join("src"));
+        let watched = HashMap::from([(root.clone(), 1usize)]);
+        let file = root.join("src/a.rs");
+        let event = DebouncedEvent {
+            path: file.clone(),
+            kind: DebouncedEventKind::Any,
+        };
+
+        let mut to_reindex = HashSet::new();
+        let mut changed = HashMap::new();
+        collect_dirty_roots(Ok(vec![event]), &watched, &mut to_reindex, &mut changed);
+
+        assert_eq!(to_reindex.len(), 1);
+        assert_eq!(changed[&root], vec![file]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundle_writes_are_noise_not_reindex_triggers() {
+        let bundle = std::path::Path::new("/repo/.nexus/memory/fact.md");
+        assert!(is_noise(bundle));
+    }
 }
 
 #[cfg(test)]

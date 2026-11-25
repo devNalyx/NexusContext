@@ -67,6 +67,9 @@ history stays legible.
 | [0015](0015-o-nofollow-defense-in-depth-not-full-toctou-proofing.md) | O_NOFOLLOW is defense-in-depth against symlink-substitution TOCTOU, not full TOCTOU-proofing | Accepted |
 | [0016](0016-blast-radius-mode-reuses-trace-calls-not-a-new-subsystem.md) | Blast-radius mode for `detect_changes` reuses `trace_calls`/clamping, not a new subsystem | Accepted |
 | [0017](0017-grouped-architecture-view-is-path-based-not-semantic.md) | `get_architecture`'s grouped mode is directory/path-based, never semantic subsystem inference | Accepted |
+| [0018](0018-absorb-myelin-as-procedural-memory.md) | Absorb Myelin as NC's procedural memory, under MIT | Accepted |
+| [0019](0019-context-economy-is-the-flagship.md) | Make context economy, not graph coverage, the flagship | Accepted |
+| [0020](0020-export-facts-as-okf.md) | Export curated facts as OKF v0.3 bundles, not a bespoke NC format | Accepted |
 
 ## Related
 

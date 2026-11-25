@@ -92,18 +92,36 @@ Open `.nexuscontext/vault/` as an Obsidian vault to browse functions/types and t
 **Auto-configuring an MCP agent instead of hand-editing `.mcp.json`:**
 
 ```bash
-nexus install
+nexus install                 # dry run — prints the plan, writes nothing
+nexus install --yes           # apply for Claude Code / Claude Desktop
+nexus install opencode --yes  # project-local OpenCode V2 plug + MCP + config
+nexus install opencode --uninstall --yes  # undo exactly what was installed
 ```
 
-Detects Claude Code (via its own `claude mcp add` CLI) and Claude Desktop (merges into `claude_desktop_config.json` without touching anything else already in it). Prints a generic `mcpServers` snippet for anything else, rather than guessing at a config format it can't verify.
+Claude Code is registered via its own `claude mcp add` CLI and, with `--yes`, gets a project-local `SessionEnd` hook in `.claude/settings.local.json` plus `.claude/hooks/nexus-session-end.sh`. That hook stages only explicitly signposted lines into the absorbed Myelin pending-review queue; it never stores a raw transcript or promotes an excerpt on its own. To undo a Claude install, remove the `nexuscontext` MCP entry with `claude mcp remove nexuscontext`, delete `.claude/hooks/nexus-session-end.sh`, and remove the matching `SessionEnd` group from `.claude/settings.local.json` (v1 has no `--uninstall` for Claude; OpenCode's manifest-based uninstall is the only automated one). Claude Desktop gets one entry merged into `claude_desktop_config.json` without touching anything else already in it. OpenCode V2 gets `.opencode/plugins/nexuscontext/` (server hook handlers + TUI status slot) plus one `mcp.servers.nexuscontext` entry in `opencode.json`; uninstall restores the pre-install value of that entry (or removes it) and deletes only files from the install manifest. Prints a generic config snippet for anything else, rather than guessing at a config format it can't verify.
+
+**Curated memory** — agent-staged, human-approved facts with file anchors and freshness (see the wiki's CLI Reference):
+
+```bash
+nexus memory add Decision "Title" --body "..." --anchor src/lib.rs --project /path/to/project
+nexus memory list --project /path/to/project
+nexus memory approve <id> --actor human:you --project /path/to/project
+nexus memory recall "query" --project /path/to/project
+nexus memory export --project /path/to/project   # .nexus/memory/, OKF v0.3
+nexus memory bundles --project /path/to/project --root /path/to/workspace  # routing only
+```
 
 ## 5. MCP tools available to agents
 
-Once `nexusd mcp` is wired into an agent, these tools are exposed - all of them purely structural, no network calls of any kind:
+Once `nexusd mcp` is wired into an agent, tools are exposed through one catalog: 12 structural/graph tools, 11 absorbed Myelin procedural-skill tools, and 6 curated declarative-memory tools. No network calls of any kind.
 
-`index_repository`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes`, `detect_dead_code`, `search_code`, `query_graph`, `query_planner`, `get_session_usage`, `delete_project`.
+Structural (12): `index_repository`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes`, `detect_dead_code`, `search_code`, `query_graph`, `query_planner`, `get_session_usage`, `delete_project`.
 
-By default only 10 of these 12 are actually advertised to an agent (the `standard` preset - see Section 8's `[tools]` block) to cut the fixed per-session token cost of loading tool schemas. Set `preset = "full"` to get all 12, `preset = "minimal"` for just the 5 core read tools, or list exact tool names via `enabled`.
+Curated memory (6): `recall`, `list_facts`, `curate_fact`, `review_fact`, `export_memory`, `import_memory`. Only `recall` is advertised by default; curation and review are opt-in. An agent cannot approve its own staging: auto-injection requires a current `human:` sign-off, `status: stable` and a non-stale anchor.
+
+Procedural memory (11): `record_observation`, `list_warmup_queue`, `list_skills`, `promote_skill`, `record_skill_feedback`, `mark_skill_used`, `list_pending_review`, `dismiss_pending_review`, `archive_skill`, `restore_skill`, `render_skill_graph`.
+
+By default only 12 of these 29 are actually advertised to an agent (the `standard` preset - see Section 8's `[tools]` block) to cut the fixed per-session token cost of loading tool schemas. Set `preset = "full"` to get all 29, `preset = "minimal"` for just the 5 core read tools, or list exact tool names via `enabled`.
 
 ## 6. Desktop GUI
 
@@ -140,7 +158,7 @@ warm_window_secs = 21600   # 6h default - a project not queried within this wind
                            # one synchronous reindex the next time it's actually queried again)
 
 [tools]
-preset = "standard"   # "minimal" (5 core read tools) | "standard" (default, 10) | "full" (all 12)
+preset = "standard"   # "minimal" (5 core read tools) | "standard" (default, 12) | "full" (all 29)
 # enabled = ["search_code", "get_architecture"]   # optional explicit list, overrides preset
 ```
 

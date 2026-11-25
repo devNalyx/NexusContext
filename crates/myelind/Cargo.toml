@@ -1,0 +1,39 @@
+[package]
+name = "myelind"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Myelin daemon: MCP server and control API for the personal skill-formation graph."
+
+[package.metadata.deb]
+name = "myelin"
+maintainer = "Myelin contributors"
+copyright = "2026, Myelin contributors"
+section = "devel"
+priority = "optional"
+extended-description = """\
+A local daemon that notices recurring or high-stakes procedures in your \
+agentic coding sessions and crystallizes them into real, living Claude \
+Code skills. Ships the myelind daemon and the myelin CLI together."""
+assets = [
+    ["../../target/release/myelind", "usr/bin/", "755"],
+    ["../../target/release/myelin", "usr/bin/", "755"],
+    ["../../packaging/systemd/myelin.service", "usr/lib/systemd/user/", "644"],
+    ["../../README.md", "usr/share/doc/myelin/README.md", "644"],
+]
+# No GUI crate, no C-source grammar crates to link against - $auto alone
+# (rusqlite's bundled sqlite3, statically linked) is sufficient.
+depends = "$auto"
+# graphviz's `dot` is only used by render_skill_graph, and only to render
+# a PNG - the command falls back to raw DOT source without it, so it's a
+# Recommends rather than a hard Depends.
+recommends = "graphviz"
+
+[dependencies]
+myelin-core.workspace = true
+myelin-index.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+clap.workspace = true

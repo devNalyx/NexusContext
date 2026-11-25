@@ -11,6 +11,10 @@ path = "src/main.rs"
 [dependencies]
 nexus-core.workspace = true
 nexus-index.workspace = true
+nexus-memory.workspace = true
+myelind.workspace = true
+myelin-index.workspace = true
+myelin-core.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
