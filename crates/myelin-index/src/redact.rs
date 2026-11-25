@@ -39,6 +39,15 @@ fn patterns() -> &'static Vec<(Regex, &'static str)> {
                 Regex::new(r"(?i)Bearer\s+[A-Za-z0-9\-_.=]{8,}").unwrap(),
                 "Bearer [REDACTED:bearer_token]",
             ),
+            // Known API-key prefixes. These are secrets by shape alone, even
+            // when short enough to slip under the high-entropy fallback's
+            // 20-character floor (e.g. a truncated `sk-` key in a log line).
+            // Dogfooding found exactly that case staged by a SessionEnd hook.
+            (
+                Regex::new(r"(?i)\b(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-|AIza)[A-Za-z0-9_-]{8,}")
+                    .unwrap(),
+                "[REDACTED:api_key]",
+            ),
             // Generic secret-looking assignment: KEY=value, "token": "value",
             // password: value, etc. Keeps the variable name, drops the value.
             (
@@ -137,6 +146,18 @@ mod tests {
         let out = redact("curl -H \"Authorization: Bearer sk-abcdef1234567890\"");
         assert!(out.contains("Bearer [REDACTED:bearer_token]"));
         assert!(!out.contains("sk-abcdef1234567890"));
+    }
+
+    #[test]
+    fn redacts_known_api_key_prefixes_even_below_the_entropy_floor() {
+        let out = redact(
+            "remember: sk-1234567890abcdef and ghp_abcdefghijklmnop and xoxb-1234567890abcdef",
+        );
+        assert!(!out.contains("sk-1234567890abcdef"), "{out}");
+        assert!(!out.contains("ghp_abcdefghijklmnop"), "{out}");
+        assert!(!out.contains("xoxb-1234567890abcdef"), "{out}");
+        assert_eq!(out.matches("[REDACTED:api_key]").count(), 3, "{out}");
+        assert!(out.contains("remember:"), "{out}");
     }
 
     #[test]
