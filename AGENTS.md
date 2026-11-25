@@ -22,8 +22,9 @@ daemon.
 - `integrations/opencode-nexuscontext/` - OpenCode V2 plugin; has its own `npm test`.
 - `docs/NexusContext-Wiki/` - current-state docs. Prefer updating these for
   behavior changes.
-- `README.md` - product overview; **Section 4 is a frozen historical phase log**.
-  Do not rewrite it as current behavior unless intentionally maintaining history.
+- `README.md` - product overview/current behavior. **`docs/Phase-History.md` is a
+  frozen historical phase log**; do not rewrite it as current behavior unless
+  intentionally maintaining history.
 
 ## Common commands
 

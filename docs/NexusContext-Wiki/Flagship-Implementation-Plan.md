@@ -23,8 +23,8 @@ lands. Do not mark a phase done unless its gate passes on a clean tree.
       hooks are `ctx.session.hook(...)` / `ctx.tool.hook(...)`, and the plugin
       is a package with server/TUI/GUI/RPC parts. See
       `integrations/opencode-nexuscontext/README.md`.
-- [x] Do **not** edit `README.md`'s historical phase log: its old tool counts and
-      embeddings references are intentionally frozen (see README note).
+- [x] Do **not** edit `docs/Phase-History.md` (frozen historical log): its old
+      tool counts and embeddings references are intentionally historical. See README note.
 
 ## P0 — Credibility gates
 

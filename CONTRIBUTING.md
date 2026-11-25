@@ -7,8 +7,8 @@ refactors.
 ## Before you start
 
 - Read [`AGENTS.md`](AGENTS.md) for the fast agent/contributor contract.
-- Read [`README.md`](README.md) for product overview. Note: README section 4 is
-  a frozen historical phase log.
+- Read [`README.md`](README.md) for product overview. Note: `docs/Phase-History.md`
+  is a frozen historical phase log; README sections 1-3/5-6 are current-state.
 - Read [`docs/NexusContext-Wiki/Home.md`](docs/NexusContext-Wiki/Home.md) for
   current-state docs by topic.
 
