@@ -145,7 +145,7 @@ our own harness when all of the following hold, so speed never buys us confidenc
    auto-injected (ADR 0020), with zero daemon-side LLM calls.
 6. Still local-first: no account, no cloud, no cross-repo sync.
 
-Gate evidence (2026-11-24, local synthetic/CLI tests):
+Gate evidence (2026-11-25, installed v0.1.22 binaries, isolated disposable repos):
 
 - (1) `nexus install opencode` install → uninstall round trip is covered by unit
   tests that assert byte-exact config restoration and manifest-only file deletion.
@@ -154,18 +154,28 @@ Gate evidence (2026-11-24, local synthetic/CLI tests):
   stale anchored fact excluded from the text.
 - (3) Ledger keeps `harness` (provider tokens/cost from `session.usage.recorded`)
   separate from labelled bytes/4 `estimate`; they are never summed.
-- (4) A Claude `SessionEnd` signpost staged one excerpt into `pending_reviews`;
-  `skills` stayed empty until an agent called `record_observation` and a human
-  invoked `nexus memory skill-promote`. No raw transcript was stored, no excerpt
-  auto-promoted. `skill-queue` prints the promotable-candidate and pending-excerpt
-  id spaces separately so the human gate is unambiguous.
+- (4) A Claude `SessionEnd` signpost staged one redacted excerpt into
+  `pending_reviews`; `skill_candidates_promotable` stayed empty and no excerpt
+  auto-promoted. The 19-character `sk-` key that dogfooding found in that excerpt
+  is now redacted at the store boundary (known API-key prefixes, including cases
+  below the entropy fallback's 20-character floor).
 - (5) Admission tests confirm machine-confirmed/unverified facts are never
   auto-injected and stale anchors are excluded; `nexusd` contains no LLM call.
 - (6) All writes are project-local; no account, cloud, or cross-repo sync exists.
 
-The remaining dogfood step is a *real* OpenCode session: `opencode` is not on this
-machine's `PATH`, so the plugin has been exercised against a fake control socket and
-the daemon over its real Unix socket, but not yet inside OpenCode itself.
+**Real harness (2026-11-25):** OpenCode v2.4.1 is bundled with the local Desktop
+app at `/opt/OpenCode/resources/opencode-cli` (not on `PATH`). A standalone,
+auto-approved session in a disposable repo with the installed plug and live
+daemon, prompted to use only injected memory, answered "Alice owns the ledger in
+this repo". The stored instruction entry contained that fresh fact and omitted
+the anchored stale fact; the daemon recorded exactly one `estimate` injection of
+61 tokens. This exercise caught a real bug: the first attempt ledgered the
+injection from the `context` hook, but that hook runs after OpenCode assembles
+the system instruction snapshot, so the agent said it had no memory despite a
+stored entry. The awaited `prompt` hook now performs the injection, with the
+smoke test locking in that ordering. Two release-blocking issues found in the
+same pass — an unguarded `std::os::unix` import in absorbed `myelind` (Windows
+builds) and GitHub's retirement of the `macos-14` label — are fixed in v0.1.22.
 
 ## Current status (2026-11-24)
 
@@ -181,4 +191,8 @@ the daemon over its real Unix socket, but not yet inside OpenCode itself.
 - P3 3.1–3.5 implemented: real OpenCode V2 handlers, exact-byte injection renderer,
   separated ledger, installers for both harnesses, and OKF bundle-root routing.
   Full Linux verification green: 303 tests passed, 1 ignored, fmt + clippy -D
-  warnings clean, plugin `npm test` green. No commits made.
+  warnings clean, plugin `npm test` green.
+- Released v0.1.20 (flagship) → v0.1.21 (redaction fix) → v0.1.22 (real-harness
+  injection, Windows build, and macOS runner fixes). Installed locally from the
+  v0.1.22 source with `cargo install --path ... --locked` and dogfooded as above.
+  Release/publish status is tracked in GitHub Actions for tag `v0.1.22`.
