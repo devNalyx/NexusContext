@@ -129,10 +129,42 @@ pub enum Command {
         /// Numeric candidate id from `skill-queue`.
         id: i64,
     },
+    /// Human sign-off: only a `human:` actor makes a skill injectable.
+    SkillApprove {
+        #[command(flatten)]
+        common: Common,
+        /// Numeric skill id from `skills`.
+        id: i64,
+        #[arg(long)]
+        actor: String,
+    },
+    /// Revoke a skill's sign-off so it leaves the next injection.
+    SkillRevoke {
+        #[command(flatten)]
+        common: Common,
+        /// Numeric skill id from `skills`.
+        id: i64,
+        #[arg(long)]
+        actor: String,
+    },
 }
 
 fn config() -> Config {
     Config::load(&Paths::resolve().config_file()).unwrap_or_default()
+}
+
+fn open_myelin_store() -> Result<myelin_index::Store> {
+    let paths = myelin_core::Paths::resolve();
+    let config = myelin_core::Config::load(&paths.config_file())?;
+    myelin_index::Store::open(
+        &paths.db_file(),
+        myelin_index::StoreConfig {
+            promotion_reps: config.promotion.reps,
+            similarity_threshold: config.promotion.similarity_threshold,
+            stale_after_secs: config.atrophy.stale_after_secs,
+            max_active_skills: config.pruning.max_active_skills,
+        },
+    )
 }
 
 fn open(project: &Path, cfg: &Config) -> Result<(Store, String)> {
@@ -415,6 +447,26 @@ pub fn run(command: Command) -> Result<()> {
                 "promote_skill",
                 json!({ "repo_path": common.project.to_string_lossy(), "candidate_id": id }),
             )?;
+        }
+        Command::SkillApprove { common, id, actor } => {
+            // Procedural skills are global; `common.project` exists only for
+            // a consistent CLI shape and is intentionally not used.
+            let _ = common;
+            if !actor.starts_with("human:") || actor.len() <= "human:".len() {
+                bail!("only a real 'human:<name>' actor can approve a skill");
+            }
+            open_myelin_store()?.approve_skill(id, &actor)?;
+            println!(
+                "approved skill {id} for {actor}; it is eligible for a bounded signpost only while active and non-atrophied"
+            );
+        }
+        Command::SkillRevoke { common, id, actor } => {
+            let _ = common;
+            if !actor.starts_with("human:") || actor.len() <= "human:".len() {
+                bail!("only a real 'human:<name>' actor can revoke a skill approval");
+            }
+            open_myelin_store()?.revoke_skill_approval(id)?;
+            println!("revoked human approval for skill {id} ({actor})");
         }
     }
     Ok(())

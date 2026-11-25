@@ -265,10 +265,18 @@ fn review_list(params: Value) -> anyhow::Result<Value> {
         .take(limit as usize)
         .map(|mut item| {
             let atrophied = item["stale"].as_bool().unwrap_or(false);
-            item["freshness_label"] = json!(if atrophied {
-                "skill — atrophied (last used too long ago)"
+            let approved = item["approved_by"]
+                .as_str()
+                .is_some_and(|a| a.starts_with("human:"));
+            let status = item["status"].as_str().unwrap_or("active");
+            item["freshness_label"] = json!(if status != "active" {
+                "skill — archived (not injectable)"
+            } else if atrophied {
+                "skill — atrophied (last used too long ago; not injectable)"
+            } else if approved {
+                "skill — active and human-approved (eligible for a bounded signpost)"
             } else {
-                "skill — active"
+                "skill — active but not human-approved (not injectable)"
             });
             item
         })
@@ -282,7 +290,7 @@ fn review_list(params: Value) -> anyhow::Result<Value> {
         "promoted_skills": promoted,
         "labels": {
             "fact": "staleness = anchored file changed or stale_after elapsed",
-            "skill": "atrophy = skill not used within its window (independent of fact staleness)",
+            "skill": "atrophy = skill not used within its window; injection additionally requires status=active and approved_by=human:<name>",
         },
         "note": "read-only review feed: listing never promotes any candidate",
     }))
@@ -300,9 +308,14 @@ fn memory_recall(params: Value) -> anyhow::Result<Value> {
     crate::memory_tools::recall_value(&safe, &loaded_config(), control_now())
 }
 
-/// The daemon runs recall, renders the exact injection text, and writes the
-/// ledger entry in one place. The adapter injects `text` verbatim, so it can
-/// neither widen the budget nor claim an injection it did not perform.
+/// Only a handful of approved procedural skills may be signposted in one turn.
+/// The renderer trims these before facts if the shared budget is tight.
+const MAX_SIGNPOST_SKILLS: usize = 5;
+
+/// The daemon runs recall, selects human-approved skills, renders the exact
+/// injection text, and writes the ledger entry in one place. The adapter
+/// injects `text` verbatim, so it can neither widen the budget nor claim an
+/// injection it did not perform.
 fn ledger_inject(params: Value) -> anyhow::Result<Value> {
     let session_id = control_str(&params, "session_id")?;
     let repo_path = control_str(&params, "repo_path")?;
@@ -329,12 +342,29 @@ fn ledger_inject(params: Value) -> anyhow::Result<Value> {
         &loaded_config(),
         control_now(),
     )?;
-    let injection = nexus_memory::render_injection(&recall, budget)?;
+    // Procedural memory is optional: a missing/broken skill store must not
+    // block curated fact injection. Never log the query or a skill document.
+    let signposts = match myelind::tools::injectable_skills(MAX_SIGNPOST_SKILLS) {
+        Ok(skills) => skills
+            .into_iter()
+            .map(|skill| nexus_memory::SkillSignpost {
+                id: skill.id.to_string(),
+                name: skill.name,
+                description: skill.description,
+            })
+            .collect(),
+        Err(err) => {
+            tracing::warn!(error = %err, "skill signposts unavailable; injecting facts only");
+            Vec::new()
+        }
+    };
+    let injection = nexus_memory::render_injection(&recall, budget, &signposts)?;
     let entry = open_ledger()?.record_injection(InjectionRecord {
         session_id: &session_id,
         repo_path: &repo_path,
         query: &query,
         fact_ids: &injection.fact_ids,
+        skill_ids: &injection.skill_ids,
         injected_bytes: injection.bytes,
         budget_tokens: budget,
         now: control_now(),

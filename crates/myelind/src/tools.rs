@@ -1,5 +1,6 @@
-use myelin_index::{NewObservation, Store, StoreConfig};
+use myelin_index::{skillfile, NewObservation, Store, StoreConfig};
 use serde_json::{json, Value};
+use std::path::Path;
 
 /// Hard ceiling on any caller-supplied `limit`, independent of each tool's
 /// own default - a single bad call can't request an unbounded response
@@ -26,6 +27,37 @@ fn open_store() -> anyhow::Result<Store> {
 
 fn skills_dir() -> std::path::PathBuf {
     myelin_core::Paths::resolve().skills_dir()
+}
+
+/// A human-approved skill the daemon may signpost into model context.
+/// This is deliberately not an MCP tool: agents must not be able to approve
+/// their own procedural memory. Only the daemon's injection path asks for it.
+#[derive(Debug, Clone)]
+pub struct InjectableSkill {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+}
+
+/// Deterministic, bounded selection for the injection renderer. The store
+/// applies the human-approval, active-status and atrophy filters; this
+/// function only adds the one frontmatter line needed for a useful signpost.
+pub fn injectable_skills(limit: usize) -> anyhow::Result<Vec<InjectableSkill>> {
+    let store = open_store()?;
+    let limit = limit.min(25) as i64;
+    Ok(store
+        .list_injectable_skills(limit)?
+        .into_iter()
+        .map(|skill| {
+            let description = skillfile::read_description(Path::new(&skill.path))
+                .unwrap_or_else(|| format!("Approved procedural skill: {}", skill.name));
+            InjectableSkill {
+                id: skill.id,
+                name: skill.name,
+                description,
+            }
+        })
+        .collect())
 }
 
 pub fn tool_definitions() -> Value {

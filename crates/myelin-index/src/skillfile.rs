@@ -82,6 +82,35 @@ pub fn draft_and_write(
     Ok((slug, path))
 }
 
+/// Read the one frontmatter field a context signpost needs. Deliberately a
+/// tiny parser: the only producer is `draft_and_write` above, so accepting
+/// anything beyond a quoted single-line `description:` would be complexity
+/// without benefit. Returns `None` for a missing/malformed frontmatter; the
+/// caller then falls back to the skill name rather than guessing.
+pub fn read_description(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break;
+        }
+        let Some(value) = trimmed.strip_prefix("description:") else {
+            continue;
+        };
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .unwrap_or(value);
+        return Some(value.replace("\\\"", "\"").replace("\\\\", "\\"));
+    }
+    None
+}
+
 /// Appends a correction directly into the live SKILL.md body — this is
 /// what makes a promoted skill a living document instead of a one-shot
 /// artifact: it accumulates real fixes at the point they're reported,
@@ -95,4 +124,37 @@ pub fn append_correction(path: &Path, note: &str) -> anyhow::Result<()> {
     content.push_str(&format!("- ({now}) {note}\n"));
     fs::write(path, content)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_description_parses_the_drafts_own_quoted_frontmatter() {
+        let dir = std::env::temp_dir().join(format!(
+            "nc-skillfile-desc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+        std::fs::write(
+            &path,
+            "---\nname: demo\ndescription: \"rotate a key\"\n---\n",
+        )
+        .unwrap();
+        assert_eq!(read_description(&path).as_deref(), Some("rotate a key"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn read_description_returns_none_for_missing_or_malformed_files() {
+        let path =
+            std::env::temp_dir().join(format!("nc-skillfile-missing-{}.md", std::process::id()));
+        assert_eq!(read_description(&path), None);
+    }
 }

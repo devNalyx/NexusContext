@@ -17,7 +17,7 @@ pub use fact::{
     DEFAULT_INJECTION_BUDGET_TOKENS, OKF_VERSION,
 };
 pub use gate::{admit, Admission, Exclusion};
-pub use injection::{render_injection, Injection};
+pub use injection::{render_injection, Injection, SkillSignpost};
 pub use ledger::{InjectionRecord, Ledger, UsageTokens};
 pub use okf::{discover_bundles, BundleRoute};
 pub use recall::{estimate_tokens, recall, recall_with_lower_trust, RecallResult};

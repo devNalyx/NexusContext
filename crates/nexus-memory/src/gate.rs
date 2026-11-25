@@ -166,6 +166,7 @@ mod tests {
         f.repo_path = inside.to_string_lossy().to_string();
         f.anchors[0].path = "a.rs".into();
         assert!(admit(&f, &config, 200).include);
-        std::fs::remove_dir_all(dir).unwrap();
+        // No open DB handle here, but keep cleanup robust on Windows.
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -278,6 +278,7 @@ mod tests {
         assert_eq!(out.items[0]["id"], "m");
         assert_eq!(out.items[0]["trust"], "machine-confirmed");
         assert_eq!(out.excluded["stale"], 1);
+        drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

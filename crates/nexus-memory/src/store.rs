@@ -418,6 +418,9 @@ mod tests {
         let loaded = store.list("/repo").unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0], f);
+        // SQLite keeps the database handle open until `store` drops; Windows
+        // will not delete an open file, so close it before cleaning up.
+        drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -449,6 +452,9 @@ mod tests {
         assert_eq!(changed, 1);
         assert!(store.get("a").unwrap().unwrap().anchor_stale);
         assert!(!store.get("b").unwrap().unwrap().anchor_stale);
+        // SQLite keeps the database handle open until `store` drops; Windows
+        // will not delete an open file, so close it before cleaning up.
+        drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -463,6 +469,9 @@ mod tests {
         let saved = store.get("f1").unwrap().unwrap();
         assert!(!saved.body.contains("abcdefghijklmnop1234"));
         assert!(saved.body.contains("REDACTED"));
+        // SQLite keeps the database handle open until `store` drops; Windows
+        // will not delete an open file, so close it before cleaning up.
+        drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -492,6 +501,9 @@ mod tests {
         let f = store.get("f1").unwrap().unwrap();
         assert_eq!(crate::fact::trust_tier(&f), TrustTier::Unverified);
         assert_eq!(f.status, crate::fact::FactStatus::Draft);
+        // SQLite keeps the database handle open until `store` drops; Windows
+        // will not delete an open file, so close it before cleaning up.
+        drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -20,6 +20,8 @@ pub struct InjectionRecord<'a> {
     pub repo_path: &'a str,
     pub query: &'a str,
     pub fact_ids: &'a [String],
+    /// Human-approved procedural signposts included in this exact text.
+    pub skill_ids: &'a [String],
     pub injected_bytes: usize,
     pub budget_tokens: u64,
     pub now: i64,
@@ -116,7 +118,9 @@ impl Ledger {
                  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
                  cost_usd REAL,
                  injected_tokens INTEGER NOT NULL DEFAULT 0,
+                 injected_bytes INTEGER NOT NULL DEFAULT 0,
                  fact_ids TEXT,
+                 skill_ids TEXT,
                  tool TEXT,
                  status TEXT,
                  bytes INTEGER NOT NULL DEFAULT 0,
@@ -124,7 +128,28 @@ impl Ledger {
              );
              CREATE INDEX IF NOT EXISTS ledger_session ON ledger_events(session_id, id);",
         )?;
+        // Existing v0.1.23 ledgers have neither field. Add them without
+        // rewriting history: old injection rows keep empty skill ids and a
+        // zero byte count, which is honest because those bytes were never
+        // stored there.
+        Self::ensure_column(&conn, "injected_bytes", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(&conn, "skill_ids", "TEXT")?;
         Ok(Self { conn })
+    }
+
+    fn ensure_column(conn: &Connection, column: &str, declaration: &str) -> Result<()> {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('ledger_events') WHERE name = ?1",
+            params![column],
+            |row| row.get(0),
+        )?;
+        if count == 0 {
+            conn.execute(
+                &format!("ALTER TABLE ledger_events ADD COLUMN {column} {declaration}"),
+                [],
+            )?;
+        }
+        Ok(())
     }
 
     /// Record the exact bytes of the text the daemon rendered for injection.
@@ -137,6 +162,8 @@ impl Ledger {
             repo_path,
             query,
             fact_ids,
+            skill_ids,
+            injected_bytes,
             budget_tokens,
             now,
             ..
@@ -146,14 +173,17 @@ impl Ledger {
         }
         self.conn.execute(
             "INSERT INTO ledger_events
-             (session_id, kind, source, repo_path, query, injected_tokens, fact_ids, created_at)
-             VALUES (?1, 'injection', 'estimate', ?2, ?3, ?4, ?5, ?6)",
+             (session_id, kind, source, repo_path, query, injected_tokens, injected_bytes,
+              fact_ids, skill_ids, created_at)
+             VALUES (?1, 'injection', 'estimate', ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 session_id,
                 repo_path,
                 query,
                 injected_tokens as i64,
+                injected_bytes as i64,
                 serde_json::to_string(fact_ids)?,
+                serde_json::to_string(skill_ids)?,
                 now
             ],
         )?;
@@ -355,6 +385,7 @@ mod tests {
             repo_path: "/repo",
             query: "q",
             fact_ids: &["f1".into()],
+            skill_ids: &["s1".into()],
             injected_bytes: 400,
             budget_tokens: 800,
             now: 101,
@@ -370,6 +401,53 @@ mod tests {
         assert_eq!(summary["estimate"]["injected_tokens"], 100);
         assert_eq!(summary["estimate"]["tool_output_bytes"], 800);
         assert!(summary["never_mixed"].is_string());
+        // SQLite keeps the database handle open until `l` drops; Windows will
+        // not delete an open file, so close it before cleaning up.
+        drop(l);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn injection_ledger_keeps_exact_bytes_and_skill_ids_separately() {
+        let (l, dir) = ledger("skills");
+        l.record_injection(InjectionRecord {
+            session_id: "s-skills",
+            repo_path: "/repo",
+            query: "q",
+            fact_ids: &["f1".into()],
+            skill_ids: &["s7".into()],
+            injected_bytes: 401,
+            budget_tokens: 800,
+            now: 101,
+        })
+        .unwrap();
+
+        let row = l
+            .conn
+            .query_row(
+                "SELECT injected_tokens, injected_bytes, fact_ids, skill_ids, bytes
+                 FROM ledger_events WHERE session_id = 's-skills' AND kind = 'injection'",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(row.0, 100);
+        assert_eq!(row.1, 401);
+        assert_eq!(row.2, "[\"f1\"]");
+        assert_eq!(row.3, "[\"s7\"]");
+        // Injection bytes live in their own column; `bytes` remains tool-only.
+        assert_eq!(row.4, 0);
+        // SQLite keeps the database handle open until `l` drops; Windows will
+        // not delete an open file, so close it before cleaning up.
+        drop(l);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -381,6 +459,7 @@ mod tests {
             repo_path: "/repo",
             query: "",
             fact_ids: &[],
+            skill_ids: &[],
             injected_bytes: 4000,
             budget_tokens: 800,
             now: 100,
@@ -391,11 +470,15 @@ mod tests {
             repo_path: "/repo",
             query: "",
             fact_ids: &[],
+            skill_ids: &[],
             injected_bytes: 3200,
             budget_tokens: 800,
             now: 100,
         };
         assert!(l.record_injection(within).is_ok());
+        // SQLite keeps the database handle open until `l` drops; Windows will
+        // not delete an open file, so close it before cleaning up.
+        drop(l);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -408,6 +491,9 @@ mod tests {
         assert!(l
             .record_usage("s3", UsageTokens::default(), Some(-1.0), 100)
             .is_err());
+        // SQLite keeps the database handle open until `l` drops; Windows will
+        // not delete an open file, so close it before cleaning up.
+        drop(l);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
