@@ -401,6 +401,9 @@ mod tests {
         assert_eq!(summary["estimate"]["injected_tokens"], 100);
         assert_eq!(summary["estimate"]["tool_output_bytes"], 800);
         assert!(summary["never_mixed"].is_string());
+        // SQLite keeps the database handle open until `l` drops; Windows will
+        // not delete an open file, so close it before cleaning up.
+        drop(l);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -442,6 +445,9 @@ mod tests {
         assert_eq!(row.3, "[\"s7\"]");
         // Injection bytes live in their own column; `bytes` remains tool-only.
         assert_eq!(row.4, 0);
+        // SQLite keeps the database handle open until `l` drops; Windows will
+        // not delete an open file, so close it before cleaning up.
+        drop(l);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -470,6 +476,9 @@ mod tests {
             now: 100,
         };
         assert!(l.record_injection(within).is_ok());
+        // SQLite keeps the database handle open until `l` drops; Windows will
+        // not delete an open file, so close it before cleaning up.
+        drop(l);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -482,6 +491,9 @@ mod tests {
         assert!(l
             .record_usage("s3", UsageTokens::default(), Some(-1.0), 100)
             .is_err());
+        // SQLite keeps the database handle open until `l` drops; Windows will
+        // not delete an open file, so close it before cleaning up.
+        drop(l);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
