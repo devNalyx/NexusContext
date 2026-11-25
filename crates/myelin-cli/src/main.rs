@@ -1,9 +1,14 @@
 mod install;
 
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use myelin_index::{NewObservation, Store, StoreConfig};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::Read;
+#[cfg(unix)]
+use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
@@ -79,7 +84,18 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        #[cfg(unix)]
         Command::Status => status(),
+        // `status` pings the Unix-domain control socket. Every other myelin
+        // CLI command (store, queue, promotion, feedback, staging) is
+        // cross-platform and keeps working on Windows.
+        #[cfg(not(unix))]
+        Command::Status => anyhow::bail!(
+            "`myelin status` (the Unix-domain control socket client) isn't supported \
+             on this platform yet - see \
+             https://github.com/devNalyx/NexusContext/issues/16. Every other `myelin` \
+             subcommand works here."
+        ),
         Command::Install => install::run(),
         Command::Observe {
             title,
@@ -282,6 +298,7 @@ fn graph(skill_id: i64, output: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn status() -> Result<()> {
     let paths = myelin_core::Paths::resolve();
     let socket_path = paths.control_socket();
