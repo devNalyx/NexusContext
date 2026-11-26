@@ -217,3 +217,17 @@ builds) and GitHub's retirement of the `macos-14` label — are fixed in v0.1.22
   Verification: workspace fmt/clippy/test green, plugin smoke green, isolated
   signpost dogfood PASS, installed-binary dogfood PASS. No leftover `/tmp/opencode/nc-*`
   test processes found.
+- v0.1.25: PR #104 merged as `b67631c` (registered external sources, issue #103)
+  and PR #105 merged as `cff061c` (version bump). Release run `45896827398`
+  published 9 assets. `nexus source add secondbrain /home/iceman/Documents/secondBrain
+  --kind obsidian-vault` canonicalized the vault, wrote `[[sources]]`, indexed
+  39 Markdown files (182 nodes / 206 edges), and persisted `source_id`/
+  `source_kind`/`source_resource` in `projects.json`; the MCP catalog now
+  advertises `list_sources` alongside the existing `vault_context`. Local
+  install caveat: this machine's `vault_context` feature lives in the
+  uncommitted `agent-vault-link-graph` worktree, so the installed 0.1.25
+  binaries were built from a temporary tree combining released `main` with
+  that worktree's Rust changes (all workspace tests green); the published
+  v0.1.25 artifacts contain the released `main` code only. Verification:
+  `tools/list` returned 14 configured tools, `list_sources` and
+  `vault_context` (tags/links modes) returned live vault data.
