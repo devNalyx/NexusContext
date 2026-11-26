@@ -48,15 +48,35 @@ generated, per-project, local-only (gitignored), and answers "what does
 this codebase's call graph look like," not "how does NexusContext itself
 work" (that's what *this* vault, `docs/NexusContext-Wiki/`, is for).
 
+## Registered external sources (e.g. an Obsidian vault)
+
+```bash
+nexus source add secondbrain /path/to/vault --kind obsidian-vault \
+  --title "Personal notes" --description "Cross-project vault"
+nexus source list
+nexus source remove secondbrain   # unregisters; the index itself stays
+```
+
+`source add` is the human-side registration path (issue #103): it
+canonicalizes the root, rejects duplicate ids/roots and any root outside
+`allowed_roots`, writes `[[sources]]` in `config.toml`, and indexes the vault
+immediately so MCP reads work on the first try. Agents see the catalog
+read-only via the `list_sources` MCP tool. Markdown files in the vault are
+indexed as `File`/`Section` nodes and full-text content; wikilinks and
+frontmatter are not graph edges.
+
 ## Curated memory (facts, trust review, OKF bundles)
 
 Facts are staged by an agent, but only a human can make them injectable.
 The CLI is that human gate — the MCP catalog deliberately has no
 "approve your own staging" tool. See [[MCP-Tools]] for the `recall` side.
+`--source` attaches a registered source's OKF-style provenance URI to a
+staged fact; it never changes trust, staleness or the approval gate.
 
 ```bash
 nexus memory add Decision "Use stable presets" \
-  --body "Fixed tool schemas are the invoice." --anchor src/lib.rs --project /path/to/repo
+  --body "Fixed tool schemas are the invoice." --anchor src/lib.rs \
+  --source secondbrain --project /path/to/repo  # --source is repeatable; id from `nexus source list`
 nexus memory list --project /path/to/repo
 nexus memory approve <id> --actor human:you --project /path/to/repo
 nexus memory recall "schema" --project /path/to/repo

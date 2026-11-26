@@ -1155,6 +1155,9 @@ mod heal_noncanonical_root_paths_tests {
             auto_reindex_total_ms: 0,
             last_auto_reindex_ms: 0,
             last_auto_reindex_unix: 0,
+            source_id: None,
+            source_kind: None,
+            source_resource: None,
         }
     }
 

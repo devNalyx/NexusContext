@@ -16,7 +16,7 @@ allowed_roots = []   # if non-empty, every MCP tool/CLI command that takes a
 warm_window_secs = 21600   # 6h default - see Watcher-and-Freshness
 
 [tools]
-preset = "standard"   # "minimal" (5) | "standard" (default, 12) | "full" (29)
+preset = "standard"   # "minimal" (5) | "standard" (default, 13) | "full" (30)
 # enabled = ["search_code", "get_architecture"]   # explicit list, overrides preset
 
 [lsp]
@@ -24,6 +24,17 @@ enabled = false                  # opt-in - see Security-Model for what turning 
 server_command = "rust-analyzer" # Rust only for now - see below
 max_concurrent_servers = 2
 request_timeout_secs = 10
+
+# Human-registered external knowledge sources (issue #103). Normally written
+# by `nexus source add`, which canonicalizes root_path and indexes it at once.
+[[sources]]
+id = "secondbrain"
+kind = "obsidian-vault"              # free-form; defaults to "markdown"
+root_path = "/absolute/canonical/vault"  # must respect allowed_roots if set
+resource = "obsidian-vault://secondbrain"  # default: <kind>://<id>
+title = "Personal notes"             # optional
+description = "Cross-project vault"  # optional
+enabled = true                       # default true
 ```
 
 ## Field-by-field
@@ -34,7 +45,7 @@ request_timeout_secs = 10
 - **`[watcher].warm_window_secs`** — how long a project stays "warm"
   (actively watched, auto-reindexed on change) after it was last queried.
   See [[Watcher-and-Freshness]].
-- **`[tools]`** — which of the 29 MCP tools get advertised to a calling
+- **`[tools]`** — which of the 30 MCP tools get advertised to a calling
   agent. See [[MCP-Tools]] for the preset breakdown.
 - **`[lsp]`** — off by default. When on, `index_repository`'s `deep`
   argument (or `nexus reindex --deep`) spawns `server_command` to resolve
@@ -44,6 +55,13 @@ request_timeout_secs = 10
   [[Storage-and-Data-Model]] for the edge kind and [[Security-Model]] for
   why this is the one config section that runs an external binary rather
   than just connecting to one.
+- **`[[sources]]`** — human-registered external knowledge sources (e.g. an
+  Obsidian vault). Written by `nexus source add`; the CLI canonicalizes the
+  root, refuses duplicates and paths outside `allowed_roots`, and indexes
+  immediately. `resource` is the OKF-style provenance URI usable by
+  `nexus memory add --source`; registration is metadata only and never
+  implies human approval of a fact. Agents see sources read-only through
+  `list_sources`. See [[CLI-Reference]] and [[MCP-Tools]].
 
 ## Env var overrides
 

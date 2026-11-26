@@ -48,7 +48,10 @@ One `ProjectEntry` per indexed project: `root_path` (always absolute and
 canonical — see [[Watcher-and-Freshness]]), a content hash, node/edge
 counts, `last_indexed_unix`, `last_queried_unix` (the warm/cold signal),
 and auto-reindex history (count/failures/timing, kept separate from
-manual-reindex activity). Written via temp-file + atomic rename, not a
+manual-reindex activity). Optionally `source_id`/`source_kind`/
+`source_resource` when the project root matches a human-registered
+`[[sources]]` entry (issue #103) — provenance only, read from config during
+indexing, never from a tool argument. Written via temp-file + atomic rename, not a
 direct `fs::write` — two writers racing (the background watcher and a
 manual reindex, say) can't interleave and truncate the file into something
 unparseable.

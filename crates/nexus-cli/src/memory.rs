@@ -36,6 +36,9 @@ pub enum Command {
         /// Optional anchor symbol (paired with the first anchor).
         #[arg(long)]
         symbol: Option<String>,
+        /// Provenance source id (repeatable). Must be registered via `nexus source add`.
+        #[arg(long = "source")]
+        sources: Vec<String>,
         /// Optional RFC 3339 instant after which this fact must be re-checked.
         #[arg(long)]
         stale_after: Option<String>,
@@ -176,6 +179,32 @@ fn open(project: &Path, cfg: &Config) -> Result<(Store, String)> {
     Ok((store, repo))
 }
 
+/// Resolve `--source` ids against the human-registered source catalog. An
+/// unknown or disabled id is an error rather than a silent, untraceable
+/// provenance URI; the URI itself comes from config, never from the CLI
+/// argument, so a fact can't claim provenance it wasn't given by a human.
+fn resolve_sources(config: &Config, ids: &[String]) -> Result<Vec<Source>> {
+    ids.iter()
+        .map(|id| {
+            let source = config
+                .sources
+                .iter()
+                .find(|s| s.id == *id && s.enabled)
+                .ok_or_else(|| {
+                    anyhow!("unknown or disabled source '{id}' - register it with `nexus source add` first")
+                })?;
+            Ok(Source {
+                id: source.id.clone(),
+                resource: source
+                    .resource
+                    .clone()
+                    .unwrap_or_else(|| format!("{}://{}", source.kind, source.id)),
+                title: source.title.clone(),
+            })
+        })
+        .collect()
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -198,6 +227,16 @@ fn print_fact(f: &Fact, unix: i64) {
             f.anchors
                 .iter()
                 .map(|a| a.path.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !f.sources.is_empty() {
+        println!(
+            "  sources: {}",
+            f.sources
+                .iter()
+                .map(|s| format!("{} ({})", s.id, s.resource))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -225,10 +264,12 @@ pub fn run(command: Command) -> Result<()> {
             body,
             anchors,
             symbol,
+            sources,
             stale_after,
             actor,
         } => {
             let (mut store, repo) = open(&common.project, &cfg)?;
+            let sources = resolve_sources(&cfg, &sources)?;
             let Some(kind) = FactKind::from_okf_type(&kind) else {
                 bail!("unknown fact kind: {kind}");
             };
@@ -268,7 +309,7 @@ pub fn run(command: Command) -> Result<()> {
                 status: nexus_memory::FactStatus::Draft,
                 superseded_by: None,
                 anchors,
-                sources: Vec::<Source>::new(),
+                sources,
                 generated_by: actor,
                 generated_at: unix,
                 verified_by: None,
@@ -470,4 +511,48 @@ pub fn run(command: Command) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nexus_core::SourceConfig;
+
+    fn config() -> Config {
+        Config {
+            sources: vec![
+                SourceConfig {
+                    id: "vault".to_string(),
+                    root_path: "/tmp/vault".to_string(),
+                    kind: "obsidian-vault".to_string(),
+                    resource: Some("obsidian-vault://vault".to_string()),
+                    title: Some("Personal notes".to_string()),
+                    description: None,
+                    enabled: true,
+                },
+                SourceConfig {
+                    id: "disabled".to_string(),
+                    enabled: false,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn staging_resolves_registered_source_provenance() {
+        let sources = resolve_sources(&config(), &["vault".to_string()]).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id, "vault");
+        assert_eq!(sources[0].resource, "obsidian-vault://vault");
+        assert_eq!(sources[0].title.as_deref(), Some("Personal notes"));
+    }
+
+    #[test]
+    fn staging_rejects_unknown_and_disabled_sources() {
+        assert!(resolve_sources(&config(), &["missing".to_string()]).is_err());
+        assert!(resolve_sources(&config(), &["disabled".to_string()]).is_err());
+        assert!(resolve_sources(&Config::default(), &[]).unwrap().is_empty());
+    }
 }

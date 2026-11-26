@@ -138,6 +138,14 @@ pub fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "list_sources",
+            "description": "List human-registered external knowledge sources (e.g. Obsidian vaults) with their canonical root and provenance URI. Read-only: registration is a CLI/control-plane act, and source metadata is not approval for curated facts.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
             "name": "search_graph",
             "description": "Structural search over indexed symbols by name substring - functions/types and, for markdown docs, heading sections.",
             "inputSchema": {
@@ -311,6 +319,7 @@ pub fn tool_definitions() -> Value {
 /// only one of them (see `STANDARD_EXTRA_TOOLS`).
 const ALL_TOOL_NAMES: &[&str] = &[
     "index_repository",
+    "list_sources",
     "search_graph",
     "trace_call_path",
     "get_file_context",
@@ -354,6 +363,9 @@ const MINIMAL_TOOLS: &[&str] = &[
 /// Rounds out `MINIMAL_TOOLS` with the rest of the everyday-useful,
 /// non-destructive tools.
 const STANDARD_EXTRA_TOOLS: &[&str] = &[
+    // Cheap, read-only discovery of registered sources so an agent doesn't
+    // have to guess a vault's path or read config.toml to find it.
+    "list_sources",
     "search_graph",
     "detect_changes",
     "detect_dead_code",
@@ -465,6 +477,7 @@ pub fn call(params: Value, config: &Config) -> Result<Value> {
     let call_start = std::time::Instant::now();
     let result = match name {
         "index_repository" => index_repository(args),
+        "list_sources" => list_sources(config),
         "delete_project" => delete_project(args),
         "search_graph" => search_graph(args),
         "trace_call_path" => trace_call_path(args),
@@ -603,6 +616,33 @@ fn traced_nodes_to_json(traced: &[index::TracedNode]) -> Value {
             obj
         })
         .collect::<Vec<_>>())
+}
+
+/// Read-only view of the human-registered source catalog. Deliberately no
+/// write/approval surface here: registration is CLI/control-plane only, and
+/// a source's presence never makes a fact human-reviewed.
+fn list_sources(config: &Config) -> Result<String> {
+    let sources: Vec<Value> = config
+        .sources
+        .iter()
+        .filter(|source| source.enabled)
+        .map(|source| {
+            json!({
+                "id": source.id,
+                "kind": source.kind,
+                "root_path": source.root_path,
+                "resource": source.resource.as_ref().unwrap_or(
+                    &format!("{}://{}", source.kind, source.id)
+                ),
+                "title": source.title,
+                "description": source.description,
+            })
+        })
+        .collect();
+    Ok(serde_json::to_string_pretty(&json!({
+        "sources": sources,
+        "note": "Registered with `nexus source add`; provenance metadata only, not fact approval.",
+    }))?)
 }
 
 fn index_repository(args: Value) -> Result<String> {
@@ -1079,6 +1119,26 @@ mod tests {
     }
 
     #[test]
+    fn list_sources_exposes_provenance_without_approval_claims() {
+        let config = Config {
+            sources: vec![nexus_core::SourceConfig {
+                id: "vault".to_string(),
+                root_path: "/tmp/vault".to_string(),
+                kind: "obsidian-vault".to_string(),
+                resource: None,
+                title: None,
+                description: None,
+                enabled: true,
+            }],
+            ..Default::default()
+        };
+        let value: Value = serde_json::from_str(&list_sources(&config).unwrap()).unwrap();
+        assert_eq!(value["sources"][0]["id"], "vault");
+        assert_eq!(value["sources"][0]["resource"], "obsidian-vault://vault");
+        assert_eq!(value["sources"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn estimate_tokens_is_bytes_over_four() {
         assert_eq!(estimate_tokens(4000), 1000);
         assert_eq!(estimate_tokens(3), 0);
@@ -1233,6 +1293,9 @@ mod tests {
             auto_reindex_total_ms: 0,
             last_auto_reindex_ms: 0,
             last_auto_reindex_unix: 0,
+            source_id: None,
+            source_kind: None,
+            source_resource: None,
         };
 
         let warm = index_freshness_json_from(Some(&entry), 1000 + 3600, 3600);
@@ -1370,10 +1433,11 @@ mod tests {
     }
 
     #[test]
-    fn default_config_resolves_to_standard_twelve_tools() {
+    fn default_config_resolves_to_standard_thirteen_tools() {
         let config = Config::default();
         let filtered = tool_names(&enabled_tool_definitions(&config));
-        assert_eq!(filtered.len(), 12);
+        assert_eq!(filtered.len(), 13);
+        assert!(filtered.contains("list_sources"));
         assert!(filtered.contains("search_code"));
         assert!(filtered.contains("get_session_usage"));
         assert!(filtered.contains("recall"));
