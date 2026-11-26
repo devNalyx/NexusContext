@@ -32,7 +32,11 @@ Going cold doesn't mean going stale forever: `touch_and_catchup` — one
 shared entry point used by the MCP dispatcher, the control API, and every
 CLI read subcommand — checks staleness before answering and runs one
 synchronous catch-up reindex if the project had gone cold. The first query
-after a gap costs a real reindex; every one after that is normal. (This
+after a gap costs a real reindex; every one after that is normal.
+Registering an external source with `nexus source add` (issue #103) indexes
+it immediately, so a freshly registered vault never hits "no index found";
+after that it follows the same warm/cold rules as any other project —
+registration alone does not pin a permanent watch. (This
 consolidation itself was a real fix: the CLI didn't have it for a while,
 which meant a project checked only via `nexus search-code` etc. could go
 cold and never self-heal, silently returning stale results with no

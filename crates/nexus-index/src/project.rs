@@ -575,6 +575,7 @@ fn record_indexed(paths: &Paths, repo_path: &Path, nodes: i64, edges: i64) -> Re
         last_auto_reindex_ms,
         last_auto_reindex_unix,
     ) = existing
+        .as_ref()
         .map(|p| {
             (
                 p.auto_reindex_count,
@@ -585,6 +586,28 @@ fn record_indexed(paths: &Paths, repo_path: &Path, nodes: i64, edges: i64) -> Re
             )
         })
         .unwrap_or_default();
+    // Registered-source provenance is read from config here, never from a
+    // tool argument: an agent that can query a project must not be able to
+    // relabel it. If the registration was removed, keep the last known
+    // identity rather than silently rewriting history in projects.json.
+    let config = Config::load(&paths.config_file()).unwrap_or_default();
+    let (source_id, source_kind, source_resource) = match config.source_for_root(repo_path) {
+        Some(source) => (
+            Some(source.id.clone()),
+            Some(source.kind.clone()),
+            Some(
+                source
+                    .resource
+                    .clone()
+                    .unwrap_or_else(|| format!("{}://{}", source.kind, source.id)),
+            ),
+        ),
+        None => (
+            existing.as_ref().and_then(|p| p.source_id.clone()),
+            existing.as_ref().and_then(|p| p.source_kind.clone()),
+            existing.as_ref().and_then(|p| p.source_resource.clone()),
+        ),
+    };
     registry.upsert(ProjectEntry {
         root_path: repo_path.display().to_string(),
         hash,
@@ -599,6 +622,9 @@ fn record_indexed(paths: &Paths, repo_path: &Path, nodes: i64, edges: i64) -> Re
         auto_reindex_total_ms,
         last_auto_reindex_ms,
         last_auto_reindex_unix,
+        source_id,
+        source_kind,
+        source_resource,
     });
     registry.save(&paths.registry_file())
 }

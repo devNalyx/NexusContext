@@ -22,7 +22,7 @@ for the handful of decisions worth defending later.
 
 - [[Architecture]] — the daemon, its two transports, and how the pieces fit
   together.
-- [[MCP-Tools]] — the 29 tools an agent can call, grouped, and why they're
+- [[MCP-Tools]] — the 30 tools an agent can call, grouped, and why they're
   gated behind presets.
 - [[Indexing-Pipeline]] — how a codebase becomes a graph: tree-sitter,
   two-pass call resolution, per-language quality tiers.

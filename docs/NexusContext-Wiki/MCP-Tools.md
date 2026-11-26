@@ -1,6 +1,6 @@
 # MCP Tools
 
-29 tools total: 12 structural tools backed by the same SQLite graph, 11
+30 tools total: 13 structural tools backed by the same SQLite graph, 11
 absorbed Myelin procedural-memory tools backed by their own local SQLite
 store, and 6 curated declarative-memory tools backed by a third local store
 with an OKF v0.3 export. One daemon, one catalog, one ledger — no second MCP
@@ -13,6 +13,7 @@ than an assumption.
 | Tool | What it does |
 |---|---|
 | `index_repository` | Build or rebuild the knowledge graph for a directory. Run this before anything else on a project you haven't indexed yet. `deep: true` also runs LSP-resolved-symbol enrichment (Rust only, opt-in via `[lsp]`) — see [[Storage-and-Data-Model]]. |
+| `list_sources` | Read-only list of human-registered external knowledge sources (`nexus source add`), with canonical root, kind and provenance URI (issue #103). Registration is CLI/control-plane only; a source's presence is provenance metadata, never fact approval. |
 | `get_file_context` | Read a file, or a bounded line range, from an indexed project. No range + `full=false` (default) returns the first 300 lines with a truncation note. Every branch is now byte-capped, not just line-capped — see [[Security-Model]]. |
 | `get_architecture` | Node/edge counts, busiest files by definition density, language breakdown, plus an `index_freshness` field (last-indexed time, whether the project is currently "warm"). Cached, keyed on the project's `last_indexed_unix`, so repeated calls against an unchanged index skip SQLite entirely — freshness is computed fresh on every call regardless, so it never reads stale from the cache. Default response/cost is unchanged. Optional `grouped=true` (issue #90) adds a directory-based structural breakdown built from every node's existing `file_path` — no new indexing. `depth` (default `1`) controls how many path components form each group's key (e.g. depth `1` groups by top-level directory, depth `2` by the first two components). Response then gains a `grouped` object: `groups` (per-directory `path`, `total_nodes`, and `node_counts` broken down by kind — function/type/etc.), `within_group_edges` (edges whose endpoints share a group), and `cross_group_edges` (edges crossing between two different groups, tallied per `from`/`to` pair — the "which directories actually call into which" signal). This is deliberately structural grouping by path only, not semantic subsystem/layer inference — see ADR 0017. |
 
@@ -92,7 +93,7 @@ anchor/file-hash based, distinct from skill atrophy. See [[Flagship-Proposal]].
 | `export_memory` | Write the OKF v0.3 bundle (bundle-root `index.md` routing description, standard Markdown links, no wikilinks). Full preset only. |
 | `import_memory` | Read a bundle into SQLite. Unknown concepts are tolerated but not trusted; local staleness and human verification are never downgraded. Full preset only. |
 
-## Why not all 29 are advertised by default
+## Why not all 30 are advertised by default
 
 Every MCP session pays a fixed token cost just to load `tools/list`'s
 schemas, regardless of whether that session ever calls most of them. A
@@ -100,7 +101,7 @@ schemas, regardless of whether that session ever calls most of them. A
 
 ```toml
 [tools]
-preset = "standard"   # "minimal" (5) | "standard" (default, 12) | "full" (29)
+preset = "standard"   # "minimal" (5) | "standard" (default, 13) | "full" (30)
 # enabled = ["search_code", "get_architecture"]   # explicit list, overrides preset
 ```
 

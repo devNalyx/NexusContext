@@ -1,6 +1,7 @@
 mod install;
 mod memory;
 mod session_end;
+mod source;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -105,6 +106,11 @@ enum Command {
     Memory {
         #[command(subcommand)]
         action: memory::Command,
+    },
+    /// Register, list or remove external knowledge sources (human-side only).
+    Source {
+        #[command(subcommand)]
+        action: source::Command,
     },
     /// Internal: read a Claude Code SessionEnd hook payload from stdin and
     /// stage explicitly signposted observations into procedural memory.
@@ -321,6 +327,7 @@ fn main() -> Result<()> {
             println!("deleted index for {}", path.display());
         }
         Command::Memory { action } => memory::run(action)?,
+        Command::Source { action } => source::run(action)?,
         Command::SessionEnd => session_end::run()?,
         Command::Install {
             target,

@@ -16,6 +16,54 @@ pub struct Config {
     pub tools: ToolsConfig,
     #[serde(default)]
     pub lsp: LspConfig,
+    /// Human-registered external knowledge sources (e.g. an Obsidian vault).
+    /// Registration is deliberately a CLI/control-plane act, never an MCP
+    /// write path - agents can discover sources via `list_sources`, not
+    /// create or approve them. Empty by default.
+    #[serde(default)]
+    pub sources: Vec<SourceConfig>,
+}
+
+/// A registered external source. `root_path` is stored canonically by
+/// `nexus source add`; `kind` is free-form so new source flavours don't need
+/// a config-schema change, and `resource` is the OKF-style provenance URI
+/// used on curated facts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceConfig {
+    pub id: String,
+    pub root_path: String,
+    #[serde(default = "default_source_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub resource: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default = "default_source_enabled")]
+    pub enabled: bool,
+}
+
+fn default_source_kind() -> String {
+    "markdown".to_string()
+}
+
+fn default_source_enabled() -> bool {
+    true
+}
+
+impl Default for SourceConfig {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            root_path: String::new(),
+            kind: default_source_kind(),
+            resource: None,
+            title: None,
+            description: None,
+            enabled: true,
+        }
+    }
 }
 
 /// Governs which registered projects the background file watcher actively
@@ -170,6 +218,21 @@ impl Config {
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from(root));
             canonical_path.starts_with(&canonical_root)
+        })
+    }
+
+    /// Finds the registered source matching a project root. Both sides are
+    /// canonicalized here (not just trusted as stored) so a source written
+    /// before a symlink change, or an index request using a `..`-laden path,
+    /// still resolves to the same identity. No `allowed_roots` meaning here:
+    /// indexing still runs its own check separately.
+    pub fn source_for_root(&self, root: &Path) -> Option<&SourceConfig> {
+        let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        self.sources.iter().find(|source| {
+            let source_root = Path::new(&source.root_path)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(&source.root_path));
+            source_root == canonical
         })
     }
 }
@@ -330,5 +393,52 @@ mod tests {
         assert!(!config.is_path_allowed(std::path::Path::new(
             "/nexuscontext-test-does-not-exist-elsewhere"
         )));
+    }
+
+    #[test]
+    fn sources_default_to_empty_and_round_trip() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.sources.is_empty());
+
+        let config: Config = toml::from_str(
+            "[[sources]]\nid = \"vault\"\nroot_path = \"/tmp/vault\"\nkind = \"obsidian-vault\"\nresource = \"obsidian-vault://vault\"\ntitle = \"Notes\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.sources.len(), 1);
+        let source = &config.sources[0];
+        assert_eq!(source.id, "vault");
+        assert_eq!(source.kind, "obsidian-vault");
+        assert_eq!(source.resource.as_deref(), Some("obsidian-vault://vault"));
+        assert_eq!(source.title.as_deref(), Some("Notes"));
+        assert!(source.enabled);
+
+        let raw = toml::to_string_pretty(&config).unwrap();
+        let reparsed: Config = toml::from_str(&raw).unwrap();
+        assert_eq!(reparsed.sources[0].id, "vault");
+    }
+
+    #[test]
+    fn source_for_root_matches_canonical_path_only() {
+        let root = scratch_dir("source-root");
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let config = Config {
+            sources: vec![SourceConfig {
+                id: "vault".to_string(),
+                root_path: root.to_string_lossy().to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            config
+                .source_for_root(&nested.join(".."))
+                .map(|s| s.id.as_str()),
+            Some("vault")
+        );
+        assert!(config
+            .source_for_root(std::path::Path::new("/nexuscontext-test-not-the-vault"))
+            .is_none());
+        std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -30,6 +30,16 @@ pub struct ProjectEntry {
     pub last_auto_reindex_ms: u64,
     #[serde(default)]
     pub last_auto_reindex_unix: u64,
+    /// Identity of a human-registered source (`nexus source add`) whose
+    /// canonical root is this project. Optional so ordinary repos and
+    /// pre-feature registry entries are unaffected; serde defaults keep old
+    /// `projects.json` files readable.
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub source_kind: Option<String>,
+    #[serde(default)]
+    pub source_resource: Option<String>,
 }
 
 impl ProjectEntry {
@@ -148,6 +158,9 @@ mod tests {
             auto_reindex_total_ms: 0,
             last_auto_reindex_ms: 0,
             last_auto_reindex_unix: 0,
+            source_id: None,
+            source_kind: None,
+            source_resource: None,
         }
     }
 
@@ -203,5 +216,19 @@ mod tests {
         assert_eq!(dir_mode, 0o700);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn source_metadata_is_optional_for_legacy_entries() {
+        let legacy = r#"{"projects":[{"root_path":"/tmp/x","hash":"h","last_indexed_unix":1,"nodes":1,"edges":0}]}"#;
+        let registry: Registry = serde_json::from_str(legacy).unwrap();
+        assert_eq!(registry.projects[0].source_id, None);
+
+        let mut entry = entry(0);
+        entry.source_id = Some("vault".to_string());
+        entry.source_kind = Some("obsidian-vault".to_string());
+        entry.source_resource = Some("obsidian-vault://vault".to_string());
+        let raw = serde_json::to_string(&entry).unwrap();
+        assert!(raw.contains("obsidian-vault://vault"));
     }
 }

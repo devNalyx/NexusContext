@@ -113,15 +113,15 @@ nexus memory bundles --project /path/to/project --root /path/to/workspace  # rou
 
 ## 5. MCP tools available to agents
 
-Once `nexusd mcp` is wired into an agent, tools are exposed through one catalog: 12 structural/graph tools, 11 absorbed Myelin procedural-skill tools, and 6 curated declarative-memory tools. No network calls of any kind.
+Once `nexusd mcp` is wired into an agent, tools are exposed through one catalog: 13 structural/graph tools, 11 absorbed Myelin procedural-skill tools, and 6 curated declarative-memory tools. No network calls of any kind.
 
-Structural (12): `index_repository`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes`, `detect_dead_code`, `search_code`, `query_graph`, `query_planner`, `get_session_usage`, `delete_project`.
+Structural (13): `index_repository`, `list_sources`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes`, `detect_dead_code`, `search_code`, `query_graph`, `query_planner`, `get_session_usage`, `delete_project`.
 
 Curated memory (6): `recall`, `list_facts`, `curate_fact`, `review_fact`, `export_memory`, `import_memory`. Only `recall` is advertised by default; curation and review are opt-in. An agent cannot approve its own staging: auto-injection requires a current `human:` sign-off, `status: stable` and a non-stale anchor.
 
 Procedural memory (11): `record_observation`, `list_warmup_queue`, `list_skills`, `promote_skill`, `record_skill_feedback`, `mark_skill_used`, `list_pending_review`, `dismiss_pending_review`, `archive_skill`, `restore_skill`, `render_skill_graph`.
 
-By default only 12 of these 29 are actually advertised to an agent (the `standard` preset - see Section 8's `[tools]` block) to cut the fixed per-session token cost of loading tool schemas. Set `preset = "full"` to get all 29, `preset = "minimal"` for just the 5 core read tools, or list exact tool names via `enabled`.
+By default only 13 of these 30 are actually advertised to an agent (the `standard` preset - see Section 8's `[tools]` block) to cut the fixed per-session token cost of loading tool schemas. Set `preset = "full"` to get all 30, `preset = "minimal"` for just the 5 core read tools, or list exact tool names via `enabled`.
 
 ## 6. Desktop GUI
 
@@ -158,7 +158,7 @@ warm_window_secs = 21600   # 6h default - a project not queried within this wind
                            # one synchronous reindex the next time it's actually queried again)
 
 [tools]
-preset = "standard"   # "minimal" (5 core read tools) | "standard" (default, 12) | "full" (all 29)
+preset = "standard"   # "minimal" (5 core read tools) | "standard" (default, 13) | "full" (all 30)
 # enabled = ["search_code", "get_architecture"]   # optional explicit list, overrides preset
 ```
 
