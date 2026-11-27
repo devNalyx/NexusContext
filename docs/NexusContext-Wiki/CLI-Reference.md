@@ -129,13 +129,19 @@ pays for any facts; injection stays scoped to that repo under the same hard cap.
 nexus install                 # dry run: prints the plan, writes nothing
 nexus install --yes           # apply (Claude Code / Claude Desktop)
 nexus install opencode --yes  # project-local plugin + MCP + minimal config
+nexus install opencode --global --yes  # ~/.config/opencode, shared across projects
 nexus install opencode --uninstall --yes  # restore previous config exactly
+nexus install opencode --global --uninstall --yes  # undo the global install
 ```
 
 OpenCode V2 gets `.opencode/plugins/nexuscontext/` and one
-`mcp.servers.nexuscontext` entry in `opencode.json`; the install manifest
-records exactly what was created so uninstall can undo the merge without
-deleting a pre-existing config. Without `--yes` nothing on disk changes.
+`mcp.servers.nexuscontext` entry in `opencode.json`; with `--global` it uses
+`$XDG_CONFIG_HOME/opencode/plugins/nexuscontext` (default
+`~/.config/opencode`) and that directory's `opencode.json` instead. The plugin
+includes the server hooks, typed RPC contract, TUI footer and `/nexus` session
+panel. A separate global manifest records exactly what was created so
+uninstall can undo the merge without deleting a pre-existing config or a
+project-local install. Without `--yes` nothing on disk changes.
 For Claude, detect Claude Code (via its own `claude mcp add` CLI) and Claude
 Desktop (merges into `claude_desktop_config.json` without touching anything
 else already there). It also merges a project-local `SessionEnd` hook into

@@ -126,6 +126,9 @@ enum Command {
         /// Remove a previous `nexus install opencode` from its manifest.
         #[arg(long)]
         uninstall: bool,
+        /// Install into ~/.config/opencode instead of the current project.
+        #[arg(long)]
+        global: bool,
     },
     /// Grep-like full-text search over indexed file content (not symbol names).
     SearchCode {
@@ -333,14 +336,19 @@ fn main() -> Result<()> {
             target,
             yes,
             uninstall,
+            global,
         } => {
             if uninstall {
                 if target.as_deref() != Some("opencode") {
                     anyhow::bail!("--uninstall currently supports only 'opencode'");
                 }
-                install::uninstall_opencode(yes)?;
+                if global {
+                    install::uninstall_opencode_global(yes)?;
+                } else {
+                    install::uninstall_opencode(yes)?;
+                }
             } else {
-                install::run(target.as_deref(), yes)?;
+                install::run(target.as_deref(), yes, global)?;
             }
         }
         Command::SearchCode {

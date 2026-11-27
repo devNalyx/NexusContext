@@ -258,7 +258,7 @@ try {
   )
 
   // Panel formatters are pure and testable without an OpenCode runtime.
-  const { formatTab, TAB_METHODS } = await import(
+  const { formatError, formatTab, TAB_METHODS } = await import(
     pathToFileURL(path.join(root, "src", "panel-data.js")).href
   )
   assert.ok(TAB_METHODS.graph === "graph" && TAB_METHODS.logs === "logs")
@@ -272,6 +272,22 @@ try {
     "a",
     "b",
   ])
+  const errorLines = formatError({
+    error_type: "control",
+    message: "socket missing",
+    data: { method: "status.get" },
+  })
+  assert.ok(errorLines.some((line) => line.includes("socket missing")))
+  assert.ok(errorLines.some((line) => line.includes("status.get")))
+
+  // Both views and the installer rely on the same declared entry points.
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(root, "package.json"), "utf8"),
+  )
+  for (const entry of [".", "./tui", "./rpc", "./gui-experimental"]) {
+    assert.ok(manifest.exports[entry], `package must export ${entry}`)
+  }
+  assert.ok(fs.existsSync(path.join(root, "dist", "gui-experimental.cjs")))
 
   console.log("opencode-nexuscontext hook + ledger + RPC panel smoke test: ok")
 } finally {
