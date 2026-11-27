@@ -21,8 +21,14 @@ nexus detect-changes --project /path/to/project    # uncommitted git diff -> aff
 nexus query-planner "some question" --project /path/to/project
 nexus query-graph "MATCH (a:Function)-[:CALLS]->(b:Function) RETURN b" --project /path/to/project
 nexus delete /path/to/project                       # remove a project's index, not its source
-nexus status
+nexus status                                             # installed + running version, restart state, paths
 ```
+
+`nexus --version` / `nexusd --version` print the installed version. `nexus
+status` reports it next to the version the daemon is actually serving: a
+mismatch means `RESTART REQUIRED` (restart `nexusd serve` and reload the IDE
+session so its `nexusd mcp` subprocess is relaunched). See
+[[INSTALL]] for upgrade steps.
 
 Reindexing is safe to run concurrently with the background auto-sync
 watcher — see [[Indexing-Pipeline]] for the transaction/locking that makes
