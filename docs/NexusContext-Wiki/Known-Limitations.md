@@ -140,10 +140,14 @@ With `[config_index]` enabled, YAML/JSON key locations and literal text are
 indexed — no Helm/Jinja/template rendering, no effective-values merging, no
 cross-repository GitOps relationship edges, no federation, and no cluster or
 network access (issue #112). `partial`/`unsupported` files are labelled and
-remain literal-text-only; line locations come from a bounded line scanner,
-not a full AST with byte offsets, so they're provenance leads rather than
-semantic truth. `metadata_only` avoids storing raw values but is not secret
-detection or redaction.
+remain literal-text-only. JSON keys keep their real nesting (including array
+indices) and YAML literal/folded block-scalar bodies are never treated as
+keys; key ranges end at same-level siblings and document boundaries (#120,
+#121). Locations still come from bounded scanners, not a full AST with byte
+offsets, so they're provenance leads rather than semantic truth: flow
+mappings, quoted template-like strings, aliases and effective-value merging
+remain incomplete or explicitly limited. `metadata_only` avoids storing raw
+values but is not secret detection or redaction.
 
 ## Related
 
