@@ -253,3 +253,27 @@ builds) and GitHub's retirement of the `macos-14` label — are fixed in v0.1.22
   15 tools including `list_sources` and `vault_context`. OpenCode sessions
   still need a restart/reload to load the new global plugin and Desktop
   bundle; the daemon is already running.
+- v0.1.27: PR #113 merged as `da563c3` (opt-in source-linked YAML/JSON
+  search, issue #112), PR #114 merged as `c943300` (version bump), and PR
+  #115 merged as `eb4f3ad` (landing-page copy for the new tool description).
+  Release run `46028499907` completed success with 9 published assets.
+  Local install: `nexus`/`nexusd` 0.1.27 were copied into `~/.cargo/bin`
+  from a temporary tree combining released `main` with the uncommitted
+  `agent-vault-link-graph` Rust changes (backups under
+  `/tmp/opencode/bin-backup-pre-0.1.27`), so published artifacts contain
+  released `main` only while this machine keeps `vault_context`. The hybrid
+  tree needed one local-only compatibility fix (`vault_links: Vec::new()`
+  in the new config-file `FileIndexResult` initializer); its only failing
+  check was the docs tool-count drift assertion, because the hybrid adds a
+  31st tool (`vault_context`) to docs that say 30 — released `main` is fully
+  CI-green. The global plugin was uninstalled and reinstalled with
+  `nexus install opencode --global --yes` (backup under
+  `/tmp/opencode/plugin-backup-pre-0.1.27`); the bundle hash is unchanged,
+  as #112 was daemon-side only. Verification: all three PR CI runs green;
+  fresh stdio MCP against the installed 0.1.27 binary returned 13 tools on
+  the standard preset and 14 with `preset = "full"` (including
+  `vault_context` and `list_sources`), `search_code` returned the config key
+  path/document/line-range/parse-status plus `coverage` and stdio
+  `index_freshness` (`watcher_active: false`). Running `nexusd serve` and the
+  `nexusd mcp` subprocesses still hold the old 0.1.26 binaries, so a daemon
+  restart plus OpenCode session reload is required to make 0.1.27 live.
