@@ -21,7 +21,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "nexusd", about = "NexusContext daemon")]
+#[command(name = "nexusd", about = "NexusContext daemon", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

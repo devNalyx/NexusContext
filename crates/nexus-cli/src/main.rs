@@ -1,3 +1,4 @@
+mod control;
 mod install;
 mod memory;
 mod session_end;
@@ -15,7 +16,8 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "nexus",
-    about = "NexusContext CLI - manual indexing and queries"
+    about = "NexusContext CLI - manual indexing and queries",
+    version
 )]
 struct Cli {
     #[command(subcommand)]
@@ -191,8 +193,15 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Status => {
-            println!("config file : {}", paths.config_file().display());
-            println!("data dir    : {}", paths.data_dir.display());
+            let daemon = control::query(&paths.control_socket());
+            for line in control::status_lines(
+                env!("CARGO_PKG_VERSION"),
+                &paths.config_file(),
+                &paths.data_dir,
+                &daemon,
+            ) {
+                println!("{line}");
+            }
         }
         Command::Reindex { path, deep } => {
             let stats = if deep {

@@ -55,6 +55,19 @@ systemctl --user status nexuscontext.service
 }
 ```
 
+### Upgrading an existing install
+
+`nexus --version` and `nexusd --version` print the installed version; `nexus status` prints it alongside the version the running daemon is actually serving, with an explicit `RESTART REQUIRED` line when they differ. MCP subprocesses (`nexusd mcp`) started before the upgrade also keep the old binary, so after upgrading:
+
+1. Restart the daemon (`systemctl --user restart nexuscontext.service`, or stop/start your `nexusd serve` process).
+2. Restart or reload your IDE / agent session so its `nexusd mcp` subprocess is relaunched.
+
+When replacing binaries manually, **rename a freshly copied file over the old one instead of copying in place** - overwriting an executable that is currently running fails with `Text file busy`:
+
+```bash
+cp /path/to/new/nexusd /usr/local/bin/nexusd.new && mv -f /usr/local/bin/nexusd.new /usr/local/bin/nexusd
+```
+
 ## 4. Index a project and try the CLI
 
 ```bash
@@ -68,7 +81,7 @@ nexus detect-changes --project /path/to/your/project      # uncommitted git diff
 nexus query-planner "some question" --project /path/to/your/project     # picks file-read vs graph-search vs keyword-fallback
 nexus query-graph "MATCH (f:File)-[:DEFINES]->(fn:Function) WHERE f.name = 'main.rs' RETURN fn" --project /path/to/your/project
 nexus delete /path/to/your/project                        # remove a project's index (not its source)
-nexus status
+nexus status                                             # installed + running version, restart state, paths
 ```
 
 Reindexing is safe to run concurrently (e.g. while the auto-sync watcher is also active) - `index_directory` runs inside a transaction with a busy timeout, so a second rebuild waits for the first instead of corrupting the graph.
