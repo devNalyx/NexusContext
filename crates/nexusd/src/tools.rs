@@ -2106,10 +2106,13 @@ mod tests {
     #[test]
     fn vault_context_fails_closed_unless_vault_index_is_enabled() {
         let config = Config::default();
+        // No repo_path: dispatch's best-effort touch must not write to the
+        // registry (or race a fanout test's registry save) just to prove the
+        // gate fires before any path is consulted.
         let response = call(
             json!({
                 "name": "vault_context",
-                "arguments": { "repo_path": "/tmp/anything", "mode": "tags" }
+                "arguments": { "mode": "tags" }
             }),
             &config,
         )
