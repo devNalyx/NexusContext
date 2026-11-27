@@ -1,20 +1,20 @@
 # Installing and Using NexusContext
 
-This covers what's actually built and working today (see the full phase-by-phase roadmap in `README.md`). It assumes Ubuntu/GNOME.
+This covers what's actually built and working today (see the full phase-by-phase roadmap in `README.md`). MCP/CLI flows are cross-platform; the Ubuntu/GNOME notes apply to the legacy GTK GUI and shell extension.
 
 ## 0. Download a release (Linux/macOS/Windows)
 
 Tagged releases publish real binaries via GitHub Actions - no toolchain needed. Grab the latest from the [Releases page](https://github.com/devNalyx/NexusContext/releases):
 
-- **Linux**: a `.deb` or `.rpm`, or a plain `nexuscontext-linux-<x86_64|arm64>.tar.gz` for other distros - full daemon/CLI/GUI, either architecture.
+- **Linux**: a `.deb` or `.rpm`, or a plain `nexuscontext-linux-<x86_64|arm64>.tar.gz` for other distros - full daemon/CLI plus the deprecated GTK GUI, either architecture.
 - **macOS**: `nexuscontext-macos-aarch64.tar.gz` (Apple Silicon) - CLI + full daemon (`nexusd mcp` and `nexusd serve` both work), no native GUI build for macOS. Intel Macs run this fine under Rosetta 2; a native `x86_64` build was attempted but dropped after GitHub's own runner class for it never assigned a runner (a real capacity constraint, not a workflow bug - see `release.yml`). Unsigned binaries need `xattr -d com.apple.quarantine <binary>` or a right-click-Open the first time, since they aren't notarized.
-- **Windows**: `nexuscontext-windows-<x86_64|arm64>.zip` - `nexus` CLI + `nexusd mcp` only. `nexusd serve` (the control API, background watcher, GUI target) isn't supported yet - see [issue #16](https://github.com/devNalyx/NexusContext/issues/16). Every MCP tool works fully without it; reindex manually (`nexus reindex`) rather than relying on the background watcher to keep a project warm.
+- **Windows**: `nexuscontext-windows-<x86_64|arm64>.zip` - `nexus` CLI + `nexusd mcp` only. `nexusd serve` (the control API behind the OpenCode panels, plus the background watcher and legacy GUI target) isn't supported yet - see [issue #16](https://github.com/devNalyx/NexusContext/issues/16). Every MCP tool works fully without it; reindex manually (`nexus reindex`) rather than relying on the background watcher to keep a project warm.
 
 Otherwise, build from source:
 
 ## 1. Build from source
 
-Requires Rust (stable) and, only for the GUI, GTK4 + libadwaita dev headers:
+Requires Rust (stable) and, only for the deprecated GTK GUI, GTK4 + libadwaita dev headers:
 
 ```bash
 sudo apt install libgtk-4-dev libadwaita-1-dev pkg-config build-essential
@@ -35,7 +35,7 @@ This installs `nexusd` and `nexus` to `/usr/bin/`, and the systemd user unit to 
 
 ## 3. Run the daemon
 
-**As a background service** (for the GUI/GNOME extension to talk to) - the packaged systemd unit is Linux-only. `nexusd serve` itself also runs on macOS (just start it directly, e.g. `nexusd serve &`, or wire up your own `launchd` agent - no packaged one is shipped yet) but isn't supported on Windows at all yet (see [issue #16](https://github.com/devNalyx/NexusContext/issues/16)):
+**As a background service** (for the OpenCode panels, and for the legacy GTK/GNOME surfaces, to talk to) - the packaged systemd unit is Linux-only. `nexusd serve` itself also runs on macOS (just start it directly, e.g. `nexusd serve &`, or wire up your own `launchd` agent - no packaged one is shipped yet) but isn't supported on Windows at all yet (see [issue #16](https://github.com/devNalyx/NexusContext/issues/16)):
 
 ```bash
 systemctl --user enable --now nexuscontext.service

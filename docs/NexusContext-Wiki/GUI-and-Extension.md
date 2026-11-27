@@ -1,9 +1,14 @@
-# GUI and GNOME Extension
+# Interactive surfaces: OpenCode panels, legacy GUI
 
-Neither is required — the daemon and MCP server work fully headless. These
-exist because a CLI is genuinely bad at certain things (browsing search
-results, seeing indexing status at a glance) without pulling in a web
-dashboard, which this project deliberately avoids.
+None of the interactive surfaces are required — the daemon and MCP server work
+fully headless. They exist because a CLI is genuinely bad at certain things
+(browsing search results, seeing indexing status at a glance) without pulling
+in a web dashboard, which this project deliberately avoids.
+
+The **OpenCode panels** below are the current/primary surface. The GTK4 Manager
+app and GNOME Shell extension are legacy, optional, and receive no new features;
+they remain in the tree only until the Desktop panel reaches parity (issue
+#107).
 
 ## OpenCode panels (primary interactive surface)
 
@@ -59,14 +64,14 @@ overhead. Talks to the daemon **exclusively** over the control socket
 
 There is no Config view in current source, despite older documentation.
 
-## GNOME Shell extension
+## GNOME Shell extension (legacy)
 
-Deliberately thin: a top-bar icon (idle/indexing/error state) and a
-dropdown with quick stats plus a launcher for the full GTK4 app. Runs
-inside `gnome-shell`'s own process (GJS) — this is exactly why it stays
-minimal. Shell extensions that do real work are a common source of Shell
-crashes and the most likely part of this stack to break across GNOME
-version upgrades; anything heavier belongs in the GTK4 app.
+**Legacy/optional, maintenance-only.** Deliberately thin: a top-bar icon
+(idle/indexing/error state) and a dropdown with quick stats plus a launcher
+for the deprecated GTK4 app. Runs inside `gnome-shell`'s own process (GJS) —
+this is exactly why it stays minimal. Shell extensions that do real work are a
+common source of Shell crashes and the most likely part of this stack to break
+across GNOME version upgrades; no new functionality belongs here.
 
 ```bash
 cp -r extension/nexuscontext@nexuscontext.local ~/.local/share/gnome-shell/extensions/
