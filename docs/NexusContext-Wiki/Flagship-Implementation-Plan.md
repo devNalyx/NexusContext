@@ -231,3 +231,25 @@ builds) and GitHub's retirement of the `macos-14` label — are fixed in v0.1.22
   v0.1.25 artifacts contain the released `main` code only. Verification:
   `tools/list` returned 14 configured tools, `list_sources` and
   `vault_context` (tags/links modes) returned live vault data.
+- v0.1.26: PR #108 merged as `2ccf6dd` (typed RPC + TUI panel, issue #107),
+  PR #109 merged as `a2d53f1` (experimental Desktop panel, global
+  `--global` install, GUI deprecation notices), and PR #110 merged as
+  `972fda3` (version bump). Release run `45960578849` completed success
+  with 9 published assets. Local install: `nexus`/`nexusd` 0.1.26 were
+  copied into `~/.cargo/bin` from a temporary tree combining released
+  `origin/main` with the uncommitted `agent-vault-link-graph` Rust changes,
+  so the published artifacts contain released `main` only while this
+  machine keeps `vault_context`. The old manual global plugin was backed up
+  under `/tmp/opencode/plugin-backup-pre-0.1.26` and replaced by
+  `nexus install opencode --global --yes`; the installer wrote
+  `~/.config/opencode/plugins/nexuscontext/{index.js,control.js,tui.tsx,rpc.js,panel-data.js,gui-experimental.cjs,package.json}`
+  and `~/.config/opencode/nexuscontext-install-manifest.json`. Verification:
+  all PR CI jobs green; workspace fmt/clippy/test and plugin smoke/typecheck/build
+  green; `nexusd serve` (PID 229966) exposed
+  `/run/user/1000/nexuscontext/nexuscontext.sock`; control `status.get`
+  returned version 0.1.26, `sources.list` returned `secondbrain`, and
+  `logs.tail` returned live lines. MCP `list_sources` and CLI `nexus source list`
+  both showed the registered vault source; installed `tools/list` exposed
+  15 tools including `list_sources` and `vault_context`. OpenCode sessions
+  still need a restart/reload to load the new global plugin and Desktop
+  bundle; the daemon is already running.
