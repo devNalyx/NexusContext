@@ -31,6 +31,6 @@ pub use project::{
 pub use queries::{
     call_graph_dot, detect_changes, detect_changes_blast_radius, detect_dead_code,
     get_architecture, get_architecture_grouped, get_file_context, open_store, plan_query,
-    search_code, search_code_detailed, ArchitectureSummary, BlastRadiusResult, QueryPlanResult,
-    SearchCodeResult,
+    search_code, search_code_detailed, search_code_detailed_at, ArchitectureSummary,
+    BlastRadiusResult, QueryPlanResult, SearchCodeResult,
 };

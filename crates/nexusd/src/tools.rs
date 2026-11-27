@@ -11,8 +11,17 @@ use std::path::PathBuf;
 /// response regardless of what limit it asked for. See change_proposal.md.
 const SERVER_MAX_LIMIT: u32 = 200;
 
+/// Hard ceiling on `search_code`'s continuation offset. It bounds the SQL
+/// LIMIT an agent can ask SQLite to skip without a new tool or a new catalog
+/// entry (issue #123); 100k hits is far beyond a useful paged scan.
+const SERVER_MAX_OFFSET: u32 = 100_000;
+
 fn clamp_limit(requested: u32) -> u32 {
     requested.min(SERVER_MAX_LIMIT)
+}
+
+fn clamp_offset(requested: u64) -> u32 {
+    requested.min(SERVER_MAX_OFFSET as u64) as u32
 }
 
 /// Hard ceiling on any caller-supplied graph traversal `depth`. Unlike
@@ -239,13 +248,18 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "search_code",
-            "description": "Grep-like full-text search over indexed file content (not symbol names) via SQLite FTS5. Covers the 11 tree-sitter languages, markdown docs, and - only when [config_index] is explicitly enabled - YAML/JSON config key paths and values. Config hits carry document number, dotted key path, 1-based line range, parse status (parsed/partial/unsupported/template_syntax), and coverage; exclusions apply before ingestion and metadata_only stores no raw values. No templating language is rendered. Query is matched as a literal phrase.",
+            "description": "Grep-like full-text search over indexed file content (not symbol names) via SQLite FTS5. Covers the 11 tree-sitter languages, markdown docs, and - only when [config_index] is explicitly enabled - YAML/JSON config key paths and values. Config hits carry document number, dotted key path, 1-based line range, parse status (parsed/partial/unsupported/template_syntax), and coverage; exclusions apply before ingestion and metadata_only stores no raw values. No templating language is rendered. Query is matched as a literal phrase. Results are a page: check has_more and pass next_offset as offset for the rest — matching files can expand into several key hits. This is a bounded scan; prefer a targeted file read when you already know the location.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "repo_path": { "type": "string" },
                     "query": { "type": "string" },
-                    "limit": { "type": "integer", "default": 20 }
+                    "limit": { "type": "integer", "default": 20 },
+                    "offset": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Skip this many hits (not files) and return the next page; use next_offset from a truncated response."
+                    }
                 },
                 "required": ["repo_path", "query"]
             }
@@ -1077,8 +1091,9 @@ fn search_code(args: Value, config: &Config) -> Result<String> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("missing 'query' argument"))?;
     let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as u32);
+    let offset = clamp_offset(args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0));
 
-    let result = index::search_code_detailed(&repo_path, query, limit)?;
+    let result = index::search_code_detailed_at(&repo_path, query, limit, offset)?;
     let hits: Vec<Value> = result
         .hits
         .iter()
@@ -1111,6 +1126,10 @@ fn search_code(args: Value, config: &Config) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
         "repository": result.repo_path.to_string_lossy(),
         "hits": hits,
+        // Additive pagination fields (issue #123): `next_offset` is null
+        // when this is the last page, so callers can stop without guessing.
+        "has_more": result.has_more,
+        "next_offset": result.next_offset,
         "coverage": {
             "config_index_enabled": config.config_index.enabled,
             "metadata_only": config.config_index.metadata_only,
@@ -1220,6 +1239,14 @@ mod tests {
         assert!(description.contains("YAML/JSON"), "{description}");
         assert!(description.contains("metadata_only"), "{description}");
         assert!(description.contains("literal phrase"), "{description}");
+        let properties = schema["inputSchema"]["properties"]
+            .as_object()
+            .expect("search_code properties");
+        assert!(
+            properties.contains_key("offset"),
+            "continuation must stay on the existing tool: {properties:?}"
+        );
+        assert!(description.contains("has_more"), "{description}");
     }
 
     #[test]
@@ -1434,6 +1461,14 @@ mod tests {
     fn clamp_limit_caps_requests_above_the_max() {
         assert_eq!(clamp_limit(SERVER_MAX_LIMIT + 1), SERVER_MAX_LIMIT);
         assert_eq!(clamp_limit(100_000), SERVER_MAX_LIMIT);
+    }
+
+    #[test]
+    fn clamp_offset_passes_through_normal_pages_and_caps_extreme_ones() {
+        assert_eq!(clamp_offset(0), 0);
+        assert_eq!(clamp_offset(37), 37);
+        assert_eq!(clamp_offset(SERVER_MAX_OFFSET as u64), SERVER_MAX_OFFSET);
+        assert_eq!(clamp_offset(u64::MAX), SERVER_MAX_OFFSET);
     }
 
     #[test]
