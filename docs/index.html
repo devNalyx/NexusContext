@@ -448,6 +448,20 @@
   .spec .k { font-family: var(--mono); font-size: 11px; color: var(--paper-faint); text-transform: uppercase; letter-spacing: .06em; }
   .spec .v { font-family: var(--mono); font-size: 13px; color: var(--paper); margin-top: 6px; }
 
+  /* Design deck entry point — lightweight, links out to the full slide deck */
+  .deck-strip { margin-top: 28px; display: flex; align-items: center; gap: 24px; justify-content: space-between;
+    background: var(--ink-raised); border: 1px solid var(--line); padding: 20px 22px; }
+  .deck-strip .ds-kicker { font: 600 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+  .deck-strip .ds-title { font: 600 18px var(--serif); color: var(--paper); margin: 6px 0 4px; }
+  .deck-strip .ds-desc { font: 13.5px var(--serif); color: var(--paper-dim); line-height: 1.5; }
+  .deck-strip .btn { flex: none; }
+  .deck-links { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; font: 12px var(--mono); }
+  .deck-links a { color: var(--paper-dim); text-decoration: none; border-bottom: 1px solid var(--line); }
+  .deck-links a:hover { color: var(--accent); border-color: var(--accent); }
+  .deck-inline { font: 12px var(--mono); color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--line-strong); }
+  .deck-inline:hover { border-color: var(--accent); }
+  @media (max-width: 760px) { .deck-strip { flex-direction: column; align-items: flex-start; } }
+
   /* ---- Trace / spine layout (audit + hardening) ---- */
   .trace { position: relative; padding-left: 28px; }
   .trace::before {
@@ -647,6 +661,7 @@
       <a href="#architecture">Architecture</a>
       <a href="#hardened">Hardened</a>
       <a href="#install">Install</a>
+      <a href="deck.html">Deck</a>
       <a class="always-show" href="https://github.com/devNalyx/NexusContext">GitHub</a>
       <button class="theme-btn" id="theme-toggle" type="button" aria-label="Toggle color theme">
         <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.5M12 19v2.5M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M2.5 12h2.5M19 12h2.5M4.6 19.4l1.8-1.8M17.6 6.4l1.8-1.8"/></svg>
@@ -669,6 +684,7 @@
     <div class="cta-row">
       <a class="btn btn-primary" href="https://github.com/devNalyx/NexusContext">View on GitHub</a>
       <a class="btn btn-ghost" href="#install">Quick install</a>
+      <a class="btn btn-ghost" href="deck.html">Design deck <span aria-hidden="true">→</span></a>
     </div>
     <div class="stat-row">
       <div class="stat"><div class="n">31</div><div class="l">MCP tools</div></div>
@@ -685,6 +701,7 @@
       <div class="kicker">Design philosophy</div>
       <h2>The agent is the intelligence. NexusContext is the memory.</h2>
       <p>No LLM lives in the daemon. It builds structure and answers queries — your agent still does all the reasoning.</p>
+      <p><a class="deck-inline" href="deck.html#the-idea">See slide: The idea →</a></p>
     </div>
     <div class="grid">
       <div class="card">
@@ -900,6 +917,23 @@
       <div class="spec"><div class="k">Live sync</div><div class="v">Debounced file watcher, warm/cold gated by real usage</div></div>
       <div class="spec"><div class="k">Packaging</div><div class="v">.deb, .rpm, tarball + hardened user-mode systemd unit</div></div>
     </div>
+    <div class="deck-strip">
+      <div>
+        <div class="ds-kicker">Solution design deck</div>
+        <div class="ds-title">The whole system, in 22 slides</div>
+        <div class="ds-desc">Idea → features → topology → architecture → memory → trust → evidence. Self-contained, presentable, printable to PDF.</div>
+        <div class="deck-links">
+          <a href="deck.html#system-topology">Topology</a>
+          <a href="deck.html#crate-architecture">Crates</a>
+          <a href="deck.html#graph-data-model">Data model</a>
+          <a href="deck.html#indexing-pipeline">Indexing</a>
+          <a href="deck.html#three-memories">Memory</a>
+          <a href="deck.html#trust-model">Trust</a>
+          <a href="deck.html#whole-system">Whole system</a>
+        </div>
+      </div>
+      <a class="btn btn-primary" href="deck.html">Open the deck <span aria-hidden="true">→</span></a>
+    </div>
   </section>
 
   <hr class="rule">
@@ -909,6 +943,7 @@
       <div class="kicker">Multiple review rounds, findings public</div>
       <h2>Hardened against its own audits, not just designed safe</h2>
       <p>Every finding below was filed as a GitHub issue before it was fixed, and stayed open until a regression test proved the fix — not just a description of it.</p>
+      <p><a class="deck-inline" href="deck.html#operating-model">See slide: Operating model →</a></p>
     </div>
     <div class="trace">
       <div class="trace-item critical">
@@ -1040,6 +1075,7 @@ nexus install</pre>
     <a href="https://github.com/devNalyx/NexusContext/releases/latest">Releases</a>
     <a href="https://github.com/devNalyx/NexusContext/blob/main/README.md">Documentation</a>
     <a href="https://github.com/devNalyx/NexusContext/blob/main/docs/NexusContext-Wiki/Home.md">Wiki</a>
+    <a href="deck.html">Design deck</a>
     <a href="https://github.com/devNalyx/NexusContext/blob/main/INSTALL.md">Install guide</a>
     <a href="https://github.com/devNalyx/NexusContext/blob/main/LICENSE">MIT License</a>
   </div>

@@ -1,0 +1,1080 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NexusContext — Solution Design, Topology &amp; Architecture</title>
+<meta name="description" content="A visual walkthrough of NexusContext: from the idea to features, topology, architecture and design details.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;0,8..60,700;1,8..60,400&family=Source+Code+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#f2ecdc; --ink-dim:#bcb29a; --ink-faint:#8d8064;
+  --bg:#16130c; --bg-2:#1d1a11; --bg-3:#252115;
+  --line:rgba(236,228,208,.13); --line-strong:rgba(236,228,208,.28);
+  --accent:#6fb89c; --accent-deep:#2f7d68; --accent-glow:rgba(111,184,156,.13);
+  --copper:#d68a4e; --copper-glow:rgba(214,138,78,.13);
+  --good:#7cb87f; --warn:#d68a4e; --danger:#e07a5f;
+  --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
+  --sans:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"Source Code Pro","SF Mono",Consolas,monospace;
+  --shadow:0 24px 70px rgba(0,0,0,.45);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+button{font-family:inherit}
+
+/* ---------- stage + deck ---------- */
+#viewport{position:fixed;inset:0;display:grid;place-items:center;background:
+  radial-gradient(1200px 760px at 50% -10%,rgba(111,184,156,.07),transparent 60%),
+  radial-gradient(900px 600px at 90% 110%,rgba(214,138,78,.06),transparent 60%),var(--bg)}
+#stage{position:relative;width:1280px;height:720px;transform-origin:center center;box-shadow:var(--shadow);
+  background:var(--bg-2);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+#stage::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.5;
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:64px 64px;mask-image:radial-gradient(circle at 50% 40%,#000,transparent 85%)}
+.slide{position:absolute;inset:0;padding:56px 72px 64px;display:flex;flex-direction:column;
+  opacity:0;visibility:hidden;transform:translateX(22px);transition:opacity .35s ease,transform .35s ease,visibility .35s;
+  background:linear-gradient(160deg,rgba(255,255,255,.012),transparent 60%)}
+.slide.active{opacity:1;visibility:visible;transform:none}
+.slide.out{transform:translateX(-22px)}
+
+/* ---------- typography ---------- */
+.kicker{font:600 12px/1 var(--mono);letter-spacing:.19em;text-transform:uppercase;color:var(--accent);
+  display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.kicker::before{content:"";width:22px;height:1px;background:var(--accent)}
+.kicker.copper{color:var(--copper)} .kicker.copper::before{background:var(--copper)}
+h1,h2,h3{font-family:var(--serif);font-weight:600;margin:0;letter-spacing:-.02em}
+h1{font-size:60px;line-height:1.05} h2{font-size:40px;line-height:1.12} h3{font-size:19px;line-height:1.25}
+.sub{color:var(--ink-dim);font-size:16px;line-height:1.55;margin:10px 0 0;max-width:950px}
+.body{font-size:15px;line-height:1.6;color:var(--ink-dim)}
+.mono{font-family:var(--mono)} .accent{color:var(--accent)} .copper{color:var(--copper)} .dim{color:var(--ink-dim)}
+strong{color:var(--ink);font-weight:600}
+.slide-head{margin-bottom:24px;flex:0 0 auto}
+.slide-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:18px;position:relative}
+
+/* ---------- layout helpers ---------- */
+.grid{display:grid;gap:16px} .g2{grid-template-columns:repeat(2,1fr)} .g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)} .g5{grid-template-columns:repeat(5,1fr)}
+.row{display:flex;gap:16px;align-items:stretch} .col{display:flex;flex-direction:column;gap:16px}
+.center{align-items:center;justify-content:center}
+.card{background:linear-gradient(155deg,var(--bg-3),var(--bg-2));border:1px solid var(--line);
+  border-radius:12px;padding:18px 20px;position:relative;overflow:hidden}
+.card::after{content:"";position:absolute;left:0;top:0;width:3px;height:100%;background:var(--accent);opacity:.65}
+.card.copper::after{background:var(--copper)} .card.plain::after{display:none}
+.card h3{margin-bottom:8px}
+.card p{margin:0;font-size:13.5px;line-height:1.55;color:var(--ink-dim)}
+.card ul{margin:8px 0 0;padding-left:18px;font-size:13px;line-height:1.6;color:var(--ink-dim)}
+.card ul li+li{margin-top:4px}
+.card .num{font:600 11px/1 var(--mono);color:var(--accent);letter-spacing:.1em;margin-bottom:10px}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border:1px solid var(--line-strong);
+  border-radius:999px;font:500 11.5px/1 var(--mono);color:var(--ink-dim);background:rgba(255,255,255,.015)}
+.pill.a{border-color:rgba(111,184,156,.4);color:var(--accent);background:var(--accent-glow)}
+.pill.c{border-color:rgba(214,138,78,.4);color:var(--copper);background:var(--copper-glow)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px var(--accent-glow)}
+.dot.c{background:var(--copper);box-shadow:0 0 0 4px var(--copper-glow)}
+.stat{font-family:var(--serif);font-size:34px;line-height:1;color:var(--ink)}
+.stat-label{font:500 11px/1.4 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);margin-top:8px}
+.callout{border-left:3px solid var(--accent);background:var(--accent-glow);padding:14px 18px;border-radius:0 10px 10px 0;
+  font-size:14px;line-height:1.55;color:var(--ink-dim)}
+.callout.copper{border-color:var(--copper);background:var(--copper-glow)}
+.callout strong{display:block;color:var(--ink);margin-bottom:4px;font-family:var(--serif);font-size:17px;font-weight:600}
+.code{font-family:var(--mono);font-size:12.5px;line-height:1.6;background:#100e08;border:1px solid var(--line);
+  border-radius:10px;padding:14px 16px;color:var(--ink-dim);white-space:pre;overflow:hidden}
+.code .k{color:var(--accent)} .code .s{color:var(--copper)} .code .c{color:var(--ink-faint)}
+
+/* ---------- diagrams ---------- */
+.diagram{flex:1 1 auto;display:grid;place-items:center;min-height:0}
+.diagram svg{width:100%;height:100%;max-height:100%;overflow:visible}
+.svgbg{fill:var(--bg-3);stroke:var(--line-strong);stroke-width:1.2}
+.svga{fill:var(--accent-glow);stroke:var(--accent);stroke-width:1.4}
+.svgc{fill:var(--copper-glow);stroke:var(--copper);stroke-width:1.4}
+.svgt{font:600 13px var(--sans);fill:var(--ink)}
+.svts{font:11px var(--mono);fill:var(--ink-dim)}
+.svgm{font:600 11px var(--mono);fill:var(--accent);letter-spacing:.1em}
+.arrow{stroke:var(--ink-faint);stroke-width:1.4;fill:none;marker-end:url(#ar)}
+.arrow.a{stroke:var(--accent)} .arrow.c{stroke:var(--copper)}
+.dash{stroke-dasharray:5 5}
+
+/* ---------- footer / chrome ---------- */
+.foot{position:absolute;left:72px;right:72px;bottom:24px;display:flex;align-items:center;gap:14px;
+  font:500 10.5px/1 var(--mono);letter-spacing:.08em;color:var(--ink-faint);text-transform:uppercase}
+.foot .brand{display:flex;align-items:center;gap:8px;color:var(--ink-dim)}
+.foot .brand i{width:8px;height:8px;background:var(--accent);transform:rotate(45deg);display:block}
+.foot .bar{flex:1;height:2px;background:var(--line);border-radius:2px;overflow:hidden}
+.foot .bar span{display:block;height:100%;background:var(--accent);transition:width .35s ease}
+.foot .pg{color:var(--ink-dim)}
+
+#controls{position:fixed;bottom:18px;right:20px;display:flex;gap:8px;z-index:20}
+#controls button{width:38px;height:38px;border-radius:9px;border:1px solid var(--line-strong);
+  background:rgba(22,19,12,.85);color:var(--ink-dim);cursor:pointer;font-size:15px;display:grid;place-items:center;
+  backdrop-filter:blur(8px);transition:.15s}
+#controls button:hover{color:var(--ink);border-color:var(--accent);background:rgba(111,184,156,.12)}
+#hint{position:fixed;bottom:20px;left:20px;z-index:20;font:500 10.5px var(--mono);color:var(--ink-faint);letter-spacing:.05em}
+
+#overview{position:fixed;inset:0;background:rgba(10,9,6,.94);z-index:30;padding:44px 56px;overflow:auto;display:none;backdrop-filter:blur(10px)}
+#overview.open{display:block}
+#overview h2{margin-bottom:22px;font-size:30px}
+#ovGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.ovItem{border:1px solid var(--line);border-radius:10px;padding:14px 16px;cursor:pointer;background:var(--bg-2);transition:.15s}
+.ovItem:hover{border-color:var(--accent);background:var(--bg-3)}
+.ovItem .n{font:600 10px var(--mono);color:var(--accent);letter-spacing:.1em}
+.ovItem .t{font:600 14px var(--serif);margin-top:6px;line-height:1.25}
+.ovItem.cur{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+
+/* ---------- title slide ---------- */
+.title-slide{justify-content:center;background:
+  radial-gradient(700px 480px at 78% 40%,rgba(111,184,156,.10),transparent 65%),
+  radial-gradient(500px 400px at 12% 90%,rgba(214,138,78,.08),transparent 65%)}
+.title-slide h1{font-size:74px;max-width:900px;margin:6px 0 18px}
+.title-slide h1 em{font-style:italic;color:var(--accent)}
+.title-slide .lede{font-size:19px;color:var(--ink-dim);line-height:1.55;max-width:760px}
+.title-meta{margin-top:34px;display:flex;gap:10px;flex-wrap:wrap}
+.big-mark{position:absolute;right:64px;top:50%;transform:translateY(-50%);width:330px;height:330px;opacity:.9}
+
+@media print{
+  html,body{overflow:visible;background:#fff}
+  #viewport{position:static;display:block;background:#fff}
+  #stage{width:auto;height:auto;transform:none!important;box-shadow:none;border:0;border-radius:0;overflow:visible}
+  .slide{position:relative;inset:auto;opacity:1!important;visibility:visible!important;transform:none!important;
+    page-break-after:always;height:720px;width:1280px;margin:0 auto}
+  #controls,#hint,#overview{display:none!important}
+}
+@media (prefers-reduced-motion:reduce){*{transition-duration:.01ms!important;animation-duration:.01ms!important}}
+</style>
+</head>
+<body>
+<div id="viewport">
+  <main id="stage" aria-label="Presentation slides">
+
+    <!-- 01 · TITLE -->
+    <section class="slide title-slide active" data-title="Title">
+      <div class="kicker">Solution design · Topology · Architecture</div>
+      <h1>NexusContext <em>— from idea to architecture</em></h1>
+      <p class="lede">A local-first MCP daemon that gives coding agents structural intelligence over a codebase — a real knowledge graph, precise search, call tracing, and a governed memory layer. No embeddings. No vector store. No LLM inside the daemon.</p>
+      <div class="title-meta">
+        <span class="pill a"><span class="dot"></span>Local-first</span>
+        <span class="pill"><span class="dot c"></span>Rust · SQLite · tree-sitter</span>
+        <span class="pill">MCP-native</span>
+        <span class="pill">Open-source · v0.1.31</span>
+      </div>
+      <svg class="big-mark" viewBox="0 0 330 330" aria-hidden="true">
+        <defs><linearGradient id="gm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6fb89c"/><stop offset="1" stop-color="#d68a4e"/></linearGradient></defs>
+        <g fill="none" stroke="url(#gm)" stroke-width="1.2" opacity=".85">
+          <circle cx="165" cy="165" r="150"/><circle cx="165" cy="165" r="112"/><circle cx="165" cy="165" r="74"/>
+          <path d="M15 165h300M165 15v300M58 58l214 214M272 58L58 272"/>
+        </g>
+        <g fill="#6fb89c">
+          <circle cx="165" cy="53" r="6"/><circle cx="277" cy="165" r="6"/><circle cx="165" cy="277" r="6"/><circle cx="53" cy="165" r="6"/>
+        </g>
+        <g fill="#d68a4e"><circle cx="165" cy="165" r="9"/></g>
+        <text x="165" y="322" text-anchor="middle" class="svts">CONTEXT · GRAPH · MEMORY</text>
+      </svg>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span style="width:6%"></span></span><span class="pg">01 / 18</span></div>
+    </section>
+
+    <!-- 02 · AGENDA -->
+    <section class="slide" data-title="The tour">
+      <div class="slide-head">
+        <div class="kicker">The tour</div>
+        <h2>How we get from idea to a working system</h2>
+        <p class="sub">Six acts: why it exists, what it does, how it is shaped, how it thinks, how it is wired in, and what it takes to run.</p>
+      </div>
+      <div class="slide-body">
+        <div class="grid g3" style="flex:1">
+          <div class="card"><div class="num">01 — WHY</div><h3>The idea</h3><p>The context problem for coding agents: files are flat, meaning is structural, and agents need precise answers without shipping source to the cloud.</p></div>
+          <div class="card"><div class="num">02 — WHAT</div><h3>Capabilities</h3><p>From a claim to a concrete tool surface: indexing, graph queries, call tracing, FTS search, LSP-resolved symbols, memory.</p></div>
+          <div class="card copper"><div class="num">03 — SHAPE</div><h3>Solution design</h3><p>The topology of clients, daemon and stores — and the crate-level architecture that keeps the boundary clean.</p></div>
+          <div class="card"><div class="num">04 — THINK</div><h3>Data + memory</h3><p>The graph model, the ingestion pipeline, and the two memory systems with their human approval gates.</p></div>
+          <div class="card"><div class="num">05 — WIRE</div><h3>Integration</h3><p>MCP dispatch, the OpenCode plugin, CLI, GUI, control socket and the background watcher.</p></div>
+          <div class="card copper"><div class="num">06 — RUN</div><h3>Operating model</h3><p>Local-first deployment, configuration, privacy and trust — then the whole system in one picture.</p></div>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg">02 / 18</span></div>
+    </section>
+
+    <!-- 03 · THE IDEA -->
+    <section class="slide" data-title="The idea">
+      <div class="slide-head">
+        <div class="kicker">01 — The idea</div>
+        <h2>Agent context is scarce. Most of it is wasted.</h2>
+        <p class="sub">Code is not a list of strings — it is a graph of definitions, references and calls. Agents were reading it like a flat file.</p>
+      </div>
+      <div class="slide-body">
+        <div class="grid g2" style="flex:1">
+          <div class="card copper" style="display:flex;flex-direction:column;justify-content:center">
+            <div class="num">BEFORE — GREP BLIND</div>
+            <h3>Read more, know less</h3>
+            <ul>
+              <li>Keyword grep → partial matches, no relationships</li>
+              <li>Whole-file reads burn context on irrelevant lines</li>
+              <li>Cross-file call paths guessed, not traced</li>
+              <li>Fixed tool schemas paid for on every session</li>
+              <li>No signal on what actually paid off</li>
+            </ul>
+          </div>
+          <div class="card" style="display:flex;flex-direction:column;justify-content:center">
+            <div class="num">AFTER — TRACE A REAL GRAPH</div>
+            <h3>Ask structure, get structure</h3>
+            <ul>
+              <li>Name/graph/FTS queries over parsed symbols</li>
+              <li>Bounded file reads — 300 lines by default</li>
+              <li><span class="mono">trace_call_path</span> walks actual <span class="mono">CALLS</span> edges</li>
+              <li>Presets cap the schema tax: 5 / 13 / 31 tools</li>
+              <li><span class="mono">get_session_usage</span> measures the spend</li>
+            </ul>
+          </div>
+        </div>
+        <div class="callout"><strong>Design principle</strong>The agent is the intelligence. NexusContext is the memory — and the meter. No LLM lives in the daemon; it builds structure and answers queries, while the calling agent does all the reasoning.</div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 04 · PRINCIPLES -->
+    <section class="slide" data-title="Design principles">
+      <div class="slide-head">
+        <div class="kicker">01 — Design philosophy</div>
+        <h2>Eight principles that constrain every decision</h2>
+        <p class="sub">These are not aspirations. Each one rules out a whole class of tempting shortcuts.</p>
+      </div>
+      <div class="slide-body">
+        <div class="grid g4" style="flex:1;align-content:stretch">
+          <div class="card"><div class="num">01</div><h3>Agent thinks, NC remembers</h3><p>No LLM in the daemon. Structure and queries only.</p></div>
+          <div class="card"><div class="num">02</div><h3>Structure over similarity</h3><p>Graph + FTS5 over what tree-sitter parsed — a deliberate bet, not a missing feature.</p></div>
+          <div class="card"><div class="num">03</div><h3>Measure, don’t claim</h3><p>Real harness tokens when available; labelled bytes/4 estimates otherwise. Publish the losses.</p></div>
+          <div class="card copper"><div class="num">04</div><h3>Bound what agents drive</h3><p>Response caps, depth limits, timeouts, file caps, watcher budget — plus pressure signals.</p></div>
+          <div class="card"><div class="num">05</div><h3>Provenance over convenience</h3><p><span class="mono">CALLS</span> ≠ <span class="mono">CALLS_RESOLVED</span>. Ambiguity stays unresolved, never guessed.</p></div>
+          <div class="card"><div class="num">06</div><h3>Humans approve memory</h3><p>Agent staging is not approval. No path for an agent to approve its own memory.</p></div>
+          <div class="card"><div class="num">07</div><h3>Local-first by default</h3><p>No account, no cloud, no egress. Owner-only permissions, portable per-repo artifacts.</p></div>
+          <div class="card copper"><div class="num">08</div><h3>Reuse what exists</h3><p>SQLite over a graph DB, tags queries over hand-written grammars, Graphviz over custom layout.</p></div>
+        </div>
+        <div class="callout copper"><strong>Ninth rule: validate against reality</strong>Dogfood gates, real-server tests, live daemon verification, release evidence — “speed never buys us confidence.”</div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 05 · CAPABILITY MAP -->
+    <section class="slide" data-title="Capability map">
+      <div class="slide-head">
+        <div class="kicker">02 — What it does</div>
+        <h2>One daemon. One catalog. Three memories.</h2>
+        <p class="sub">31 MCP tools across three local stores — one process, one tool list, one ledger. No second MCP server to pay schema tax on.</p>
+      </div>
+      <div class="slide-body">
+        <div class="grid g4" style="flex:0 0 auto">
+          <div class="card plain"><div class="stat accent">31</div><div class="stat-label">MCP tools</div></div>
+          <div class="card plain"><div class="stat">14</div><div class="stat-label">Structural / graph</div></div>
+          <div class="card plain"><div class="stat copper">11</div><div class="stat-label">Procedural (Myelin)</div></div>
+          <div class="card plain"><div class="stat">6</div><div class="stat-label">Declarative facts</div></div>
+        </div>
+        <div class="grid g3" style="flex:1">
+          <div class="card"><div class="num">STRUCTURAL</div><h3>Understand the code</h3><p>Index, search graph, full-text search, call tracing, change impact, dead code, architecture summaries, Cypher-lite queries.</p><div style="margin-top:12px"><span class="pill a">SQLite graph</span> <span class="pill">FTS5</span></div></div>
+          <div class="card"><div class="num">PROCEDURAL</div><h3>Remember how to work</h3><p>Learned skills with reps, feedback and ~30-day atrophy. Warm-up queues, review queues, promotion and skill graphs.</p><div style="margin-top:12px"><span class="pill c">SKILL.md</span> <span class="pill">local store</span></div></div>
+          <div class="card"><div class="num">DECLARATIVE</div><h3>Remember what is true</h3><p>Curated decisions, incidents, lessons, dead ends and owners — code-anchored, trust-tiered, exportable as OKF v0.3.</p><div style="margin-top:12px"><span class="pill a">SQLite</span> <span class="pill c">OKF v0.3</span></div></div>
+        </div>
+        <div class="card plain" style="flex:0 0 auto;padding:12px 18px">
+          <div class="row" style="gap:22px;align-items:center">
+            <span class="mono" style="font-size:11px;color:var(--ink-faint);letter-spacing:.08em">SCHEMA TAX CONTROL</span>
+            <span class="pill">minimal · 5 tools</span>
+            <span class="pill a">standard · 13 tools <span style="color:var(--ink-faint)">(default)</span></span>
+            <span class="pill c">full · 31 tools</span>
+            <span class="body" style="margin-left:auto">Advertise only what the session needs.</span>
+          </div>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 06 · STRUCTURAL TOOLS -->
+    <section class="slide" data-title="Structural tool surface">
+      <div class="slide-head">
+        <div class="kicker">02 — Capabilities</div>
+        <h2>Structural intelligence, exposed as plain tools</h2>
+        <p class="sub">Every tool is a local filesystem read plus a local SQLite query. No embedding model, no vector store, no network.</p>
+      </div>
+      <div class="slide-body">
+        <div class="grid g2" style="flex:1">
+          <div class="card"><div class="num">INDEX &amp; READ</div><h3>Build and inspect</h3><ul>
+            <li><span class="mono">index_repository</span> — full rebuild; <span class="mono">deep</span> runs Rust LSP</li>
+            <li><span class="mono">get_file_context</span> — bounded 300-line / 300 KB reads</li>
+            <li><span class="mono">get_architecture</span> — node/edge counts, density, languages, freshness</li>
+            <li><span class="mono">list_sources</span> / <span class="mono">vault_context</span> — external sources &amp; notes</li>
+          </ul></div>
+          <div class="card"><div class="num">SEARCH &amp; TRACE</div><h3>Find and follow</h3><ul>
+            <li><span class="mono">search_graph</span> — symbol names in the graph</li>
+            <li><span class="mono">search_code</span> — FTS5 phrases, config keys, paging</li>
+            <li><span class="mono">trace_call_path</span> — BFS with provenance per hop</li>
+            <li><span class="mono">query_graph</span> — one Cypher-lite pattern shape</li>
+          </ul></div>
+          <div class="card copper"><div class="num">QUALITY &amp; CHANGE</div><h3>Impact and debt</h3><ul>
+            <li><span class="mono">detect_changes</span> — git hunk → overlapping symbols</li>
+            <li><span class="mono">detect_dead_code</span> — no inbound call edge</li>
+            <li><span class="mono">blast_radius</span> — transitive callers, same BFS</li>
+            <li><span class="mono">delete_project</span> — destructive, full preset only</li>
+          </ul></div>
+          <div class="card"><div class="num">OBSERVABILITY</div><h3>Know the cost</h3><ul>
+            <li><span class="mono">get_session_usage</span> — calls, bytes, schema tax</li>
+            <li><span class="mono">reads_avoided</span> — auditable counterfactual</li>
+            <li><span class="mono">query_planner</span> — file / graph / FTS strategy</li>
+            <li><span class="mono">index_freshness</span> — in-band staleness signal</li>
+          </ul></div>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 07 · EVOLUTION -->
+    <section class="slide" data-title="From idea to features">
+      <div class="slide-head">
+        <div class="kicker">02 — Evolution</div>
+        <h2>From vertical slice to context-economy control plane</h2>
+        <p class="sub">33 phases plus a flagship arc. Almost every beat came from a real incident found by dogfooding.</p>
+      </div>
+      <div class="slide-body">
+        <div class="diagram">
+          <svg viewBox="0 0 1136 420" role="img" aria-label="Timeline of NexusContext evolution">
+            <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="var(--ink-faint)"/></marker></defs>
+            <line x1="60" y1="210" x2="1080" y2="210" stroke="var(--line-strong)" stroke-width="2"/>
+            <g class="arrow"><path d="M1050 210 L1080 210"/></g>
+            <g>
+              <circle cx="95" cy="210" r="7" class="svga"/><text x="95" y="184" text-anchor="middle" class="svgm">P0–2</text>
+              <text x="95" y="153" text-anchor="middle" class="svgt">Vertical slice</text><text x="95" y="171" text-anchor="middle" class="svts">stdio MCP + graph</text>
+            </g>
+            <g>
+              <circle cx="238" cy="210" r="7" class="svgbg"/><text x="238" y="184" text-anchor="middle" class="svgm">P3–10</text>
+              <text x="238" y="153" text-anchor="middle" class="svgt">Desktop + package</text><text x="238" y="171" text-anchor="middle" class="svts">GUI, control API, CI</text>
+            </g>
+            <g>
+              <circle cx="381" cy="210" r="7" class="svga"/><text x="381" y="184" text-anchor="middle" class="svgm">P11–15</text>
+              <text x="381" y="153" text-anchor="middle" class="svgt">11 languages</text><text x="381" y="171" text-anchor="middle" class="svts">tags queries + docs</text>
+            </g>
+            <g>
+              <circle cx="524" cy="210" r="7" class="svgbg"/><text x="524" y="184" text-anchor="middle" class="svgm">P16–20</text>
+              <text x="524" y="153" text-anchor="middle" class="svgt">Watcher saga</text><text x="524" y="171" text-anchor="middle" class="svts">freshness + reliability</text>
+            </g>
+            <g>
+              <circle cx="667" cy="210" r="7" class="svgc"/><text x="667" y="184" text-anchor="middle" class="svgm">P21–24</text>
+              <text x="667" y="153" text-anchor="middle" class="svgt">Context tax</text><text x="667" y="171" text-anchor="middle" class="svts">presets 5 / 9 / 13</text>
+            </g>
+            <g>
+              <circle cx="810" cy="210" r="7" class="svgbg"/><text x="810" y="184" text-anchor="middle" class="svgm">P25–33</text>
+              <text x="810" y="153" text-anchor="middle" class="svgt">Hardening</text><text x="810" y="171" text-anchor="middle" class="svts">security, LSP, Windows</text>
+            </g>
+            <g>
+              <circle cx="965" cy="210" r="11" class="svga"/><text x="965" y="180" text-anchor="middle" class="svgm">2026</text>
+              <text x="965" y="149" text-anchor="middle" class="svgt">Flagship</text><text x="965" y="167" text-anchor="middle" class="svts">3 memories + ledger</text>
+            </g>
+            <g class="svts">
+              <text x="95" y="246" text-anchor="middle">embed → remove</text>
+              <text x="381" y="246" text-anchor="middle">embeddings tried &amp; removed</text>
+              <text x="667" y="246" text-anchor="middle">schema tax discovered</text>
+              <text x="965" y="246" text-anchor="middle">v0.1.31 · 31 tools</text>
+            </g>
+            <rect x="620" y="300" width="460" height="90" rx="10" class="svgbg"/>
+            <text x="644" y="328" class="svgm">THE PIVOT</text>
+            <text x="644" y="352" class="svgt">Graph coverage → context economy</text>
+            <text x="644" y="374" class="svts">“Measure what the agent spends, prove which memories pay.”</text>
+          </svg>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 08 · TOPOLOGY -->
+    <section class="slide" data-title="System topology">
+      <div class="slide-head">
+        <div class="kicker">03 — Solution design</div>
+        <h2>System topology: thin clients, one daemon, local stores</h2>
+        <p class="sub">Everything runs as the user's own process. The daemon owns the index, the memory and the accounting; clients only ask questions.</p>
+      </div>
+      <div class="slide-body">
+        <div class="diagram">
+          <svg viewBox="0 0 1136 430" role="img" aria-label="System topology diagram">
+            <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="var(--ink-faint)"/></marker>
+            <marker id="arA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#6fb89c"/></marker></defs>
+            <text x="165" y="28" text-anchor="middle" class="svgm">CLIENTS</text>
+            <text x="565" y="28" text-anchor="middle" class="svgm">DAEMON</text>
+            <text x="955" y="28" text-anchor="middle" class="svgm">LOCAL STORES</text>
+
+            <rect x="35" y="52" width="260" height="72" rx="10" class="svga"/>
+            <text x="55" y="80" class="svgt">OpenCode V2 plug</text><text x="55" y="102" class="svts">TUI panel · Desktop panel</text>
+            <rect x="35" y="142" width="260" height="72" rx="10" class="svgbg"/>
+            <text x="55" y="170" class="svgt">Any MCP client</text><text x="55" y="192" class="svts">stdio JSON-RPC 2.0</text>
+            <rect x="35" y="232" width="260" height="72" rx="10" class="svgbg"/>
+            <text x="55" y="260" class="svgt">nexus CLI · legacy GUI</text><text x="55" y="282" class="svts">human surface · control socket</text>
+
+            <rect x="385" y="52" width="360" height="300" rx="14" class="svgbg" style="stroke-width:1.6"/>
+            <text x="565" y="84" text-anchor="middle" class="svgt" style="font-size:18px">nexusd</text>
+            <rect x="410" y="104" width="310" height="48" rx="8" class="svga"/>
+            <text x="426" y="124" class="svts" style="fill:var(--accent)">TRANSPORT</text><text x="426" y="142" class="svts">mcp stdio · serve control socket</text>
+            <rect x="410" y="164" width="310" height="48" rx="8" class="svga"/>
+            <text x="426" y="184" class="svts" style="fill:var(--accent)">DISPATCH</text><text x="426" y="202" class="svts">31 tools · caps · auth · catch-up</text>
+            <rect x="410" y="224" width="310" height="48" rx="8" class="svgc"/>
+            <text x="426" y="244" class="svts" style="fill:var(--copper)">BACKGROUND</text><text x="426" y="262" class="svts">watcher · debounce · reindex</text>
+            <rect x="410" y="284" width="310" height="48" rx="8" class="svgbg"/>
+            <text x="426" y="304" class="svts" style="fill:var(--ink-dim)">ACCOUNTING</text><text x="426" y="322" class="svts">usage · ledger · freshness</text>
+
+            <rect x="795" y="52" width="306" height="72" rx="10" class="svga"/>
+            <text x="815" y="80" class="svgt">project graph.db</text><text x="815" y="102" class="svts">SQLite property graph + FTS5</text>
+            <rect x="795" y="142" width="306" height="72" rx="10" class="svgc"/>
+            <text x="815" y="170" class="svgt">memory stores</text><text x="815" y="192" class="svts">skills · curated facts · ledger</text>
+            <rect x="795" y="232" width="306" height="72" rx="10" class="svgbg"/>
+            <text x="815" y="260" class="svgt">registry · config · stats</text><text x="815" y="282" class="svts">projects.json · config.toml</text>
+
+            <g class="arrow a"><path d="M295 88 L385 88"/><path d="M295 178 L385 178"/><path d="M295 268 L385 268"/></g>
+            <g class="arrow a"><path d="M745 88 L795 88"/><path d="M745 178 L795 178"/><path d="M745 268 L795 268"/></g>
+
+            <rect x="795" y="330" width="306" height="62" rx="10" class="svgbg"/>
+            <text x="815" y="356" class="svgt">source repositories</text><text x="815" y="377" class="svts">tree-sitter reads · O_NOFOLLOW</text>
+            <g class="arrow c"><path d="M948 330 L948 304"/></g>
+            <text x="565" y="396" text-anchor="middle" class="svts">No outbound network call · every tool = local file read + local SQLite query</text>
+          </svg>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 09 · CRATE MAP -->
+    <section class="slide" data-title="Crate architecture">
+      <div class="slide-head">
+        <div class="kicker">03 — Architecture</div>
+        <h2>Crate map: a clean boundary between structure and policy</h2>
+        <p class="sub">Four layers, explicit dependencies. The index never talks to the network; the daemon never reasons.</p>
+      </div>
+      <div class="slide-body">
+        <div class="diagram">
+          <svg viewBox="0 0 1136 430" role="img" aria-label="Crate-level architecture">
+            <text x="568" y="24" text-anchor="middle" class="svgm">SURFACES</text>
+            <rect x="185" y="40" width="180" height="54" rx="9" class="svga"/><text x="275" y="72" text-anchor="middle" class="svgt">nexusd · MCP</text>
+            <rect x="380" y="40" width="180" height="54" rx="9" class="svgbg"/><text x="470" y="72" text-anchor="middle" class="svgt">nexus CLI</text>
+            <rect x="575" y="40" width="180" height="54" rx="9" class="svgbg"/><text x="665" y="72" text-anchor="middle" class="svgt">OpenCode plug</text>
+            <rect x="770" y="40" width="180" height="54" rx="9" class="svgbg"/><text x="860" y="72" text-anchor="middle" class="svgt">GTK GUI (legacy)</text>
+
+            <text x="568" y="132" text-anchor="middle" class="svgm">DAEMON · nexusd</text>
+            <rect x="185" y="146" width="765" height="62" rx="10" class="svgbg"/>
+            <text x="210" y="172" class="svts" style="fill:var(--accent)">mcp.rs</text><text x="330" y="172" class="svts" style="fill:var(--accent)">tools.rs</text>
+            <text x="460" y="172" class="svts" style="fill:var(--copper)">watcher.rs</text><text x="610" y="172" class="svts" style="fill:var(--copper)">control.rs</text>
+            <text x="760" y="172" class="svts" style="fill:var(--ink-dim)">cache.rs</text>
+            <text x="210" y="194" class="svts">stdio JSON-RPC · tool dispatch + caps · file watching · Unix socket API · JSON cache</text>
+
+            <text x="568" y="244" text-anchor="middle" class="svgm">CAPABILITIES</text>
+            <rect x="130" y="258" width="330" height="88" rx="10" class="svga"/>
+            <text x="152" y="284" class="svgt">nexus-index</text>
+            <text x="152" y="306" class="svts">ingest · graph · queries · cypher</text>
+            <text x="152" y="325" class="svts">lsp/enrich · vault · obsidian · project</text>
+            <rect x="478" y="258" width="225" height="88" rx="10" class="svgc"/>
+            <text x="500" y="284" class="svgt">nexus-memory</text>
+            <text x="500" y="306" class="svts">facts · admission gate</text>
+            <text x="500" y="325" class="svts">injection · ledger</text>
+            <rect x="721" y="258" width="285" height="88" rx="10" class="svgc"/>
+            <text x="743" y="284" class="svgt">myelin-* (absorbed)</text>
+            <text x="743" y="306" class="svts">skills · observations · staging</text>
+            <text x="743" y="325" class="svts">promotion · warmup graph</text>
+
+            <text x="568" y="382" text-anchor="middle" class="svgm">SHARED POLICY · nexus-core</text>
+            <rect x="185" y="394" width="765" height="34" rx="9" class="svgbg"/>
+            <text x="568" y="416" text-anchor="middle" class="svts">config · paths · registry · stats · text · error · owner-only writes</text>
+
+            <g class="arrow"><path d="M275 94 L275 146"/><path d="M470 94 L470 146"/><path d="M665 94 L665 146"/><path d="M860 94 L860 146"/></g>
+            <g class="arrow a"><path d="M340 208 L300 258"/><path d="M545 208 L590 258"/><path d="M700 208 L850 258"/></g>
+            <g class="arrow"><path d="M295 346 L340 394"/><path d="M590 346 L590 394"/><path d="M850 346 L790 394"/></g>
+          </svg>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 10 · RUNTIME MODES -->
+    <section class="slide" data-title="Runtime modes">
+      <div class="slide-head">
+        <div class="kicker">03 — Topology</div>
+        <h2>Three ways to run the same engine</h2>
+        <p class="sub">All modes converge on the same shared code path — including the cold-project catch-up logic.</p>
+      </div>
+      <div class="slide-body">
+        <div class="grid g3" style="flex:1">
+          <div class="card"><div class="num">PER-SESSION</div><h3><span class="mono">nexusd mcp</span></h3>
+            <p>Newline-delimited JSON-RPC over stdio. stdout is reserved for protocol; logs go to stderr only.</p>
+            <ul><li>No watcher, no socket</li><li>Ideal for IDE / agent hosts</li><li>Works on all tiers including Windows</li></ul>
+            <div class="code" style="margin-top:14px">nexusd mcp<span class="c">  # stdin ↔ stdout</span></div>
+          </div>
+          <div class="card"><div class="num">LONG-LIVED</div><h3><span class="mono">nexusd serve</span></h3>
+            <p>Systemd --user daemon with a Unix-domain-socket control API and a background watcher.</p>
+            <ul><li><span class="mono">status.get</span> · <span class="mono">projects.*</span> · <span class="mono">config.*</span></li><li><span class="mono">search.adhoc</span> · <span class="mono">viz.call_graph</span></li><li>Linux and macOS only</li></ul>
+            <div class="code" style="margin-top:14px">nexusd serve<span class="c">  # $XDG_RUNTIME_DIR socket</span></div>
+          </div>
+          <div class="card copper"><div class="num">HUMAN</div><h3><span class="mono">nexus</span> CLI</h3>
+            <p>The same shared engine, driven by a person: index, query, export, configure, approve memory.</p>
+            <ul><li><span class="mono">nexus reindex --deep</span></li><li><span class="mono">nexus memory skill-approve</span></li><li>Same <span class="mono">touch_and_catchup</span> path</li></ul>
+            <div class="code" style="margin-top:14px">nexus search "handler"<span class="c">  # shared path</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 11 · DATA MODEL -->
+    <section class="slide" data-title="Graph data model">
+      <div class="slide-head">
+        <div class="kicker">04 — Data &amp; memory</div>
+        <h2>The data model: a small property graph in SQLite</h2>
+        <p class="sub">One SQLite database per project. Five node kinds, six edge kinds, plus an FTS5 table and narrow vault metadata.</p>
+      </div>
+      <div class="slide-body">
+        <div class="row" style="flex:1">
+          <div class="diagram" style="width:62%">
+            <svg viewBox="0 0 700 420" role="img" aria-label="Knowledge graph nodes and edges">
+              <g>
+                <rect x="40" y="40" width="150" height="54" rx="27" class="svgbg"/><text x="115" y="72" text-anchor="middle" class="svgt">File</text>
+                <rect x="270" y="20" width="160" height="54" rx="27" class="svga"/><text x="350" y="52" text-anchor="middle" class="svgt">Function</text>
+                <rect x="270" y="105" width="160" height="54" rx="27" class="svga"/><text x="350" y="137" text-anchor="middle" class="svgt">Type</text>
+                <rect x="270" y="190" width="160" height="54" rx="27" class="svgbg"/><text x="350" y="222" text-anchor="middle" class="svgt">Section</text>
+                <rect x="270" y="275" width="160" height="54" rx="27" class="svgc"/><text x="350" y="307" text-anchor="middle" class="svgt">Tag</text>
+                <rect x="530" y="105" width="150" height="54" rx="27" class="svga"/><text x="605" y="137" text-anchor="middle" class="svgt">Function</text>
+                <rect x="530" y="225" width="150" height="54" rx="27" class="svgbg"/><text x="605" y="257" text-anchor="middle" class="svgt">Section</text>
+              </g>
+              <g class="arrow a">
+                <path d="M190 60 Q230 47 270 47"/><path d="M190 70 Q230 120 270 132"/>
+                <path d="M430 47 L530 120"/><path d="M430 215 Q480 240 530 250"/>
+              </g>
+              <g class="arrow">
+                <path d="M190 85 Q230 200 270 217"/><path d="M430 170 Q480 160 530 160"/>
+                <path d="M430 302 Q480 300 530 285"/>
+              </g>
+              <g class="svts"><text x="226" y="44">DEFINES</text><text x="224" y="122">DEFINES</text><text x="455" y="72">CALLS</text>
+                <text x="452" y="240">CONTAINS</text><text x="220" y="230">DEFINES</text><text x="455" y="152">CALLS_RESOLVED</text><text x="452" y="320">TAGGED</text></g>
+              <g class="arrow c"><path d="M110 94 L110 330"/><path d="M430 305 L510 305" class="dash"/></g>
+              <text x="126" y="220" class="svts">LINKS_TO</text>
+              <rect x="40" y="360" width="640" height="46" rx="9" class="svgbg"/>
+              <text x="60" y="380" class="svts" style="fill:var(--accent)">file_contents_fts</text><text x="60" y="398" class="svts">literal phrase search · snippet · rank · hit-based paging</text>
+            </svg>
+          </div>
+          <div class="col" style="width:38%">
+            <div class="card"><div class="num">SCHEMA</div><h3>Stored as rows, not objects</h3>
+              <ul><li><span class="mono">nodes</span> — id, kind, name, qualified_name (unique), file, lines</li>
+              <li><span class="mono">edges</span> — src, dst, kind (indexed both ways)</li>
+              <li><span class="mono">vault_links</span> — target, resolution, confidence, line</li>
+              <li><span class="mono">vault_aliases</span> — alias → file</li></ul>
+            </div>
+            <div class="card copper"><div class="num">ON DISK</div><h3>One DB per project</h3>
+              <p><span class="mono">~/.local/share/nexuscontext/&lt;hash&gt;/graph.db</span> — WAL mode, 30 s busy timeout, 0600 file / 0700 dir. Legacy embedding tables are dropped on open.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 12 · INDEXING PIPELINE -->
+    <section class="slide" data-title="Indexing pipeline">
+      <div class="slide-head">
+        <div class="kicker">04 — Ingestion</div>
+        <h2>The indexing pipeline: parse → resolve → commit</h2>
+        <p class="sub">A full transactional rebuild every time. The watcher decides when; never how much.</p>
+      </div>
+      <div class="slide-body">
+        <div class="diagram">
+          <svg viewBox="0 0 1136 400" role="img" aria-label="Indexing pipeline data flow">
+            <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#6fb89c"/></marker></defs>
+            <g>
+              <rect x="20" y="60" width="160" height="96" rx="10" class="svgbg"/>
+              <text x="100" y="88" text-anchor="middle" class="svgm">01 WALK</text>
+              <text x="100" y="112" text-anchor="middle" class="svts">WalkBuilder</text><text x="100" y="130" text-anchor="middle" class="svts">.nexusignore · 5 MB cap</text>
+              <rect x="205" y="60" width="160" height="96" rx="10" class="svga"/>
+              <text x="285" y="88" text-anchor="middle" class="svgm">02 PARSE</text>
+              <text x="285" y="112" text-anchor="middle" class="svts">tree-sitter tags</text><text x="285" y="130" text-anchor="middle" class="svts">11 languages · TAGS_QUERY</text>
+              <rect x="390" y="60" width="160" height="96" rx="10" class="svga"/>
+              <text x="470" y="88" text-anchor="middle" class="svgm">03 WRITE</text>
+              <text x="470" y="112" text-anchor="middle" class="svts">File/Function/Type</text><text x="470" y="130" text-anchor="middle" class="svts">nodes + FTS5 content</text>
+              <rect x="575" y="60" width="160" height="96" rx="10" class="svgc"/>
+              <text x="655" y="88" text-anchor="middle" class="svgm">04 RESOLVE</text>
+              <text x="655" y="112" text-anchor="middle" class="svts">two-pass names</text><text x="655" y="130" text-anchor="middle" class="svts">alias fold · no guessing</text>
+              <rect x="760" y="60" width="160" height="96" rx="10" class="svgbg"/>
+              <text x="840" y="88" text-anchor="middle" class="svgm">05 ENRICH</text>
+              <text x="840" y="112" text-anchor="middle" class="svts">deep only · rust-analyzer</text><text x="840" y="130" text-anchor="middle" class="svts">CALLS_RESOLVED</text>
+              <rect x="945" y="60" width="160" height="96" rx="10" class="svga"/>
+              <text x="1025" y="88" text-anchor="middle" class="svgm">06 COMMIT</text>
+              <text x="1025" y="112" text-anchor="middle" class="svts">BEGIN IMMEDIATE</text><text x="1025" y="130" text-anchor="middle" class="svts">+ registry metadata</text>
+            </g>
+            <g class="arrow a"><path d="M180 108 L205 108"/><path d="M365 108 L390 108"/><path d="M550 108 L575 108"/><path d="M735 108 L760 108"/><path d="M920 108 L945 108"/></g>
+
+            <rect x="20" y="200" width="335" height="86" rx="10" class="svgbg"/>
+            <text x="42" y="226" class="svgt">First pass</text>
+            <text x="42" y="248" class="svts">per-file nodes → FTS → same-file calls</text>
+            <text x="42" y="269" class="svts">global function registry accumulated</text>
+            <rect x="380" y="200" width="350" height="86" rx="10" class="svgc"/>
+            <text x="402" y="226" class="svgt">Second pass — conservative by design</text>
+            <text x="402" y="248" class="svts">resolve only when exactly one candidate exists</text>
+            <text x="402" y="269" class="svts">ambiguous → unresolved, never guessed</text>
+            <rect x="755" y="200" width="350" height="86" rx="10" class="svgbg"/>
+            <text x="777" y="226" class="svgt">Best-effort LSP</text>
+            <text x="777" y="248" class="svts">timeouts / crashes → fewer resolved edges</text>
+            <text x="777" y="269" class="svts">never fails the reindex · static edges kept</text>
+
+            <rect x="20" y="316" width="1085" height="58" rx="10" class="svga"/>
+            <text x="42" y="340" class="svgm">TRANSACTION BOUNDARY</text>
+            <text x="42" y="361" class="svts">GraphStore::clear() → rebuild → COMMIT; on error or supersession → ROLLBACK; registry updated only on success</text>
+          </svg>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 13 · FRESHNESS -->
+    <section class="slide" data-title="Freshness &amp; watcher">
+      <div class="slide-head">
+        <div class="kicker">04 — Freshness</div>
+        <h2>Freshness is a first-class, queryable signal</h2>
+        <p class="sub">Warm projects are watched; cold ones are caught up on first query. Freshness is reported in-band, never implied.</p>
+      </div>
+      <div class="slide-body">
+        <div class="diagram">
+          <svg viewBox="0 0 1136 350" role="img" aria-label="Watcher event flow">
+            <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#6fb89c"/></marker></defs>
+            <rect x="20" y="60" width="150" height="70" rx="9" class="svgbg"/><text x="95" y="88" text-anchor="middle" class="svgt">FS events</text><text x="95" y="108" text-anchor="middle" class="svts">notify-debouncer</text>
+            <rect x="200" y="60" width="150" height="70" rx="9" class="svgbg"/><text x="275" y="88" text-anchor="middle" class="svgt">2 s debounce</text><text x="275" y="108" text-anchor="middle" class="svts">bounded channel 256</text>
+            <rect x="380" y="60" width="150" height="70" rx="9" class="svgc"/><text x="455" y="88" text-anchor="middle" class="svgt">dirty roots</text><text x="455" y="108" text-anchor="middle" class="svts">warm only · 6 h window</text>
+            <rect x="560" y="60" width="150" height="70" rx="9" class="svga"/><text x="635" y="88" text-anchor="middle" class="svgt">content signature</text><text x="635" y="108" text-anchor="middle" class="svts">skip if unchanged</text>
+            <rect x="740" y="60" width="150" height="70" rx="9" class="svga"/><text x="815" y="88" text-anchor="middle" class="svgt">unwatch → rebuild</text><text x="815" y="108" text-anchor="middle" class="svts">rewatch · signature stored</text>
+            <rect x="920" y="60" width="190" height="70" rx="9" class="svgbg"/><text x="1015" y="88" text-anchor="middle" class="svgt">registry + facts</text><text x="1015" y="108" text-anchor="middle" class="svts">invalidate anchored facts</text>
+            <g class="arrow a"><path d="M170 95 L200 95"/><path d="M350 95 L380 95"/><path d="M530 95 L560 95"/><path d="M710 95 L740 95"/><path d="M890 95 L920 95"/></g>
+
+            <rect x="20" y="170" width="340" height="88" rx="10" class="svgbg"/>
+            <text x="42" y="196" class="svgm">COLD PATH</text>
+            <text x="42" y="218" class="svts">touch_and_catchup() — cheap check, lock,</text>
+            <text x="42" y="238" class="svts">recheck, synchronous non-deep rebuild</text>
+            <rect x="380" y="170" width="340" height="88" rx="10" class="svgc"/>
+            <text x="402" y="196" class="svgm">SUPERSESSION</text>
+            <text x="402" y="218" class="svts">generation bump when files change mid-index</text>
+            <text x="402" y="238" class="svts">checked every 25 files → ROLLBACK</text>
+            <rect x="740" y="170" width="370" height="88" rx="10" class="svgbg"/>
+            <text x="762" y="196" class="svgm">WHAT THE AGENT SEES</text>
+            <text x="762" y="218" class="svts">index_freshness on planner/architecture responses</text>
+            <text x="762" y="238" class="svts">“warm” = recently indexed, not verified-current</text>
+
+            <text x="568" y="300" text-anchor="middle" class="svgm">BOUNDS LEARNED FROM REAL INCIDENTS</text>
+            <text x="568" y="326" text-anchor="middle" class="svts">MIN_REINDEX_GAP 180 s · half of inotify max_user_watches · LRU eviction · canonicalized roots</text>
+          </svg>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 14 · QUERY LIFECYCLE -->
+    <section class="slide" data-title="Query lifecycle">
+      <div class="slide-head">
+        <div class="kicker">04 — Query path</div>
+        <h2>One call, end to end</h2>
+        <p class="sub">Every agent-visible call crosses the same narrow, auditable boundary.</p>
+      </div>
+      <div class="slide-body">
+        <div class="diagram">
+          <svg viewBox="0 0 1136 400" role="img" aria-label="MCP request lifecycle">
+            <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#6fb89c"/></marker></defs>
+            <g>
+              <rect x="30" y="30" width="230" height="60" rx="9" class="svga"/><text x="145" y="56" text-anchor="middle" class="svgt">Agent sends tool call</text><text x="145" y="76" text-anchor="middle" class="svts">name + args over stdio JSON-RPC</text>
+              <rect x="30" y="120" width="230" height="60" rx="9" class="svgbg"/><text x="145" y="146" text-anchor="middle" class="svgt">tools::call()</text><text x="145" y="166" text-anchor="middle" class="svts">dispatch by preset-visible name</text>
+              <rect x="30" y="210" width="230" height="60" rx="9" class="svgbg"/><text x="145" y="236" text-anchor="middle" class="svgt">Guardrails</text><text x="145" y="256" text-anchor="middle" class="svts">allowed_roots · clamp 200 · depth 10</text>
+              <rect x="30" y="300" width="230" height="60" rx="9" class="svgc"/><text x="145" y="326" text-anchor="middle" class="svgt">touch_and_catchup()</text><text x="145" y="346" text-anchor="middle" class="svts">cold → synchronous rebuild</text>
+            </g>
+            <g class="arrow a"><path d="M145 90 L145 120"/><path d="M145 180 L145 210"/><path d="M145 270 L145 300"/></g>
+            <text x="568" y="30" text-anchor="middle" class="svgm">DAEMON BOUNDARY</text>
+            <rect x="330" y="120" width="250" height="180" rx="12" class="svgbg" style="stroke-width:1.6"/>
+            <text x="455" y="154" text-anchor="middle" class="svgt">nexus-index query</text>
+            <text x="455" y="182" text-anchor="middle" class="svts">search · trace BFS · diff overlap</text>
+            <text x="455" y="204" text-anchor="middle" class="svts">architecture · planner · FTS page</text>
+            <text x="455" y="232" text-anchor="middle" class="svts">progress handler · 5 s timeout</text>
+            <text x="455" y="262" text-anchor="middle" class="svts">provenance per hop</text>
+            <rect x="660" y="120" width="230" height="180" rx="12" class="svga"/>
+            <text x="775" y="154" text-anchor="middle" class="svgt">SQLite + FTS5</text>
+            <text x="775" y="182" text-anchor="middle" class="svts">nodes · edges · vault_links</text>
+            <text x="775" y="204" text-anchor="middle" class="svts">file_contents_fts</text>
+            <text x="775" y="232" text-anchor="middle" class="svts">indexed src/dst/kind</text>
+            <text x="775" y="262" text-anchor="middle" class="svts">WAL · 30 s busy timeout</text>
+            <rect x="945" y="120" width="165" height="180" rx="12" class="svgc"/>
+            <text x="1027" y="154" text-anchor="middle" class="svgt">Response</text>
+            <text x="1027" y="182" text-anchor="middle" class="svts">bounded output</text>
+            <text x="1027" y="204" text-anchor="middle" class="svts">paging metadata</text>
+            <text x="1027" y="226" text-anchor="middle" class="svts">freshness label</text>
+            <text x="1027" y="248" text-anchor="middle" class="svts">usage recorded</text>
+            <g class="arrow a"><path d="M260 330 Q300 330 330 280"/><path d="M580 210 L660 210"/><path d="M890 210 L945 210"/></g>
+            <rect x="330" y="330" width="780" height="42" rx="9" class="svgbg"/>
+            <text x="350" y="356" class="svts">Explicit source fan-out only on five read tools · max 16 sources · no wildcards · no implicit federation</text>
+          </svg>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 15 · THREE MEMORIES -->
+    <section class="slide" data-title="Three memories">
+      <div class="slide-head">
+        <div class="kicker">04 — Memory architecture</div>
+        <h2>Three memories, deliberately different</h2>
+        <p class="sub">Each memory has its own source of truth, its own decay semantics, and its own gate. They share one daemon and one ledger.</p>
+      </div>
+      <div class="slide-body">
+        <div class="grid g4" style="flex:1">
+          <div class="card"><div class="num">STRUCTURAL</div><h3>What the code is</h3><p><span class="mono">graph.db</span> — SQLite property graph + FTS5 per project.</p><ul><li>Source: tree-sitter graph</li><li>Stale when: file hash changes</li><li>Signal: <span class="mono">index_freshness</span></li><li>Rebuild: full, transactional</li></ul></div>
+          <div class="card"><div class="num">PROCEDURAL</div><h3>How we work</h3><p>Learned <span class="mono">SKILL.md</span> files plus <span class="mono">myelin.db</span>.</p><ul><li>Source: observations + reps</li><li>Stale when: unused ~30 days</li><li>Signal: atrophy</li><li>Context needs: <span class="mono">human:</span> approval</li></ul></div>
+          <div class="card"><div class="num">DECLARATIVE</div><h3>What is true</h3><p>Curated facts in SQLite + git-friendly OKF v0.3 bundle.</p><ul><li>Source: decisions, incidents, owners</li><li>Stale when: anchored code changed</li><li>Signal: <span class="mono">stale_after</span></li><li>Context needs: <span class="mono">human:</span> review</li></ul></div>
+          <div class="card copper"><div class="num">LEDGER</div><h3>What it cost</h3><p>Append-only <span class="mono">ledger.db</span>, keyed by harness session.</p><ul><li>Source: harness + estimates</li><li>Stale: not applicable</li><li>Signal: <span class="mono">never_mixed</span></li><li>Reports: injections, tools, usage</li></ul></div>
+        </div>
+        <div class="callout"><strong>One install, one catalog</strong>Absorbing Myelin into <span class="mono">nexusd</span> avoided two daemons, two configs, two installers and two tool catalogs. <span class="mono">myelind</span> is now only a compatibility shim.</div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 16 · MEMORY LIFECYCLE -->
+    <section class="slide" data-title="Memory lifecycle">
+      <div class="slide-head">
+        <div class="kicker">04 — Injection path</div>
+        <h2>From agent suggestion to what the model sees</h2>
+        <p class="sub">The daemon renders one bounded injection block. The adapter injects it verbatim — it cannot widen the budget or smuggle content.</p>
+      </div>
+      <div class="slide-body">
+        <div class="diagram">
+          <svg viewBox="0 0 1136 310" role="img" aria-label="Memory lifecycle and injection flow">
+            <g>
+              <rect x="20" y="40" width="160" height="76" rx="9" class="svgbg"/>
+              <text x="100" y="66" text-anchor="middle" class="svgm">STAGE</text>
+              <text x="100" y="88" text-anchor="middle" class="svts">curate_fact / observe</text><text x="100" y="105" text-anchor="middle" class="svts">Draft · never trusted</text>
+              <rect x="205" y="40" width="160" height="76" rx="9" class="svgc"/>
+              <text x="285" y="66" text-anchor="middle" class="svgm">REDACT</text>
+              <text x="285" y="88" text-anchor="middle" class="svts">secret shapes + entropy</text><text x="285" y="105" text-anchor="middle" class="svts">before any store write</text>
+              <rect x="390" y="40" width="160" height="76" rx="9" class="svgbg"/>
+              <text x="470" y="66" text-anchor="middle" class="svgm">STORE</text>
+              <text x="470" y="88" text-anchor="middle" class="svts">SQLite 0600 · WAL</text><text x="470" y="105" text-anchor="middle" class="svts">anchors + provenance</text>
+              <rect x="575" y="40" width="180" height="76" rx="9" class="svgc"/>
+              <text x="665" y="66" text-anchor="middle" class="svgm">HUMAN REVIEW</text>
+              <text x="665" y="88" text-anchor="middle" class="svts">actor must start human:</text><text x="665" y="105" text-anchor="middle" class="svts">→ stable + verified</text>
+              <rect x="780" y="40" width="160" height="76" rx="9" class="svga"/>
+              <text x="860" y="66" text-anchor="middle" class="svgm">ADMISSION</text>
+              <text x="860" y="88" text-anchor="middle" class="svts">gate.admit()</text><text x="860" y="105" text-anchor="middle" class="svts">5 hard exclusions</text>
+              <rect x="965" y="40" width="150" height="76" rx="9" class="svga"/>
+              <text x="1040" y="66" text-anchor="middle" class="svgm">INJECT</text>
+              <text x="1040" y="88" text-anchor="middle" class="svts">≤ 800 tokens</text><text x="1040" y="105" text-anchor="middle" class="svts">render_injection</text>
+            </g>
+            <g class="arrow a"><path d="M180 78 L205 78"/><path d="M365 78 L390 78"/><path d="M550 78 L575 78"/><path d="M755 78 L780 78"/><path d="M940 78 L965 78"/></g>
+
+            <rect x="20" y="152" width="570" height="132" rx="10" class="svgbg"/>
+            <text x="42" y="178" class="svgm">THE BLOCK — RENDERED BY THE DAEMON</text>
+            <text x="42" y="204" class="svts" style="fill:var(--ink)">## NexusContext verified memory</text>
+            <text x="42" y="224" class="svts">- [Decision] title: text — anchors</text>
+            <text x="42" y="244" class="svts">### Approved skills (procedural memory, not repo-anchored)</text>
+            <text x="42" y="264" class="svts">- [skill] name — description (load with list_skills)</text>
+            <rect x="615" y="152" width="500" height="132" rx="10" class="svgc"/>
+            <text x="637" y="178" class="svgm">DEFENSIVE DETAILS</text>
+            <text x="637" y="204" class="svts">stale + non-human facts dropped again at render time</text>
+            <text x="637" y="224" class="svts">control chars flattened; names 60 chars, descriptions 140</text>
+            <text x="637" y="244" class="svts">skills trimmed before facts when over budget</text>
+            <text x="637" y="264" class="svts">exact text recorded to the ledger as an estimate</text>
+          </svg>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 17 · TRUST GATES -->
+    <section class="slide" data-title="Trust model">
+      <div class="slide-head">
+        <div class="kicker">04 — Trust model</div>
+        <h2>Agents may stage. Only humans may approve.</h2>
+        <p class="sub">The trust boundary is enforced in the store and the renderer — not merely in tool descriptions.</p>
+      </div>
+      <div class="slide-body">
+        <div class="diagram">
+          <svg viewBox="0 0 1136 350" role="img" aria-label="Trust and approval gates">
+            <text x="285" y="30" text-anchor="middle" class="svgm">CURATED FACTS</text>
+            <rect x="60" y="50" width="160" height="62" rx="9" class="svgbg"/><text x="140" y="76" text-anchor="middle" class="svgt">Agent stages</text><text x="140" y="96" text-anchor="middle" class="svts">Draft · unverified</text>
+            <rect x="260" y="50" width="160" height="62" rx="9" class="svgc"/><text x="340" y="76" text-anchor="middle" class="svgt">Human reviews</text><text x="340" y="96" text-anchor="middle" class="svts">actor = human:&lt;name&gt;</text>
+            <rect x="460" y="50" width="160" height="62" rx="9" class="svga"/><text x="540" y="76" text-anchor="middle" class="svgt">Stable + admit</text><text x="540" y="96" text-anchor="middle" class="svts">tier = HumanReviewed</text>
+            <g class="arrow"><path d="M220 81 L260 81"/><path d="M420 81 L460 81" class="arrow a"/></g>
+
+            <text x="285" y="170" text-anchor="middle" class="svgm">PROCEDURAL SKILLS</text>
+            <rect x="60" y="190" width="160" height="62" rx="9" class="svgbg"/><text x="140" y="216" text-anchor="middle" class="svgt">Observe + promote</text><text x="140" y="236" text-anchor="middle" class="svts">reps / high-stakes</text>
+            <rect x="260" y="190" width="160" height="62" rx="9" class="svgc"/><text x="340" y="216" text-anchor="middle" class="svgt">Human approves</text><text x="340" y="236" text-anchor="middle" class="svts">skill-approve CLI</text>
+            <rect x="460" y="190" width="160" height="62" rx="9" class="svga"/><text x="540" y="216" text-anchor="middle" class="svgt">Injectable skill</text><text x="540" y="236" text-anchor="middle" class="svts">non-atrophied, ≤ limit</text>
+            <g class="arrow"><path d="M220 221 L260 221"/><path d="M420 221 L460 221" class="arrow a"/></g>
+
+            <rect x="680" y="50" width="430" height="202" rx="12" class="svgbg"/>
+            <text x="704" y="78" class="svgm">HARD EXCLUSIONS — NO AUTO-INJECTION</text>
+            <text x="704" y="106" class="svts">01  Stale — anchored code changed / stale_after passed</text>
+            <text x="704" y="130" class="svts">02  Not stable — still a draft or deprecated</text>
+            <text x="704" y="154" class="svts">03  Unverified — no human: approval</text>
+            <text x="704" y="178" class="svts">04  MachineConfirmed — team:/process: is not human</text>
+            <text x="704" y="202" class="svts">05  AnchorOutsideRoots — outside allowed_roots</text>
+            <text x="704" y="232" class="svts">Deliberate pull can lower trust — never these five blocks.</text>
+
+            <rect x="60" y="292" width="1050" height="42" rx="9" class="svga"/>
+            <text x="82" y="318" class="svts">No MCP tool and no RPC method can approve memory · source registration is provenance only · GTK review tab is read-only · OKF import never upgrades trust</text>
+          </svg>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 18 · OPENCODE INTEGRATION -->
+    <section class="slide" data-title="OpenCode integration">
+      <div class="slide-head">
+        <div class="kicker">05 — Integration</div>
+        <h2>The OpenCode plug: hooks in, RPC out</h2>
+        <p class="sub">A thin typed adapter. No LLM, no approval logic, no HTTP, no account — just a Unix socket and a strict RPC contract.</p>
+      </div>
+      <div class="slide-body">
+        <div class="diagram">
+          <svg viewBox="0 0 1136 400" role="img" aria-label="OpenCode plugin integration">
+            <text x="285" y="28" text-anchor="middle" class="svgm">PLUGIN HOOKS</text>
+            <rect x="40" y="46" width="490" height="286" rx="12" class="svgbg"/>
+            <rect x="62" y="66" width="446" height="50" rx="8" class="svga"/>
+            <text x="80" y="86" class="svts" style="fill:var(--accent)">prompt → ledger.inject</text><text x="80" y="104" class="svts">put entry key nexuscontext.memory before first snapshot</text>
+            <rect x="62" y="128" width="446" height="50" rx="8" class="svgbg"/>
+            <text x="80" y="148" class="svts" style="fill:var(--ink-dim)">context + compaction</text><text x="80" y="166" class="svts">idempotent re-put of the same cached text</text>
+            <rect x="62" y="190" width="446" height="50" rx="8" class="svgbg"/>
+            <text x="80" y="210" class="svts" style="fill:var(--ink-dim)">execute.after → ledger.tool</text><text x="80" y="228" class="svts">bytes only · labelled estimate</text>
+            <rect x="62" y="252" width="446" height="50" rx="8" class="svgc"/>
+            <text x="80" y="272" class="svts" style="fill:var(--copper)">session.usage.recorded → ledger.usage</text><text x="80" y="290" class="svts">provider tokens/cost · per-call only, no double count</text>
+
+            <text x="850" y="28" text-anchor="middle" class="svgm">CONTROL PLANE</text>
+            <rect x="620" y="46" width="480" height="286" rx="12" class="svgbg"/>
+            <rect x="642" y="66" width="436" height="48" rx="8" class="svga"/>
+            <text x="660" y="86" class="svts" style="fill:var(--accent)">Typed RPC from panels</text><text x="660" y="104" class="svts">status · sources · projects · search · architecture</text>
+            <rect x="642" y="126" width="436" height="48" rx="8" class="svgbg"/>
+            <text x="660" y="146" class="svts" style="fill:var(--ink-dim)">graph · review · stats · logs · ledger</text><text x="660" y="164" class="svts">reindex · importProject · exportProject · removeProject</text>
+            <rect x="642" y="186" width="436" height="48" rx="8" class="svgc"/>
+            <text x="660" y="206" class="svts" style="fill:var(--copper)">No approval method</text><text x="660" y="224" class="svts">no source registration · delete needs confirm:"delete"</text>
+            <rect x="642" y="246" width="436" height="48" rx="8" class="svgbg"/>
+            <text x="660" y="266" class="svts" style="fill:var(--ink-dim)">Unix socket NDJSON</text><text x="660" y="284" class="svts">2 s hook timeout · 300 s explicit panel actions</text>
+
+            <g class="arrow a"><path d="M530 190 L620 190"/></g>
+            <rect x="40" y="352" width="1060" height="34" rx="8" class="svga"/>
+            <text x="60" y="374" class="svts">Install: nexus install opencode --global → embeds plugin files, merges MCP server entry, records manifest for exact uninstall — no npm install needed</text>
+          </svg>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 19 · OPERATING MODEL -->
+    <section class="slide" data-title="Operating model">
+      <div class="slide-head">
+        <div class="kicker">06 — Running it</div>
+        <h2>Safe defaults, hard bounds, honest platform tiers</h2>
+        <p class="sub">Configuration is intentionally conservative; every agent-drivable surface is capped and observable.</p>
+      </div>
+      <div class="slide-body">
+        <div class="grid g3" style="flex:1">
+          <div class="card"><div class="num">CONFIG</div><h3>Opt-in by design</h3><ul>
+            <li><span class="mono">allowed_roots</span> — canonical containment</li>
+            <li><span class="mono">tools.preset</span> — minimal / standard / full</li>
+            <li><span class="mono">lsp</span> — off; deep only</li>
+            <li><span class="mono">config_index</span>, <span class="mono">vault_index</span> — off</li>
+            <li><span class="mono">sources</span> — empty; explicit fan-out</li>
+            <li>Live reload + <span class="mono">/reload</span></li>
+          </ul></div>
+          <div class="card copper"><div class="num">BOUNDS</div><h3>Every surface is capped</h3><ul>
+            <li>200 results · 10 depth · 16 sources</li>
+            <li>300-line / 300 KB file reads</li>
+            <li>5 MB per indexed file</li>
+            <li>5 s query timeout</li>
+            <li>2 GiB streamed import cap</li>
+            <li>800-token injection budget</li>
+            <li>Half of inotify max_user_watches</li>
+          </ul></div>
+          <div class="card"><div class="num">PLATFORMS</div><h3>Tiered, stated plainly</h3><ul>
+            <li><strong>Linux</strong> — full parity: MCP, serve, watcher, GUI</li>
+            <li><strong>macOS</strong> — CLI + daemon, no GTK</li>
+            <li><strong>Windows</strong> — CLI + MCP only; all tools work</li>
+            <li>6 platform × arch builds</li>
+          </ul>
+          <div class="callout" style="margin-top:14px;font-size:12.5px"><strong>Privacy</strong>Owner-only 0600 / 0700 writes, hardened systemd unit, no outbound call, no API key.</div>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 20 · EVIDENCE -->
+    <section class="slide" data-title="Evidence">
+      <div class="slide-head">
+        <div class="kicker">06 — Evidence</div>
+        <h2>Measure, don't claim — including the losses</h2>
+        <p class="sub">Real questions, tokenized. The shape of the question matters more than raw file count.</p>
+      </div>
+      <div class="slide-body">
+        <div class="grid g2" style="flex:1">
+          <div class="card"><div class="num">SMALL REPO · 70 FILES</div><h3>NexusContext itself — 780 nodes / 1,280 edges</h3><ul>
+            <li>Dead code: 1 of ~8 candidates found by baseline → <strong>8 found</strong> and triaged in 5 calls vs 13</li>
+            <li>Subsystem understanding: <strong>~24% fewer tokens</strong> via <span class="mono">search_code</span></li>
+            <li>Implementation location &amp; call path: <strong>matched or beaten by rg</strong></li>
+          </ul></div>
+          <div class="card copper"><div class="num">LARGE MONOREPO · 391 FILES</div><h3>9,689 nodes / 18,276 edges / 17 services</h3><ul>
+            <li>3/3 cross-cutting architecture tasks won on tokens; 2/3 on time</li>
+            <li>Alerting pipeline: <strong>86,658 → 59,134 tokens</strong></li>
+            <li>Auth: <strong>54,361 → 38,022 tokens</strong></li>
+            <li>Import-count questions stayed <strong>grep's turf</strong></li>
+          </ul></div>
+        </div>
+        <div class="callout"><strong>What this actually proves</strong>Genuinely better at architecture/location questions and dead-code detection at scale — not at narrow single-pattern lookups. One <span class="mono">index_repository</span> amortized across 11 fresh sub-agents with zero marginal reindex; no true restarts or concurrency were tested.</div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 21 · WHOLE SYSTEM -->
+    <section class="slide" data-title="Whole system">
+      <div class="slide-head">
+        <div class="kicker">06 — The whole picture</div>
+        <h2>Everything, in one diagram</h2>
+        <p class="sub">One process, one catalog, one ledger — from an agent prompt to a bounded, provenance-tagged answer.</p>
+      </div>
+      <div class="slide-body">
+        <div class="diagram">
+          <svg viewBox="0 0 1136 420" role="img" aria-label="Complete system architecture">
+            <text x="568" y="24" text-anchor="middle" class="svgm">AGENT SURFACE</text>
+            <rect x="300" y="36" width="230" height="50" rx="9" class="svga"/><text x="415" y="66" text-anchor="middle" class="svgt">OpenCode plug</text>
+            <rect x="555" y="36" width="230" height="50" rx="9" class="svgbg"/><text x="670" y="66" text-anchor="middle" class="svgt">Any MCP client</text>
+            <rect x="810" y="36" width="180" height="50" rx="9" class="svgbg"/><text x="900" y="66" text-anchor="middle" class="svgt">CLI · GUI</text>
+
+            <rect x="180" y="118" width="800" height="196" rx="14" class="svgbg" style="stroke-width:1.6"/>
+            <text x="580" y="146" text-anchor="middle" class="svgt" style="font-size:18px">nexusd — one process, no LLM</text>
+            <rect x="204" y="162" width="230" height="62" rx="9" class="svga"/>
+            <text x="222" y="186" class="svts" style="fill:var(--accent)">MCP CATALOG · 31 TOOLS</text><text x="222" y="206" class="svts">presets 5 / 13 / 31</text>
+            <rect x="452" y="162" width="230" height="62" rx="9" class="svgc"/>
+            <text x="470" y="186" class="svts" style="fill:var(--copper)">GUARDRAILS + FRESHNESS</text><text x="470" y="206" class="svts">roots · caps · catch-up</text>
+            <rect x="700" y="162" width="256" height="62" rx="9" class="svga"/>
+            <text x="718" y="186" class="svts" style="fill:var(--accent)">MEMORY ENGINES</text><text x="718" y="206" class="svts">facts · skills · ledger</text>
+
+            <rect x="204" y="242" width="230" height="52" rx="9" class="svgbg"/><text x="222" y="264" class="svts">stdio JSON-RPC + control socket</text><text x="222" y="283" class="svts">hooks · RPC · watcher</text>
+            <rect x="452" y="242" width="230" height="52" rx="9" class="svgbg"/><text x="470" y="264" class="svts">admission gate · 800-token render</text><text x="470" y="283" class="svts">human approval enforced here</text>
+            <rect x="700" y="242" width="256" height="52" rx="9" class="svgbg"/><text x="718" y="264" class="svts">schema_tax · reads_avoided</text><text x="718" y="283" class="svts">harness tokens ≠ estimates</text>
+
+            <rect x="180" y="342" width="230" height="54" rx="9" class="svga"/><text x="200" y="364" class="svgt">graph.db + FTS5</text><text x="200" y="382" class="svts">code structure</text>
+            <rect x="430" y="342" width="230" height="54" rx="9" class="svgc"/><text x="450" y="364" class="svgt">myelin.db + SKILL.md</text><text x="450" y="382" class="svts">procedural</text>
+            <rect x="680" y="342" width="230" height="54" rx="9" class="svgc"/><text x="700" y="364" class="svgt">memory.db + OKF v0.3</text><text x="700" y="382" class="svts">declarative</text>
+            <rect x="930" y="342" width="150" height="54" rx="9" class="svgbg"/><text x="944" y="364" class="svgt">ledger.db</text><text x="944" y="382" class="svts">accounting</text>
+
+            <g class="arrow a"><path d="M415 86 L415 118"/><path d="M670 86 L670 118"/><path d="M900 86 L900 118"/></g>
+            <g class="arrow"><path d="M295 314 L295 342"/><path d="M545 314 L545 342"/><path d="M828 314 L795 342"/><path d="M1000 314 L1005 342"/></g>
+          </svg>
+        </div>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+    <!-- 22 · CLOSE -->
+    <section class="slide title-slide" data-title="Takeaways">
+      <div class="kicker">Key takeaways</div>
+      <h1 style="font-size:52px">Structure you can trust. <em>Memory you can audit.</em></h1>
+      <div class="grid g3" style="margin-top:18px;width:100%;max-width:1080px">
+        <div class="card"><div class="num">01</div><h3>Agent thinks, NC remembers</h3><p>No LLM in the daemon — structure, queries and bounded memory only.</p></div>
+        <div class="card"><div class="num">02</div><h3>Graph, not similarity</h3><p>tree-sitter + FTS5, provenance per hop, ambiguity left unresolved.</p></div>
+        <div class="card"><div class="num">03</div><h3>Three memories, one ledger</h3><p>Structure, skills and facts — all measured in the same accounting.</p></div>
+        <div class="card copper"><div class="num">04</div><h3>Humans hold the keys</h3><p>No self-approval, redaction before storage, five hard exclusions.</p></div>
+        <div class="card"><div class="num">05</div><h3>Local by construction</h3><p>No network, no cloud, owner-only files, portable git-friendly artifacts.</p></div>
+        <div class="card"><div class="num">06</div><h3>Honest by default</h3><p>Measure the spend, publish the losses, bound every agent-driven surface.</p></div>
+      </div>
+      <div class="title-meta" style="margin-top:24px">
+        <span class="pill a"><span class="dot"></span>31 tools</span>
+        <span class="pill">11 languages</span>
+        <span class="pill c">0 network calls</span>
+        <span class="pill">6 builds</span>
+        <span class="pill a">v0.1.31</span>
+      </div>
+      <div class="foot"><span class="brand"><i></i>NexusContext</span><span class="bar"><span></span></span><span class="pg"></span></div>
+    </section>
+
+
+  </main>
+</div>
+
+<div id="hint">← → navigate · M overview · F fullscreen · P print</div>
+<nav id="controls" aria-label="Slide controls">
+  <button id="btnPrev" title="Previous (←)">←</button>
+  <button id="btnOv" title="Slide overview (M)">▦</button>
+  <button id="btnNext" title="Next (→)">→</button>
+  <button id="btnFs" title="Fullscreen (F)">⛶</button>
+</nav>
+<div id="overview" role="dialog" aria-label="Slide overview">
+  <h2>Slide overview <span class="dim" style="font:400 13px var(--mono)">— click to jump</span></h2>
+  <div id="ovGrid"></div>
+</div>
+
+<script>
+(function(){
+  const stage=document.getElementById('stage');
+  const slides=[...stage.querySelectorAll('.slide')];
+  const bar=document.querySelector('.foot .bar span');
+  const pg=document.querySelector('.foot .pg');
+  const ov=document.getElementById('overview');
+  const ovGrid=document.getElementById('ovGrid');
+  let i=0;
+  const slug=s=>(s.dataset.title||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+  function indexFromHash(){
+    const h=decodeURIComponent(location.hash.slice(1));
+    if(!h) return 0;
+    if(/^\d+$/.test(h)) return parseInt(h,10)-1;
+    const found=slides.findIndex(s=>slug(s)===h.toLowerCase());
+    return found>=0?found:0;
+  }
+
+  function fit(){
+    const pad=48, w=window.innerWidth-pad, h=window.innerHeight-pad;
+    const s=Math.min(w/1280,h/720);
+    stage.style.transform='scale('+s+')';
+  }
+  function show(n){
+    n=Math.max(0,Math.min(slides.length-1,n));
+    slides[i].classList.remove('active');
+    slides[i].classList.add('out');
+    const prev=i; i=n;
+    slides[i].classList.remove('out');
+    slides[i].classList.add('active');
+    setTimeout(()=>slides[prev].classList.remove('out'),360);
+    const total=slides.length, num=String(i+1).padStart(2,'0'), tt=String(total).padStart(2,'0');
+    document.querySelectorAll('.foot .pg').forEach(p=>p.textContent=num+' / '+tt);
+    document.querySelectorAll('.foot .bar span').forEach(b=>b.style.width=((i+1)/total*100)+'%');
+    history.replaceState(null,'','#'+slug(slides[i]));
+    [...ovGrid.children].forEach((c,idx)=>c.classList.toggle('cur',idx===i));
+  }
+  const next=()=>show(i+1), prev=()=>show(i-1);
+
+  slides.forEach((s,idx)=>{
+    const item=document.createElement('div');
+    item.className='ovItem';
+    item.innerHTML='<div class="n">'+String(idx+1).padStart(2,'0')+'</div><div class="t">'+(s.dataset.title||'')+'</div>';
+    item.onclick=()=>{show(idx);ov.classList.remove('open')};
+    ovGrid.appendChild(item);
+  });
+
+  document.getElementById('btnNext').onclick=next;
+  document.getElementById('btnPrev').onclick=prev;
+  document.getElementById('btnOv').onclick=()=>ov.classList.toggle('open');
+  document.getElementById('btnFs').onclick=()=>{document.fullscreenElement?document.exitFullscreen():stage.requestFullscreen()};
+  ov.onclick=e=>{if(e.target===ov)ov.classList.remove('open')};
+
+  let touchX=null;
+  window.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key==='ArrowDown'||e.key===' '||e.key==='PageDown'){e.preventDefault();next()}
+    else if(e.key==='ArrowLeft'||e.key==='ArrowUp'||e.key==='PageUp'){e.preventDefault();prev()}
+    else if(e.key==='Home'){e.preventDefault();show(0)}
+    else if(e.key==='End'){e.preventDefault();show(slides.length-1)}
+    else if(e.key.toLowerCase()==='m'){ov.classList.toggle('open')}
+    else if(e.key.toLowerCase()==='f'){document.getElementById('btnFs').click()}
+    else if(e.key==='Escape'){ov.classList.remove('open')}
+    else if(e.key.toLowerCase()==='p'){window.print()}
+  });
+  window.addEventListener('touchstart',e=>touchX=e.changedTouches[0].clientX,{passive:true});
+  window.addEventListener('touchend',e=>{
+    if(touchX===null)return;
+    const dx=e.changedTouches[0].clientX-touchX;
+    if(Math.abs(dx)>60)dx<0?next():prev();
+    touchX=null;
+  },{passive:true});
+  window.addEventListener('resize',fit);
+  window.addEventListener('hashchange',()=>{const n=indexFromHash(); if(n!==i)show(n)});
+  fit();
+  show(indexFromHash());
+})();
+</script>
+</body>
+</html>
