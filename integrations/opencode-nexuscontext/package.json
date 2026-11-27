@@ -6,7 +6,8 @@
   "description": "NexusContext Brain plug for OpenCode V2: bounded verified-memory injection with a separated token ledger",
   "exports": {
     ".": "./src/index.js",
-    "./tui": "./src/tui.tsx"
+    "./tui": "./src/tui.tsx",
+    "./rpc": "./src/rpc.js"
   },
   "files": [
     "src"

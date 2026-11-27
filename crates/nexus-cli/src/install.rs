@@ -8,6 +8,9 @@ const PLUGIN_INDEX: &str = include_str!("../../../integrations/opencode-nexuscon
 const PLUGIN_CONTROL: &str =
     include_str!("../../../integrations/opencode-nexuscontext/src/control.js");
 const PLUGIN_TUI: &str = include_str!("../../../integrations/opencode-nexuscontext/src/tui.tsx");
+const PLUGIN_RPC: &str = include_str!("../../../integrations/opencode-nexuscontext/src/rpc.js");
+const PLUGIN_PANEL_DATA: &str =
+    include_str!("../../../integrations/opencode-nexuscontext/src/panel-data.js");
 const MANIFEST: &str = ".nexus/install-manifest.json";
 /// Project-local Claude Code settings: private to this checkout, never shared
 /// through git, matching the "local-first, per-repo" constraint.
@@ -22,7 +25,8 @@ const PLUGIN_PACKAGE: &str = r#"{
   "type": "module",
   "exports": {
     ".": "./index.js",
-    "./tui": "./tui.tsx"
+    "./tui": "./tui.tsx",
+    "./rpc": "./rpc.js"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.6.6",
@@ -111,6 +115,8 @@ fn install_opencode(yes: bool) -> Result<()> {
     let index = plugin_dir.join("index.js");
     let control = plugin_dir.join("control.js");
     let tui = plugin_dir.join("tui.tsx");
+    let rpc = plugin_dir.join("rpc.js");
+    let panel_data = plugin_dir.join("panel-data.js");
     let package = plugin_dir.join("package.json");
     let config = PathBuf::from("opencode.json");
 
@@ -128,6 +134,8 @@ fn install_opencode(yes: bool) -> Result<()> {
     println!("  plugin   : {}", index.display());
     println!("  plugin   : {}", control.display());
     println!("  TUI      : {}", tui.display());
+    println!("  RPC      : {}", rpc.display());
+    println!("  panel    : {}", panel_data.display());
     println!(
         "  MCP      : mcp.servers.nexuscontext -> nexusd mcp in {}",
         config.display()
@@ -146,6 +154,8 @@ fn install_opencode(yes: bool) -> Result<()> {
         (&index, PLUGIN_INDEX),
         (&control, PLUGIN_CONTROL),
         (&tui, PLUGIN_TUI),
+        (&rpc, PLUGIN_RPC),
+        (&panel_data, PLUGIN_PANEL_DATA),
         (&package, PLUGIN_PACKAGE),
     ] {
         if path.exists() {
@@ -154,7 +164,7 @@ fn install_opencode(yes: bool) -> Result<()> {
         std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))?;
     }
 
-    let mut files: Vec<PathBuf> = vec![index, control, tui, package];
+    let mut files: Vec<PathBuf> = vec![index, control, tui, rpc, panel_data, package];
     let mut merged_config = false;
     let mut previous_server = None;
     if config.exists() {
@@ -553,7 +563,10 @@ mod tests {
         assert!(PLUGIN_INDEX.contains("Plugin.define"));
         assert!(PLUGIN_CONTROL.contains("NexusControlClient"));
         assert!(PLUGIN_TUI.contains("home.footer.status"));
+        assert!(PLUGIN_RPC.contains("Rpc.define"));
+        assert!(PLUGIN_PANEL_DATA.contains("formatTab"));
         assert!(PLUGIN_PACKAGE.contains("\"./tui\""));
+        assert!(PLUGIN_PACKAGE.contains("\"./rpc\""));
     }
 
     #[test]
@@ -646,11 +659,15 @@ mod tests {
         );
         assert!(Path::new(".opencode/plugins/nexuscontext/index.js").exists());
         assert!(Path::new(".opencode/plugins/nexuscontext/tui.tsx").exists());
+        assert!(Path::new(".opencode/plugins/nexuscontext/rpc.js").exists());
+        assert!(Path::new(".opencode/plugins/nexuscontext/panel-data.js").exists());
 
         uninstall_opencode(true).unwrap();
         assert_eq!(read_json(Path::new("opencode.json")), original);
         assert!(!Path::new(".opencode/plugins/nexuscontext/index.js").exists());
         assert!(!Path::new(".opencode/plugins/nexuscontext/tui.tsx").exists());
+        assert!(!Path::new(".opencode/plugins/nexuscontext/rpc.js").exists());
+        assert!(!Path::new(".opencode/plugins/nexuscontext/panel-data.js").exists());
         assert!(!Path::new(MANIFEST).exists());
     }
 

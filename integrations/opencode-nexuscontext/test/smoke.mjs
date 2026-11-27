@@ -23,14 +23,23 @@ try {
   fs.cpSync(path.join(root, "src"), path.join(pluginDir, "src"), { recursive: true })
   fs.writeFileSync(
     path.join(sdkDir, "package.json"),
-    JSON.stringify({ name: "@opencode/plugin", type: "module", exports: "./index.js" }),
+    JSON.stringify({
+      name: "@opencode/plugin",
+      type: "module",
+      exports: { ".": "./index.js", "./rpc": "./rpc.js" },
+    }),
   )
   fs.writeFileSync(
     path.join(sdkDir, "index.js"),
     "export const Plugin = { define: (definition) => definition }\n",
   )
+  fs.writeFileSync(
+    path.join(sdkDir, "rpc.js"),
+    "export const Rpc = { define: (definition) => ({ ...definition, contract: true }) }\n",
+  )
 
   const received = []
+  let rpcRegistration
   const INJECTED_TEXT = "## NexusContext verified memory\n- [decision] owner: alice (src/lib.rs)\n### Approved skills (procedural memory, not repo-anchored)\n- [skill] rotate a key — revoke first (load with list_skills)\n"
   const responses = {
     "ledger.inject": {
@@ -91,6 +100,12 @@ try {
         stored[key] = value
       },
     },
+    rpc: {
+      register: async (contract, implementations) => {
+        rpcRegistration = { contract, implementations }
+        return { dispose: async () => void disposed++ }
+      },
+    },
     session: {
       hook: async (name, callback) => {
         sessionHooks.set(name, callback)
@@ -125,6 +140,57 @@ try {
   assert.equal(stored["nexuscontrol.budgetTokens"], 800)
   assert.equal(stored["nexuscontrol.socket"], socketPath)
   assert.ok(usageAborted, "usage stream should be subscribed")
+
+  // The panel-facing RPC is registered on the server part, not opened
+  // directly by the views. Every method maps to one control method, and the
+  // destructive one requires an explicit human confirmation token.
+  assert.ok(rpcRegistration, "RPC contract should be registered")
+  assert.equal(rpcRegistration.contract.id, "nexuscontext")
+  assert.deepEqual(Object.keys(rpcRegistration.implementations), [
+    "status",
+    "sources",
+    "projects",
+    "search",
+    "architecture",
+    "graph",
+    "review",
+    "stats",
+    "logs",
+    "ledger",
+    "reindex",
+    "importProject",
+    "exportProject",
+    "removeProject",
+  ])
+  const rpcContext = {
+    error: (type, message, data) => ({ error_type: type, message, data }),
+  }
+  assert.equal(
+    (await rpcRegistration.implementations.sources({}, rpcContext)).echoed,
+    "sources.list",
+  )
+  assert.equal(
+    (await rpcRegistration.implementations.logs({ limit: 10 }, rpcContext)).echoed,
+    "logs.tail",
+  )
+  assert.equal(
+    (
+      await rpcRegistration.implementations.removeProject(
+        { repo_path: "/tmp/project" },
+        rpcContext,
+      )
+    ).error_type,
+    "confirmation_required",
+  )
+  assert.equal(
+    (
+      await rpcRegistration.implementations.removeProject(
+        { repo_path: "/tmp/project", confirm: "delete" },
+        rpcContext,
+      )
+    ).echoed,
+    "projects.delete",
+  )
 
   // The prompt hook puts the entry before the system snapshot is assembled.
   // A real OpenCode v2.4.1 run showed that doing this only in `context`
@@ -175,7 +241,7 @@ try {
   assert.equal(usage.params.cost_usd, 0.0125)
 
   await cleanup()
-  assert.equal(disposed, 5)
+  assert.equal(disposed, 6)
   assert.ok(usageAborted.aborted, "usage stream should be aborted on cleanup")
 
   // Socket resolution must match crates/nexus-core/src/paths.rs exactly.
@@ -191,7 +257,23 @@ try {
     path.join("/tmp/nc-data", "nexuscontext.sock"),
   )
 
-  console.log("opencode-nexuscontext hook + ledger smoke test: ok")
+  // Panel formatters are pure and testable without an OpenCode runtime.
+  const { formatTab, TAB_METHODS } = await import(
+    pathToFileURL(path.join(root, "src", "panel-data.js")).href
+  )
+  assert.ok(TAB_METHODS.graph === "graph" && TAB_METHODS.logs === "logs")
+  const sourceLines = formatTab("sources", {
+    sources: [{ id: "secondbrain", kind: "obsidian-vault", root_path: "/vault" }],
+    note: "provenance only",
+  })
+  assert.ok(sourceLines.some((line) => line.includes("secondbrain")))
+  assert.ok(sourceLines.some((line) => line.includes("provenance only")))
+  assert.deepEqual(formatTab("logs", { lines: ["a", "b"], truncated: true }).slice(-2), [
+    "a",
+    "b",
+  ])
+
+  console.log("opencode-nexuscontext hook + ledger + RPC panel smoke test: ok")
 } finally {
   if (server) await new Promise((resolve) => server.close(resolve))
   fs.rmSync(tmp, { recursive: true, force: true })

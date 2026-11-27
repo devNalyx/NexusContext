@@ -1,5 +1,6 @@
 import { Plugin } from "@opencode/plugin"
 import { NexusControlClient, resolveSocketPath } from "./control.js"
+import { Nexus } from "./rpc.js"
 
 const DEFAULTS = {
   budgetTokens: 800,
@@ -27,6 +28,10 @@ export default Plugin.define({
     const options = { ...DEFAULTS, ...(ctx.options ?? {}) }
     const socketPath = options.socket ?? resolveSocketPath()
     const control = new NexusControlClient({ socketPath })
+    // A cold reindex can take minutes. The 2 s client deadline is right for
+    // hook-time calls that must never block a turn, but wrong for an explicit
+    // project action triggered from a panel.
+    const slowControl = new NexusControlClient({ socketPath, timeoutMs: 300_000 })
     const repoPath = options.repoPath ?? ctx.location?.directory ?? process.cwd()
 
     // Latest user text per session, used only to rank curated facts. Never
@@ -87,6 +92,50 @@ export default Plugin.define({
     }
 
     const registrations = []
+
+    // Typed RPC surface for the TUI/GUI panels. Views never touch the control
+    // socket directly: the server part owns the connection and this contract
+    // is the only surface they can call. Source/fact approval is deliberately
+    // absent here — registration stays CLI-only.
+    const implement = (method, client = control) => async (input, context) => {
+      try {
+        return await client.call(method, input ?? {})
+      } catch (error) {
+        return context.error("control", `nexusd ${method} failed: ${error.message}`, {
+          message: error.message,
+          method,
+        })
+      }
+    }
+
+    const slow = (method) => implement(method, slowControl)
+
+    const rpcRegistration = await ctx.rpc.register(Nexus, {
+      status: implement("status.get"),
+      sources: implement("sources.list"),
+      projects: implement("projects.list"),
+      search: implement("search.adhoc"),
+      architecture: implement("projects.architecture"),
+      graph: implement("viz.call_graph"),
+      review: implement("review.list"),
+      stats: implement("stats.get"),
+      logs: implement("logs.tail"),
+      ledger: implement("ledger.latest"),
+      reindex: slow("projects.reindex"),
+      importProject: slow("projects.import"),
+      exportProject: slow("projects.export"),
+      removeProject: async (input, context) => {
+        if (input?.confirm !== "delete") {
+          return context.error(
+            "confirmation_required",
+            "Removing a project requires an explicit --confirm delete",
+            { repo_path: input?.repo_path ?? "" },
+          )
+        }
+        return slow("projects.delete")(input, context)
+      },
+    })
+    registrations.push(rpcRegistration)
 
     // The system instruction snapshot is assembled right after the prompt
     // hook. Putting the entry here (and awaiting it) is what makes the fact
