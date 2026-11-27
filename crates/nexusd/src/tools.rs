@@ -622,6 +622,14 @@ fn traced_nodes_to_json(traced: &[index::TracedNode]) -> Value {
 /// write/approval surface here: registration is CLI/control-plane only, and
 /// a source's presence never makes a fact human-reviewed.
 fn list_sources(config: &Config) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&list_sources_value(config))?)
+}
+
+/// Shared read-only source catalog shape. Both the MCP `list_sources` tool and
+/// the control API's `sources.list` (used by the OpenCode panels) go through
+/// this one builder so the two surfaces cannot drift apart. Presence in this
+/// catalog is provenance metadata only, never fact approval.
+pub(crate) fn list_sources_value(config: &Config) -> Value {
     let sources: Vec<Value> = config
         .sources
         .iter()
@@ -639,10 +647,10 @@ fn list_sources(config: &Config) -> Result<String> {
             })
         })
         .collect();
-    Ok(serde_json::to_string_pretty(&json!({
+    json!({
         "sources": sources,
         "note": "Registered with `nexus source add`; provenance metadata only, not fact approval.",
-    }))?)
+    })
 }
 
 fn index_repository(args: Value) -> Result<String> {

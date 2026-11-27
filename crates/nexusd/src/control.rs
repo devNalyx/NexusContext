@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Control API for the GUI/GNOME extension, not for MCP clients - same
 /// JSON-RPC framing as the stdio transport, but a distinct method
@@ -140,6 +140,14 @@ fn dispatch(method: &str, params: Value) -> Result<Value> {
     let call_start = std::time::Instant::now();
     let result = match method {
         "status.get" => status_get(),
+        // Read-only feeds for the OpenCode panels. `sources.list` reuses the
+        // MCP tool's builder so the two surfaces cannot disagree about what
+        // a registered source is (provenance, never fact approval).
+        "sources.list" => Ok(crate::tools::list_sources_value(&loaded_config())),
+        "logs.tail" => logs_tail(
+            &Paths::resolve().log_file(),
+            control_u64(&params, "limit", 200)?,
+        ),
         "projects.list" => projects_list(),
         "projects.reindex" => projects_reindex(params),
         "projects.delete" => projects_delete(params),
@@ -568,6 +576,24 @@ fn parse_rss_kb(contents: &str) -> Option<u64> {
     None
 }
 
+/// Bounded log tail for the panel's Logs tab. The GTK GUI used to read the
+/// log file directly from disk; moving that read behind the control socket
+/// keeps every UI client on the same transport and lets the limit stay
+/// bounded (the GUI hardcoded 300 lines). No user-supplied path is accepted,
+/// so this cannot be turned into an arbitrary file read.
+fn logs_tail(path: &Path, limit: u64) -> Result<Value> {
+    let limit = limit.clamp(1, 500) as usize;
+    let contents = std::fs::read_to_string(path)?;
+    let all: Vec<&str> = contents.lines().collect();
+    let start = all.len().saturating_sub(limit);
+    Ok(json!({
+        "path": path.display().to_string(),
+        "lines": &all[start..],
+        "truncated": start > 0,
+        "limit": limit,
+    }))
+}
+
 fn projects_list() -> Result<Value> {
     let paths = Paths::resolve();
     let registry = Registry::load(&paths.registry_file());
@@ -781,6 +807,55 @@ VmData:\t   10000 kB
     fn parse_rss_kb_returns_none_on_garbage_input() {
         assert_eq!(parse_rss_kb(""), None);
         assert_eq!(parse_rss_kb("VmRSS:\tnot-a-number kB\n"), None);
+    }
+
+    #[test]
+    fn logs_tail_returns_only_the_last_lines_with_a_truncation_flag() {
+        let dir = scratch_dir("log-tail");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("nexusd.log");
+        std::fs::write(&path, "one\ntwo\nthree\nfour\n").unwrap();
+
+        let value = logs_tail(&path, 2).unwrap();
+        assert_eq!(value["lines"], json!(["three", "four"]));
+        assert_eq!(value["truncated"], json!(true));
+        assert_eq!(value["limit"], json!(2));
+        assert_eq!(value["path"], json!(path.display().to_string()));
+
+        let all = logs_tail(&path, 99).unwrap();
+        assert_eq!(all["lines"], json!(["one", "two", "three", "four"]));
+        assert_eq!(all["truncated"], json!(false));
+        assert_eq!(all["limit"], json!(99));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn logs_tail_clamps_the_limit_and_accepts_an_empty_file() {
+        let dir = scratch_dir("log-clamp");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.log");
+        std::fs::write(&path, "").unwrap();
+
+        let value = logs_tail(&path, 0).unwrap();
+        assert_eq!(value["limit"], json!(1));
+        assert_eq!(value["lines"], json!([]));
+        assert_eq!(value["truncated"], json!(false));
+
+        let huge = logs_tail(&path, 10_000).unwrap();
+        assert_eq!(huge["limit"], json!(500));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sources_list_reuses_the_mcp_catalog_shape() {
+        let value = crate::tools::list_sources_value(&Config::default());
+        assert_eq!(value["sources"], json!([]));
+        assert!(value["note"]
+            .as_str()
+            .unwrap()
+            .contains("provenance metadata only, not fact approval"));
     }
 
     /// Sanity check against the real thing on the CI/dev Linux box this
