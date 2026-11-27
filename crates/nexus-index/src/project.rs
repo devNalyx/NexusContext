@@ -1,5 +1,5 @@
 use crate::graph::GraphStore;
-use crate::ingest::{index_directory_checked, IndexStats};
+use crate::ingest::{index_directory_checked_with_config, IndexStats};
 use anyhow::{bail, Result};
 use nexus_core::{project_hash, Config, Paths, ProjectEntry, Registry, WatcherConfig};
 use std::path::{Path, PathBuf};
@@ -194,7 +194,13 @@ fn index_project_inner(
 ) -> Result<IndexStats> {
     let db_path = graph_db_path(repo_path);
     let store = GraphStore::open(&db_path)?;
-    let mut stats = index_directory_checked(repo_path, &store, || is_superseded(generation))?;
+    let config = Config::load(&paths.config_file()).unwrap_or_default();
+    let mut stats = index_directory_checked_with_config(
+        repo_path,
+        &store,
+        || is_superseded(generation),
+        &config.config_index,
+    )?;
 
     if stats.superseded {
         // A newer request for this same project landed while this pass was
@@ -499,6 +505,11 @@ pub fn import_project(repo_path: &Path) -> Result<IndexStats> {
     // files_indexed = 0 signals "imported from artifact", not "walked from source".
     Ok(IndexStats {
         files_indexed: 0,
+        config_files_indexed: 0,
+        config_files_partial: 0,
+        config_files_unsupported: 0,
+        config_files_excluded: 0,
+        config_files_skipped: 0,
         nodes,
         edges,
         lsp_enrichment: None,

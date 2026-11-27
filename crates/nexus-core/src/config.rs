@@ -16,6 +16,11 @@ pub struct Config {
     pub tools: ToolsConfig,
     #[serde(default)]
     pub lsp: LspConfig,
+    /// Opt-in indexing of YAML/JSON configuration (issue #112). Off by default:
+    /// config frequently contains secrets, so content indexing must be a
+    /// deliberate choice with exclusions applied before ingestion.
+    #[serde(default)]
+    pub config_index: ConfigIndexConfig,
     /// Human-registered external knowledge sources (e.g. an Obsidian vault).
     /// Registration is deliberately a CLI/control-plane act, never an MCP
     /// write path - agents can discover sources via `list_sources`, not
@@ -166,6 +171,44 @@ impl Default for LspConfig {
     }
 }
 
+/// Opt-in source-linked YAML/JSON indexing for GitOps-style repositories.
+///
+/// Globs are matched against paths relative to the indexed repository root,
+/// and `exclude` always wins over `include`. `metadata_only` indexes key paths
+/// and source locations without storing raw file content in FTS - useful when
+/// values may contain secrets. This is not secret detection or redaction: it
+/// is a conservative content policy, not a safety guarantee.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigIndexConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_config_index_include")]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    #[serde(default)]
+    pub metadata_only: bool,
+}
+
+fn default_config_index_include() -> Vec<String> {
+    vec![
+        "**/*.yaml".to_string(),
+        "**/*.yml".to_string(),
+        "**/*.json".to_string(),
+    ]
+}
+
+impl Default for ConfigIndexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            include: default_config_index_include(),
+            exclude: Vec::new(),
+            metadata_only: false,
+        }
+    }
+}
+
 impl Config {
     /// Missing config file is not an error - defaults apply, matching the
     /// "useful with zero config" goal from the proposal.
@@ -251,6 +294,37 @@ fn write_config_file(path: &Path, contents: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_index_is_opt_in_with_safe_defaults() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(!config.config_index.enabled);
+        assert!(!config.config_index.metadata_only);
+        assert_eq!(
+            config.config_index.include,
+            vec![
+                "**/*.yaml".to_string(),
+                "**/*.yml".to_string(),
+                "**/*.json".to_string()
+            ]
+        );
+        assert!(config.config_index.exclude.is_empty());
+    }
+
+    #[test]
+    fn config_index_round_trips_custom_policy() {
+        let config: Config = toml::from_str(
+            "[config_index]\nenabled = true\ninclude = [\"**/*.yml\"]\nexclude = [\"**/secrets/**\"]\nmetadata_only = true\n",
+        )
+        .unwrap();
+        assert!(config.config_index.enabled);
+        assert!(config.config_index.metadata_only);
+        assert_eq!(config.config_index.include, vec!["**/*.yml".to_string()]);
+        assert_eq!(
+            config.config_index.exclude,
+            vec!["**/secrets/**".to_string()]
+        );
+    }
 
     #[test]
     fn tools_config_defaults_to_standard_preset_with_no_enabled_override() {

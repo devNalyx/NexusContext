@@ -201,6 +201,14 @@ fn main() -> Result<()> {
                 index_project(&path)?
             };
             println!("indexed {} files", stats.files_indexed);
+            println!(
+                "config: {} indexed, {} partial, {} unsupported, {} excluded, {} skipped",
+                stats.config_files_indexed,
+                stats.config_files_partial,
+                stats.config_files_unsupported,
+                stats.config_files_excluded,
+                stats.config_files_skipped
+            );
             println!("nodes: {}, edges: {}", stats.nodes, stats.edges);
             if let Some(report) = &stats.lsp_enrichment {
                 println!(
@@ -362,7 +370,20 @@ fn main() -> Result<()> {
                 println!("no matches for '{query}'");
             }
             for hit in hits {
-                println!("{}\n  {}\n", hit.file_path, hit.snippet);
+                if let Some(key_path) = &hit.key_path {
+                    println!(
+                        "{} (doc {}, key {}, lines {:?}-{:?}, status {})\n  {}\n",
+                        hit.file_path,
+                        hit.document.unwrap_or(0),
+                        key_path,
+                        hit.start_line,
+                        hit.end_line,
+                        hit.parse_status.as_deref().unwrap_or("unknown"),
+                        hit.snippet
+                    );
+                } else {
+                    println!("{}\n  {}\n", hit.file_path, hit.snippet);
+                }
             }
         }
         Command::QueryGraph {

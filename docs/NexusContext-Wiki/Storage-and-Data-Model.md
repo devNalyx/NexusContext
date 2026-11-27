@@ -24,7 +24,9 @@ filesystem-safe.
 SQLite, **WAL journal mode** — lets `nexusd serve` and a `nexusd mcp`
 session hold concurrent connections to the same graph without one locking
 out the other. Node kinds: `File`, `Function`, `Type`, `Section` (a
-markdown heading — see [[Indexing-Pipeline]]). Edge kinds: `Defines`,
+markdown heading, or — when `[config_index]` is enabled — a YAML/JSON key
+location with document number, dotted key path, parse status and 1-based
+line range encoded in `qualified_name`; see [[Indexing-Pipeline]]). Edge kinds: `Defines`,
 `Calls`, `Contains`, `CallsResolved` (`CALLS_RESOLVED` — an LSP-resolved
 call edge, issue #10; only present after an explicit `deep` reindex with
 `[lsp] enabled = true`, and always stored *alongside* whatever `Calls`

@@ -16,7 +16,7 @@ nexus trace SomeFunction --project /path/to/project --direction inbound
 nexus architecture --project /path/to/project
 nexus dead-code --project /path/to/project
 nexus dead-code --project /path/to/project --path-prefix pkg/events  # scope to a subdirectory (monorepos)
-nexus search-code "some literal text" --project /path/to/project
+nexus search-code "some literal text" --project /path/to/project   # config hits show doc/key path/lines/status when [config_index] is on
 nexus detect-changes --project /path/to/project    # uncommitted git diff -> affected symbols
 nexus query-planner "some question" --project /path/to/project
 nexus query-graph "MATCH (a:Function)-[:CALLS]->(b:Function) RETURN b" --project /path/to/project

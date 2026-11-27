@@ -44,8 +44,27 @@ feeds full-text search and `search_graph` identically to code.
 
 SQLite FTS5 over every file tree-sitter parses (one of the 11 supported
 languages) plus markdown. Query matched as a literal phrase via
-`search_code`. Other file types (plain `.txt`, config files, etc.) aren't
-indexed for full-text search yet.
+`search_code`.
+
+## YAML/JSON config is opt-in (issue #112)
+
+With `[config_index] enabled = true`, `.yaml`/`.yml`/`.json` files are indexed
+too — deliberately off by default because config frequently holds secrets.
+Include/exclude globs are applied to repository-relative paths **before a
+file is read**, and `exclude` always wins. Key locations are stored as the
+same `NodeKind::Section` nodes markdown uses, with 1-based line ranges and
+document numbers encoded in `qualified_name`; raw text and key paths go into
+the existing FTS5 table (no second index, no new MCP tool).
+
+Parse states are explicit: `parsed`, `partial` (duplicate keys, aliases,
+unsupported tags — line locations are still usable), and `unsupported`
+(invalid syntax or unrendered template markers — literal-text fallback only).
+Template markers are detected generically (`{{ ... }}`, `${{ ... }}`); no
+templating language is rendered or evaluated — Helm, Jinja/Ansible, GitHub
+Actions expressions, Kustomize, and plain manifests are all treated the same.
+`metadata_only = true` stores key paths and locations but no raw values.
+Helm rendering, effective-values merging, federation, and cluster access are
+out of scope — see [[Known-Limitations]].
 
 ## Minified/bundled files are handled specially, so they can't OOM the daemon
 

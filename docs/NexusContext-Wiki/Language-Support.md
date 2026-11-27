@@ -6,6 +6,11 @@ solid for **all 11** — this table is specifically about call-graph edge
 quality, which depends on how complete each language's own community-
 maintained tags query is.
 
+YAML/JSON are **not** tree-sitter languages here: with `[config_index]
+enabled = true` they produce `Section` key locations and FTS hits, never
+function/type definitions or call edges. See [[Indexing-Pipeline]] and
+[[Known-Limitations]].
+
 ## Full call graph (functions, types, and call edges all resolve)
 
 Rust, Python, JavaScript, TypeScript/TSX, Go, Java, Ruby.
