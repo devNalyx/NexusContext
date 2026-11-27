@@ -1007,6 +1007,104 @@ fn extract_yaml_keys(text: &str) -> Vec<ConfigKey> {
     keys
 }
 
+/// Every mapping key path in a validated YAML value tree, including paths
+/// the line scanner cannot see (flow-style `{inner: true}` mappings and maps
+/// inside sequences). Sequence components are 1-based to match the scanner.
+fn collect_yaml_paths(value: &serde_yaml::Value, prefix: &str, out: &mut Vec<String>) {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            for (key, child) in map {
+                let Some(name) = key.as_str() else {
+                    continue;
+                };
+                let path = if prefix.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{prefix}.{name}")
+                };
+                out.push(path.clone());
+                collect_yaml_paths(child, &path, out);
+            }
+        }
+        serde_yaml::Value::Sequence(items) => {
+            for (idx, child) in items.iter().enumerate() {
+                collect_yaml_paths(child, &format!("{prefix}[{}]", idx + 1), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn yaml_path_parent(path: &str) -> String {
+    let cut = path.rfind('.').or_else(|| path.rfind('['));
+    cut.map(|idx| path[..idx].to_string()).unwrap_or_default()
+}
+
+/// Adds key paths from the already-validated value tree that the line scanner
+/// missed, so `parsed` means every mapping key in the document is searchable.
+/// Anchors come from the nearest scanned ancestor: locations stay provenance
+/// leads, not byte offsets. This reads syntax only — no rendering, no
+/// evaluation, no command execution (issue #124).
+fn augment_yaml_keys_from_tree(text: &str, keys: &mut Vec<ConfigKey>) -> bool {
+    let line_count = text.lines().count().max(1) as u32;
+    let mut anchors: HashMap<(u32, String), (u32, usize)> = keys
+        .iter()
+        .map(|key| {
+            (
+                (key.doc, key.key_path.clone()),
+                (key.start_line, key.indent),
+            )
+        })
+        .collect();
+    let mut added = false;
+    // Stop at the first failed document: serde_yaml's deserializer does not
+    // advance the reader when `Value::deserialize` errors, so `continue`
+    // here would re-yield the same broken document forever. `config_status`
+    // marks the file unsupported; there is no tree worth augmenting.
+    let mut parsed_docs = Vec::new();
+    for doc in serde_yaml::Deserializer::from_str(text) {
+        match serde_yaml::Value::deserialize(doc) {
+            Ok(value) => parsed_docs.push(value),
+            Err(_) => break,
+        }
+    }
+    for (doc_index, value) in parsed_docs.into_iter().enumerate() {
+        let doc_no = doc_index as u32 + 1;
+        let mut paths = Vec::new();
+        collect_yaml_paths(&value, "", &mut paths);
+        for path in paths {
+            if anchors.contains_key(&(doc_no, path.clone())) {
+                continue;
+            }
+            let parent = yaml_path_parent(&path);
+            let (start, indent) = anchors
+                .iter()
+                .filter(|((anchor_doc, ancestor), _)| {
+                    *anchor_doc == doc_no
+                        && !ancestor.is_empty()
+                        && (parent == *ancestor
+                            || parent.starts_with(&format!("{ancestor}."))
+                            || parent.starts_with(&format!("{ancestor}[")))
+                })
+                .max_by_key(|((_, ancestor), _)| ancestor.len())
+                .map(|(_, anchor)| *anchor)
+                .unwrap_or((1, 0));
+            keys.push(ConfigKey {
+                doc: doc_no,
+                key_path: path.clone(),
+                parent,
+                indent: indent + 2,
+                start_line: start,
+                end_line: start,
+                doc_end_line: line_count,
+            });
+            anchors.insert((doc_no, path), (start, indent + 2));
+            added = true;
+        }
+    }
+    added
+}
+
 /// One open JSON container while scanning for key locations. `path` is the
 /// prefix for keys inside this container; arrays use 1-based `[n]` elements
 /// so repeated leaf names under different parents stay distinct (issue #120).
@@ -1201,53 +1299,61 @@ fn finish_key_ranges(keys: &mut [ConfigKey]) {
 fn config_status(text: &str, is_json: bool, keys: &[ConfigKey]) -> (ConfigStatus, String) {
     // Deliberately generic: `{{ ... }}` can be Helm, Jinja/Ansible, or any
     // other unrendered template; `${{ ... }}` is common in GitHub Actions.
-    // We never render or evaluate any of them - they are simply outside the
-    // parseable subset, with bounded literal-text fallback instead.
+    // We never render or evaluate any of them. The syntax check comes FIRST:
+    // a quoted template-like string is still valid YAML/JSON, so its static
+    // keys stay indexed with a `template_syntax` note; only genuinely
+    // unparseable template syntax is unsupported (#124).
     // `}}` alone is ordinary JSON (nested object closes), so only the
-    // opening marker is consulted; `${{ ... }}` covers GitHub Actions-style
-    // expressions embedded in JSON strings too.
-    let has_template = if is_json {
-        text.contains("${{")
+    // opening marker is consulted.
+    let has_template = text.contains("{{");
+
+    // Parse the document before deciding whether template markers matter.
+    let parse_error = if is_json {
+        serde_json::from_str::<serde_json::Value>(text).is_err()
     } else {
-        text.contains("{{")
+        let docs = serde_yaml::Deserializer::from_str(text);
+        docs.into_iter()
+            .any(|doc| serde_yaml::Value::deserialize(doc).is_err())
     };
-    if has_template {
-        return (ConfigStatus::Unsupported, "template_syntax".to_string());
-    }
 
     let mut seen: HashSet<(u32, &str)> = HashSet::new();
     let has_duplicate = keys
         .iter()
         .any(|key| !seen.insert((key.doc, key.key_path.as_str())));
 
-    if is_json {
-        if serde_json::from_str::<serde_json::Value>(text).is_err() {
-            // No parser error text: it can quote source snippets, which may
-            // contain secret values we do not want in graph.db.
+    if parse_error {
+        // No parser error text: it can quote source snippets, which may
+        // contain secret values we do not want in graph.db. Template markers
+        // are the useful compact label when they are the reason the document
+        // cannot be parsed at all (#124).
+        if has_template {
+            return (ConfigStatus::Unsupported, "template_syntax".to_string());
+        }
+        if is_json {
             return (ConfigStatus::Unsupported, "invalid_json".to_string());
         }
-    } else {
-        let docs = serde_yaml::Deserializer::from_str(text);
-        for doc in docs {
-            if serde_yaml::Value::deserialize(doc).is_err() {
-                // A duplicate key is a well-known config pattern, not a
-                // reason to throw away the source-linked key locations: keep
-                // them as a partial index with an explicit note.
-                return if has_duplicate {
-                    (
-                        ConfigStatus::Partial,
-                        "duplicate_key_invalid_yaml".to_string(),
-                    )
-                } else {
-                    (ConfigStatus::Unsupported, "invalid_yaml".to_string())
-                };
-            }
-        }
+        // A duplicate key is a well-known config pattern, not a reason to
+        // throw away the source-linked key locations: keep them as a partial
+        // index with an explicit note.
+        return if has_duplicate {
+            (
+                ConfigStatus::Partial,
+                "duplicate_key_invalid_yaml".to_string(),
+            )
+        } else {
+            (ConfigStatus::Unsupported, "invalid_yaml".to_string())
+        };
     }
 
     let mut notes = Vec::new();
     if has_duplicate {
         notes.push("duplicate_key".to_string());
+    }
+    // Valid syntax does not mean the values are renderable: keep the static
+    // keys and mark the file so metadata-only callers know the template-like
+    // strings are literal text, never evaluated (#124).
+    if has_template {
+        notes.push("template_syntax".to_string());
     }
     static ALIAS_RE: OnceLock<Regex> = OnceLock::new();
     let alias_re = ALIAS_RE.get_or_init(|| {
@@ -1306,7 +1412,14 @@ fn index_config_file(
     let mut keys = if is_json {
         extract_json_keys(&text)
     } else {
-        extract_yaml_keys(&text)
+        let mut keys = extract_yaml_keys(&text);
+        // Flow mappings are valid YAML but invisible to a line scanner; fill
+        // their key paths from the validated tree before computing ranges
+        // and status (#124). The boolean is intentionally unused: complete
+        // tree coverage makes a separate "incomplete structure" flag
+        // unnecessary; template/alias/tag notes remain the compact signals.
+        let _ = augment_yaml_keys_from_tree(&text, &mut keys);
+        keys
     };
     finish_key_ranges(&mut keys);
     let (status, note) = config_status(&text, is_json, &keys);
@@ -2488,17 +2601,78 @@ mod config_index_tests {
     }
 
     #[test]
-    fn partial_duplicate_keys_and_unsupported_templates_are_labelled() {
+    fn quoted_template_string_keeps_static_keys_and_marks_the_file() {
+        let dir = temp_project("quoted_template");
+        fs::write(
+            dir.join("templated.yaml"),
+            "stable:\n  enabled: true\nmessage: \"{{ .Status }}\"\n",
+        )
+        .unwrap();
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        let stats = index_directory_with_config(&dir, &store, &enabled()).unwrap();
+        assert_eq!(stats.config_files_partial, 1);
+        assert_eq!(stats.config_files_unsupported, 0);
+
+        let hits = store.search_code("stable", 10).unwrap();
+        assert!(
+            hits.iter()
+                .any(|hit| hit.key_path.as_deref() == Some("stable.enabled")),
+            "static keys must survive a quoted template string: {hits:?}"
+        );
+        let nodes = store.search_by_name("stable.enabled", 10).unwrap();
+        assert!(nodes.iter().any(|node| {
+            node.qualified_name.contains("#status=partial")
+                && node.qualified_name.contains("#note=template_syntax")
+        }));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flow_mapping_keys_are_indexed_from_the_validated_tree() {
+        let dir = temp_project("flow_mapping");
+        fs::write(
+            dir.join("flow.yaml"),
+            "outer: {inner: true, nested: {deep: 1}}\nlist: [{name: first}]\n",
+        )
+        .unwrap();
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        let stats = index_directory_with_config(&dir, &store, &enabled()).unwrap();
+        assert_eq!(stats.config_files_indexed, 1);
+        assert_eq!(stats.config_files_partial, 0);
+
+        for path in ["outer.inner", "outer.nested.deep", "list[1].name"] {
+            let hits = store.search_code(path, 10).unwrap();
+            assert!(
+                hits.iter().any(|hit| hit.key_path.as_deref() == Some(path)),
+                "missing flow key {path}: {hits:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn genuinely_unparseable_template_remains_unsupported() {
+        let (status, note) = super::config_status("bad: {{ .Values.host }", false, &[]);
+        assert_eq!(status.as_str(), "unsupported");
+        assert_eq!(note, "template_syntax");
+    }
+
+    #[test]
+    fn partial_duplicates_and_unparseable_templates_are_labelled() {
         let dir = temp_project("states");
         fs::write(
             dir.join("duplicate.yaml"),
             "service:\n  port: 80\nservice:\n  port: 8080\n",
         )
         .unwrap();
+        // Valid YAML: the template-like text is a flow mapping, so its static
+        // keys survive with a partial/template_syntax label (#124).
         fs::write(dir.join("template.yaml"), "image: {{ .Values.image }}\n").unwrap();
+        // Genuinely unparseable: no key nodes, literal fallback only.
+        fs::write(dir.join("broken.yaml"), "bad: {{ .Values.host }").unwrap();
         let store = GraphStore::open(&dir.join("graph.db")).unwrap();
         let stats = index_directory_with_config(&dir, &store, &enabled()).unwrap();
-        assert_eq!(stats.config_files_partial, 1);
+        assert_eq!(stats.config_files_partial, 2);
         assert_eq!(stats.config_files_unsupported, 1);
 
         let duplicate: Vec<_> = store
@@ -2511,14 +2685,26 @@ mod config_index_tests {
         assert!(duplicate[0].qualified_name.contains("#status=partial"));
         assert!(duplicate[0].qualified_name.contains("duplicate_key"));
 
-        let template = store.search_by_name("<document>", 10).unwrap();
+        let template: Vec<_> = store
+            .search_by_name("image", 10)
+            .unwrap()
+            .into_iter()
+            .filter(|node| node.name == "image")
+            .collect();
         assert_eq!(template.len(), 1);
-        assert!(template[0].qualified_name.contains("#status=unsupported"));
+        assert!(template[0].qualified_name.contains("#status=partial"));
         assert!(template[0].qualified_name.contains("template_syntax"));
-        // Unsupported files remain searchable as bounded literal text.
+
+        let broken = store.search_by_name("<document>", 10).unwrap();
+        assert_eq!(broken.len(), 1);
+        assert!(broken[0].qualified_name.contains("#status=unsupported"));
+        assert!(broken[0].qualified_name.contains("template_syntax"));
+        // Both files remain searchable as bounded literal text.
         let hits = store.search_code(".Values.image", 10).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].parse_status.as_deref(), Some("unsupported"));
+        assert!(!hits.is_empty());
+        assert!(hits
+            .iter()
+            .all(|h| h.parse_status.as_deref() == Some("partial")));
         let _ = fs::remove_dir_all(&dir);
     }
 

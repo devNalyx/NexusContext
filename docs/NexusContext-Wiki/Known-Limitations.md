@@ -139,15 +139,20 @@ at all.
 With `[config_index]` enabled, YAML/JSON key locations and literal text are
 indexed — no Helm/Jinja/template rendering, no effective-values merging, no
 cross-repository GitOps relationship edges, no federation, and no cluster or
-network access (issue #112). `partial`/`unsupported` files are labelled and
-remain literal-text-only. JSON keys keep their real nesting (including array
-indices) and YAML literal/folded block-scalar bodies are never treated as
-keys; key ranges end at same-level siblings and document boundaries (#120,
-#121). Locations still come from bounded scanners, not a full AST with byte
-offsets, so they're provenance leads rather than semantic truth: flow
-mappings, quoted template-like strings, aliases and effective-value merging
-remain incomplete or explicitly limited. `metadata_only` avoids storing raw
-values but is not secret detection or redaction.
+network access (issue #112). JSON keys keep their real nesting (including
+array indices); YAML literal/folded block-scalar bodies are never treated as
+keys, and key ranges end at same-level siblings and document boundaries
+(#120, #121). For YAML, `parsed` now means the document is syntactically valid
+**and** every mapping key path in the parsed value tree is searchable — flow
+mappings and maps inside sequences included (#124). Flow-derived keys are
+anchored at their nearest scanned ancestor, so their line ranges are
+provenance leads, not byte-accurate spans. A quoted template-like string is
+still valid YAML/JSON: static keys stay indexed with a `template_syntax`
+`partial` label; only genuinely unparseable template syntax is `unsupported`
+(literal-text fallback only). Aliases, custom tags and effective-value
+merging are never resolved — `anchor_or_alias` / `unsupported_tag` notes mark
+those files. `metadata_only` avoids storing raw values but is not secret
+detection or redaction.
 
 ## Related
 
