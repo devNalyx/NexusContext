@@ -162,8 +162,9 @@ for `get_session_usage` joining `standard`, and Phase 31 for its
 `schema_tax`/`reads_avoided` fields.
 
 Every tool here works identically on Linux, macOS, and Windows — none of
-them depend on `nexusd serve` (the control API, background watcher, GUI
-target), which is the one piece not yet ported to Windows. See
+them depend on `nexusd serve` (the control API behind the OpenCode panels,
+background watcher, legacy GUI target), which is the one piece not yet
+ported to Windows. See
 [[Known-Limitations]].
 
 ## Related
