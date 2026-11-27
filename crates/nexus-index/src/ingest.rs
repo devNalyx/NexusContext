@@ -880,10 +880,21 @@ fn extract_yaml_keys(text: &str) -> Vec<ConfigKey> {
     let mut stack: Vec<(usize, String)> = Vec::new();
     // 1-based sequence-item counters, keyed by the `- ` line's indentation.
     let mut array_indices: HashMap<usize, usize> = HashMap::new();
+    // Indentation of the key that opened a literal/folded block scalar.
+    // Lines more indented than that are scalar *content*, not mappings -
+    // scanning them would fabricate keys like `message.phantom` (#121).
+    let mut block_scalar_indent: Option<usize> = None;
 
     for (idx, raw) in lines.iter().enumerate() {
         let line_no = idx as u32 + 1;
         let trimmed = raw.trim();
+        let indent = raw.len() - raw.trim_start().len();
+        if let Some(scalar_indent) = block_scalar_indent {
+            if trimmed.is_empty() || indent > scalar_indent {
+                continue;
+            }
+            block_scalar_indent = None;
+        }
         if trimmed == "---" {
             // A leading `---` opens document 1; each later one opens the
             // next document, matching serde_yaml's document numbering.
@@ -905,7 +916,6 @@ fn extract_yaml_keys(text: &str) -> Vec<ConfigKey> {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        let indent = raw.len() - raw.trim_start().len();
         let content = strip_yaml_comment(trimmed).trim();
         if content.is_empty() {
             continue;
@@ -966,6 +976,19 @@ fn extract_yaml_keys(text: &str) -> Vec<ConfigKey> {
             end_line: line_no,
             doc_end_line: line_count,
         });
+        // `|` / `>` (with optional chomping/indent indicators) introduce a
+        // block scalar. Its body is text, even when it contains `key: value`
+        // shaped lines - skip it instead of inventing nested keys (#121).
+        let value = content[colon + 1..].trim_start();
+        if let Some(indicator) = value.chars().next() {
+            if matches!(indicator, '|' | '>')
+                && value[1..]
+                    .chars()
+                    .all(|c| c == '-' || c == '+' || c.is_ascii_digit())
+            {
+                block_scalar_indent = Some(indent);
+            }
+        }
         keys_in_doc = true;
         // For a sequence item, subsequent sibling keys belong to the array
         // element, not to the first item's scalar key.
@@ -984,25 +1007,170 @@ fn extract_yaml_keys(text: &str) -> Vec<ConfigKey> {
     keys
 }
 
-/// JSON keys are validated with `serde_json`; line locations come from a
-/// bounded scan for `"key":` occurrences, so they are source-linked without
-/// pretending to be a full JSON AST with byte offsets.
+/// One open JSON container while scanning for key locations. `path` is the
+/// prefix for keys inside this container; arrays use 1-based `[n]` elements
+/// so repeated leaf names under different parents stay distinct (issue #120).
+#[derive(Debug)]
+enum JsonFrame {
+    Object {
+        path: String,
+        last_key: Option<String>,
+    },
+    Array {
+        path: String,
+        next: usize,
+        pending: bool,
+    },
+}
+
+impl JsonFrame {
+    /// Path of the child value that starts here: the last object key, or the
+    /// next array element.
+    fn child_path(&self) -> String {
+        match self {
+            Self::Object { path, last_key } => match last_key {
+                Some(key) if path.is_empty() => key.clone(),
+                Some(key) => format!("{path}.{key}"),
+                None => path.clone(),
+            },
+            Self::Array { path, next, .. } => format!("{path}[{next}]"),
+        }
+    }
+}
+
+/// Records the start of a JSON value. If the current container is an array,
+/// that consumes one element index; otherwise the enclosing object's last key
+/// supplies the path. Returns the path to use when the value opens a nested
+/// container.
+fn json_value_path(frames: &mut [JsonFrame]) -> String {
+    match frames.last_mut() {
+        Some(JsonFrame::Array {
+            path,
+            next,
+            pending,
+        }) => {
+            let element = format!("{path}[{next}]");
+            *next += 1;
+            *pending = false;
+            element
+        }
+        Some(frame) => frame.child_path(),
+        None => String::new(),
+    }
+}
+
+/// Structural JSON key paths with source lines. `serde_json` validates the
+/// document separately in `config_status`; this bounded character scan only
+/// supplies paths and locations, without building an AST or storing values.
+/// It handles compact and formatted JSON, arrays and escaped keys.
 fn extract_json_keys(text: &str) -> Vec<ConfigKey> {
-    let re = Regex::new(r#""((?:\\.|[^"\\])*)"\s*:"#).expect("static JSON key regex");
-    let lines: Vec<&str> = text.lines().collect();
+    let bytes = text.as_bytes();
+    let doc_end_line = text.lines().count().max(1) as u32;
+    let mut frames: Vec<JsonFrame> = Vec::new();
     let mut keys = Vec::new();
-    for (idx, line) in lines.iter().enumerate() {
-        for caps in re.captures_iter(line) {
-            let key = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
-            keys.push(ConfigKey {
-                doc: 1,
-                key_path: key.to_string(),
-                parent: String::new(),
-                indent: 0,
-                start_line: idx as u32 + 1,
-                end_line: idx as u32 + 1,
-                doc_end_line: lines.len().max(1) as u32,
-            });
+    let mut line = 1u32;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                line += 1;
+                i += 1;
+            }
+            b' ' | b'\t' | b'\r' => i += 1,
+            b'"' => {
+                let start_line = line;
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i = (i + 2).min(bytes.len()),
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        b'\n' => {
+                            line += 1;
+                            i += 1;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                let token = text.get(start..i).unwrap_or_default();
+                let mut lookahead = i;
+                while lookahead < bytes.len()
+                    && matches!(bytes[lookahead], b' ' | b'\t' | b'\r' | b'\n')
+                {
+                    if bytes[lookahead] == b'\n' {
+                        line += 1;
+                    }
+                    lookahead += 1;
+                }
+                if lookahead < bytes.len() && bytes[lookahead] == b':' {
+                    // A string followed by ':' is an object key. Decode via
+                    // serde_json so escapes never invent a path component.
+                    let decoded = serde_json::from_str::<String>(token)
+                        .unwrap_or_else(|_| token.trim_matches('"').to_string());
+                    let indent = frames.len() * 2;
+                    if let Some(JsonFrame::Object { path, last_key }) = frames.last_mut() {
+                        let key_path = if path.is_empty() {
+                            decoded.clone()
+                        } else {
+                            format!("{path}.{decoded}")
+                        };
+                        keys.push(ConfigKey {
+                            doc: 1,
+                            key_path,
+                            parent: path.clone(),
+                            indent,
+                            start_line,
+                            end_line: start_line,
+                            doc_end_line,
+                        });
+                        *last_key = Some(decoded);
+                    }
+                    i = lookahead + 1;
+                } else {
+                    json_value_path(&mut frames);
+                }
+            }
+            b'{' | b'[' => {
+                let path = json_value_path(&mut frames);
+                if bytes[i] == b'{' {
+                    frames.push(JsonFrame::Object {
+                        path,
+                        last_key: None,
+                    });
+                } else {
+                    frames.push(JsonFrame::Array {
+                        path,
+                        next: 0,
+                        pending: true,
+                    });
+                }
+                i += 1;
+            }
+            b'}' | b']' => {
+                frames.pop();
+                i += 1;
+            }
+            b',' => {
+                if let Some(JsonFrame::Array { pending, .. }) = frames.last_mut() {
+                    *pending = true;
+                }
+                i += 1;
+            }
+            b':' => i += 1,
+            _ => {
+                // Primitive value (number, true/false/null): consume an array
+                // slot if needed, then skip the token.
+                json_value_path(&mut frames);
+                while i < bytes.len()
+                    && !matches!(bytes[i], b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n')
+                {
+                    i += 1;
+                }
+            }
         }
     }
     keys
@@ -1010,19 +1178,23 @@ fn extract_json_keys(text: &str) -> Vec<ConfigKey> {
 
 fn finish_key_ranges(keys: &mut [ConfigKey]) {
     for i in 0..keys.len() {
-        // A key's subtree ends just before the next key in the same document
-        // at the same or a shallower indentation - not at the next key of
-        // any depth (that would cut nested values out of the range).
+        // A key's subtree ends at the next key in the same document at the
+        // same or a shallower indentation - same-level siblings included,
+        // otherwise `alpha` would swallow `beta` (issue #121). Deeper keys
+        // stay inside the range, and a document boundary is a hard cap.
         let next = keys
             .iter()
             .skip(i + 1)
             .find(|k| {
                 k.doc == keys[i].doc
-                    && k.indent < keys[i].indent
+                    && k.indent <= keys[i].indent
                     && k.start_line > keys[i].start_line
             })
             .map(|k| k.start_line.saturating_sub(1));
-        keys[i].end_line = next.unwrap_or(keys[i].doc_end_line).max(keys[i].start_line);
+        let end = next
+            .unwrap_or(keys[i].doc_end_line)
+            .min(keys[i].doc_end_line);
+        keys[i].end_line = end.max(keys[i].start_line);
     }
 }
 
@@ -2081,7 +2253,9 @@ mod config_index_tests {
         assert_eq!(keys.len(), 1, "expected one nested key node: {keys:?}");
         assert!(keys[0].qualified_name.contains("#doc=1#"));
         assert!(keys[0].qualified_name.contains("#status=parsed"));
-        assert_eq!((keys[0].start_line, keys[0].end_line), (3, 4));
+        // `enabled`'s subtree is line 3 only; line 4 is its same-level
+        // sibling `endpoint`, not part of the range (issue #121).
+        assert_eq!((keys[0].start_line, keys[0].end_line), (3, 3));
 
         let replicas = store.search_by_name("replicas", 10).unwrap();
         assert_eq!(replicas.len(), 1);
@@ -2156,6 +2330,116 @@ mod config_index_tests {
         let hits = store.search_code("telemetry.enabled", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert!(hits[0].snippet.contains("key_path:telemetry.enabled"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nested_json_keys_keep_distinct_paths_and_locations() {
+        let dir = temp_project("json_nesting");
+        fs::write(
+            dir.join("nested.json"),
+            "{\"left\":{\"enabled\":true},\"right\":{\"enabled\":false}}\n",
+        )
+        .unwrap();
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        let stats = index_directory_with_config(&dir, &store, &enabled()).unwrap();
+        assert_eq!(stats.config_files_indexed, 1);
+        assert_eq!(
+            stats.config_files_partial, 0,
+            "same leaf under two parents is not a duplicate"
+        );
+
+        for path in ["left.enabled", "right.enabled"] {
+            let nodes = store.search_by_name(path, 10).unwrap();
+            assert_eq!(nodes.len(), 1, "missing nested path {path}: {nodes:?}");
+            assert!(nodes[0].qualified_name.contains("#status=parsed"));
+            assert!(!nodes[0].qualified_name.contains("#note=duplicate_key"));
+        }
+        let hits = store.search_code("left.enabled", 10).unwrap();
+        assert_eq!(hits.len(), 1, "nested key must be searchable: {hits:?}");
+        assert_eq!(hits[0].key_path.as_deref(), Some("left.enabled"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn genuine_json_duplicates_are_still_flagged() {
+        let dir = temp_project("json_duplicate");
+        fs::write(
+            dir.join("dup.json"),
+            "{\"service\":{\"port\":1},\"service\":{\"port\":2}}\n",
+        )
+        .unwrap();
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        let stats = index_directory_with_config(&dir, &store, &enabled()).unwrap();
+        assert_eq!(stats.config_files_partial, 1);
+        let nodes = store.search_by_name("service.port", 10).unwrap();
+        assert!(!nodes.is_empty());
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.qualified_name.contains("#note=duplicate_key")),
+            "real same-object duplicates must stay visible: {nodes:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn yaml_block_scalar_text_never_becomes_a_key() {
+        let dir = temp_project("yaml_scalar");
+        fs::write(
+            dir.join("block.yaml"),
+            "message: |\n  phantom: this is scalar text\nreal:\n  enabled: true\n",
+        )
+        .unwrap();
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        index_directory_with_config(&dir, &store, &enabled()).unwrap();
+        assert!(store
+            .search_by_name("message.phantom", 10)
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .search_code("phantom", 10)
+            .unwrap()
+            .iter()
+            .all(|hit| hit.key_path.as_deref() != Some("message.phantom")));
+        assert_eq!(store.search_by_name("real.enabled", 10).unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn yaml_ranges_stop_at_same_level_siblings_and_keep_indentation() {
+        let dir = temp_project("yaml_ranges");
+        fs::write(
+            dir.join("ranges.yaml"),
+            "alpha:\n  enabled: true\nbeta:\n  count: 2\n",
+        )
+        .unwrap();
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        index_directory_with_config(&dir, &store, &enabled()).unwrap();
+        let alpha: Vec<_> = store
+            .search_by_name("alpha", 10)
+            .unwrap()
+            .into_iter()
+            .filter(|node| node.name == "alpha")
+            .collect();
+        assert_eq!(alpha.len(), 1);
+        assert_eq!((alpha[0].start_line, alpha[0].end_line), (1, 2));
+
+        let hits = store.search_code("alpha", 10).unwrap();
+        let hit = hits
+            .iter()
+            .find(|hit| hit.key_path.as_deref() == Some("alpha"))
+            .expect("alpha hit");
+        assert!(
+            !hit.snippet.contains("beta"),
+            "sibling leaked: {}",
+            hit.snippet
+        );
+        assert!(
+            hit.snippet.contains("  enabled: true"),
+            "indentation was stripped: {:?}",
+            hit.snippet
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

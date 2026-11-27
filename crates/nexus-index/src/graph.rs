@@ -156,13 +156,15 @@ fn config_excerpt(content: &str, start_line: u32, end_line: u32, query: &str) ->
                 .skip(start_line.saturating_sub(1) as usize)
                 .take((end_line.saturating_sub(start_line) + 1) as usize)
                 .take(3)
-                .map(|line| line.trim().to_string()),
+                // Preserve leading indentation: it is what tells a reader
+                // which parent a YAML key belongs to (#121).
+                .map(|line| line.trim_end().to_string()),
         );
     }
     if excerpt.is_empty() {
         for line in content.lines() {
             if line.to_lowercase().contains(&needle) {
-                excerpt.push(line.trim().to_string());
+                excerpt.push(line.trim_end().to_string());
                 if excerpt.len() == 3 {
                     break;
                 }
