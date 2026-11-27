@@ -1,9 +1,10 @@
 use crate::graph::{EdgeKind, GraphStore, NodeKind};
 use crate::language::{self, Language};
+use crate::vault::normalized_path_key;
 use anyhow::{bail, Result};
 use ignore::overrides::{Override, OverrideBuilder};
 use ignore::{Match, WalkBuilder};
-use nexus_core::ConfigIndexConfig;
+use nexus_core::{Config, ConfigIndexConfig, Paths};
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -190,6 +191,12 @@ pub fn content_signature(root: &Path) -> u64 {
 pub fn content_signature_with_config(root: &Path, config: &ConfigIndexConfig) -> u64 {
     use std::hash::{Hash, Hasher};
 
+    // Toggling vault indexing changes what a reindex would store even when
+    // no file changed, so fold the gate into the watcher's signature.
+    let vault_index_enabled = Config::load(&Paths::resolve().config_file())
+        .map(|loaded| loaded.vault_index.enabled)
+        .unwrap_or(false);
+
     let config_matcher = build_config_matcher(config, root);
     let walker = WalkBuilder::new(root)
         .add_custom_ignore_filename(".nexusignore")
@@ -222,8 +229,9 @@ pub fn content_signature_with_config(root: &Path, config: &ConfigIndexConfig) ->
     entries.sort();
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    // Include the policy itself so changing include/exclude/metadata_only is
-    // observable to the watcher even when no source file changed.
+    // Include the policy itself so changing include/exclude/metadata_only or
+    // the vault gate is observable to the watcher even with no file edits.
+    vault_index_enabled.hash(&mut hasher);
     config.enabled.hash(&mut hasher);
     config.metadata_only.hash(&mut hasher);
     config.include.hash(&mut hasher);
@@ -296,6 +304,14 @@ fn index_directory_inner(
     store.clear()?;
 
     let config_matcher = build_config_matcher(config, root);
+    // Vault metadata is opt-in and independent of `[config_index]`. Loading
+    // the user config here (rather than threading another parameter through
+    // every `index_directory*` caller) means a reindex triggered by the
+    // watcher, the CLI or an MCP call all obey the same gate. A missing or
+    // unreadable config fails closed: no vault metadata is extracted.
+    let vault_index_enabled = Config::load(&Paths::resolve().config_file())
+        .map(|loaded| loaded.vault_index.enabled)
+        .unwrap_or(false);
     let mut files_indexed = 0;
     let mut config_files_indexed = 0;
     let mut config_files_partial = 0;
@@ -316,6 +332,10 @@ fn index_directory_inner(
     let mut tags_configs: HashMap<Language, TagsConfiguration> = HashMap::new();
     let mut tags_context = TagsContext::new();
     let mut reexport_aliases: Vec<(String, String)> = Vec::new();
+    // Wikilinks can only be resolved after every note's path and aliases are
+    // known, so the per-file pass records raw links and this list is resolved
+    // in one project-wide pass below (same shape as `pending_calls`).
+    let mut pending_vault_links: Vec<PendingVaultLink> = Vec::new();
 
     let walker = WalkBuilder::new(root)
         .add_custom_ignore_filename(".nexusignore")
@@ -384,7 +404,7 @@ fn index_directory_inner(
                 Err(err) => Err(err),
             }
         } else if is_markdown(path) {
-            index_markdown_file(path, root, store)
+            index_markdown_file(path, root, store, vault_index_enabled)
         } else {
             continue;
         };
@@ -398,6 +418,7 @@ fn index_directory_inner(
                         .push(*id);
                 }
                 reexport_aliases.extend(result.reexport_aliases);
+                pending_vault_links.extend(result.vault_links);
                 // Same-file resolution wins when available (preserves the
                 // original, more-certain behavior) - resolved here, once
                 // per call, against this file's own name map rather than
@@ -492,6 +513,8 @@ fn index_directory_inner(
         }
     }
 
+    resolve_vault_links(store, &pending_vault_links)?;
+
     let (nodes, edges) = store.stats()?;
     Ok(IndexStats {
         files_indexed,
@@ -507,6 +530,14 @@ fn index_directory_inner(
     })
 }
 
+/// A wikilink awaiting project-wide resolution. Source node id is known
+/// immediately; the target may be a path, an alias or a bare basename, so
+/// the decision is deferred until every note has been indexed.
+struct PendingVaultLink {
+    src_id: i64,
+    link: crate::docs::VaultLink,
+}
+
 struct FileIndexResult {
     /// (name, node_id) for every function defined in this file.
     fn_nodes: Vec<(String, i64)>,
@@ -516,6 +547,99 @@ struct FileIndexResult {
     /// `(alias, original_name)` pairs from this file's `pub use ... as
     /// alias;` re-exports (see `extract_reexport_aliases`, issue #67).
     reexport_aliases: Vec<(String, String)>,
+    /// Raw wikilinks from a Markdown file; empty for code files.
+    vault_links: Vec<PendingVaultLink>,
+}
+
+/// Resolves and records wikilinks with an explicit, auditable precedence:
+///
+/// 1. explicit path (with or without a Markdown extension) -> `exact`
+/// 2. frontmatter alias -> `exact`
+/// 3. unique bare basename -> `heuristic` (same uncertainty contract as
+///    name-based call edges)
+/// 4. ambiguous/missing target -> recorded as unresolved, no edge emitted
+///
+/// This mirrors `CALLS` rather than guessing: two notes called `README.md`
+/// leave a bare `[[README]]` unresolved instead of arbitrarily picking one.
+fn resolve_vault_links(store: &GraphStore, links: &[PendingVaultLink]) -> Result<()> {
+    if links.is_empty() {
+        return Ok(());
+    }
+
+    let files = store.all_file_nodes()?;
+    let mut by_path: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut by_basename: std::collections::HashMap<String, Vec<i64>> =
+        std::collections::HashMap::new();
+    for file in &files {
+        // Obsidian links use `/` even on Windows, where the walker stores
+        // `docs\\Plan.md`. One shared normalizer keeps both sides comparable.
+        let path_lower = normalized_path_key(&file.file_path);
+        by_path.insert(path_lower.clone(), file.id);
+        let stem = path_lower
+            .strip_suffix(".markdown")
+            .or_else(|| path_lower.strip_suffix(".md"))
+            .unwrap_or(&path_lower)
+            .to_string();
+        by_path.insert(stem.clone(), file.id);
+        by_basename
+            .entry(stem.rsplit('/').next().unwrap_or(&stem).to_string())
+            .or_default()
+            .push(file.id);
+    }
+
+    let mut by_alias: std::collections::HashMap<String, Vec<i64>> =
+        std::collections::HashMap::new();
+    for (alias, file_id) in store.all_vault_aliases()? {
+        by_alias
+            .entry(alias.to_lowercase())
+            .or_default()
+            .push(file_id);
+    }
+
+    for pending in links {
+        let lower = normalized_path_key(&pending.link.target);
+        let (dst_id, resolution, confidence): (Option<i64>, &str, &str) = if lower.contains('/') {
+            // A slash means the author named a path; don't silently fall
+            // back to a basename in another directory.
+            match by_path.get(&lower) {
+                Some(id) => (Some(*id), "exact-path", "exact"),
+                None => (None, "unresolved-path", "none"),
+            }
+        } else if let Some(ids) = by_alias.get(&lower) {
+            if ids.len() == 1 {
+                (Some(ids[0]), "alias", "exact")
+            } else {
+                (None, "ambiguous-alias", "none")
+            }
+        } else if let Some(ids) = by_basename.get(&lower) {
+            if ids.len() == 1 {
+                (Some(ids[0]), "unique-basename", "heuristic")
+            } else {
+                (None, "ambiguous-basename", "none")
+            }
+        } else {
+            (None, "unresolved", "none")
+        };
+
+        if let Some(dst_id) = dst_id {
+            if dst_id != pending.src_id {
+                store.insert_edge(pending.src_id, dst_id, EdgeKind::LinksTo)?;
+            }
+        }
+        store.insert_vault_link(
+            pending.src_id,
+            dst_id,
+            &pending.link.target,
+            pending.link.heading.as_deref(),
+            pending.link.display.as_deref(),
+            pending.link.embed,
+            pending.link.line,
+            resolution,
+            confidence,
+        )?;
+    }
+
+    Ok(())
 }
 
 /// Extracts `pub use ... as alias;` re-export aliases from a file's raw
@@ -752,6 +876,7 @@ fn index_file(
         fn_nodes: fn_nodes.into_iter().map(|(n, _, id)| (n, id)).collect(),
         pending_calls,
         reexport_aliases,
+        vault_links: Vec::new(),
     })
 }
 
@@ -1508,6 +1633,7 @@ fn index_config_file(
             fn_nodes: Vec::new(),
             pending_calls: Vec::new(),
             reexport_aliases: Vec::new(),
+            vault_links: Vec::new(),
         },
         status,
     ))
@@ -1516,7 +1642,12 @@ fn index_config_file(
 /// Markdown's structural model is headings, not functions/calls - there's
 /// no call graph to build here, so this returns the same `FileIndexResult`
 /// shape `index_file` does with empty `fn_nodes`/`pending_calls`.
-fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<FileIndexResult> {
+fn index_markdown_file(
+    path: &Path,
+    root: &Path,
+    store: &GraphStore,
+    vault_index_enabled: bool,
+) -> Result<FileIndexResult> {
     let source = read_source_capped(path)?;
     let rel_path = path
         .strip_prefix(root)
@@ -1529,6 +1660,26 @@ fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<F
     store.insert_file_content(&rel_path, &text)?;
 
     let sections = crate::docs::extract_sections(&text);
+    // When `[vault_index] enabled = false`, Markdown still gets ordinary
+    // Section/FTS indexing exactly as before - only the narrow structural
+    // metadata (link targets, tags, aliases) is withheld. No property values,
+    // callout/embed bodies, Canvas text or fetched targets are ever stored.
+    let vault = if vault_index_enabled {
+        crate::docs::extract_vault_note(&text)
+    } else {
+        crate::docs::VaultNote::default()
+    };
+
+    // Tags are global (one `Tag` node per distinct tag, with a stable
+    // `tag:`-prefixed qualified name) and aliases are stored alongside the
+    // file node so the project-wide link pass can resolve `[[Alias]]`.
+    for tag in &vault.tags {
+        let tag_id = store.insert_node(NodeKind::Tag, tag, &format!("tag:{tag}"), "", 0, 0)?;
+        store.insert_edge(file_id, tag_id, EdgeKind::Tagged)?;
+    }
+    for alias in &vault.aliases {
+        store.insert_vault_alias(alias, file_id)?;
+    }
 
     // One node id per section, at the same index as `sections` itself - a
     // parent always appears earlier in the flat list than its children (the
@@ -1559,6 +1710,14 @@ fn index_markdown_file(path: &Path, root: &Path, store: &GraphStore) -> Result<F
         fn_nodes: Vec::new(),
         pending_calls: Vec::new(),
         reexport_aliases: Vec::new(),
+        vault_links: vault
+            .links
+            .into_iter()
+            .map(|link| PendingVaultLink {
+                src_id: file_id,
+                link,
+            })
+            .collect(),
     })
 }
 
@@ -1991,7 +2150,7 @@ mod index_markdown_file_tests {
         fs::write(&path, &content).unwrap();
 
         let store = open_store(&dir);
-        let result = index_markdown_file(&path, &dir, &store).unwrap();
+        let result = index_markdown_file(&path, &dir, &store, false).unwrap();
 
         assert!(result.fn_nodes.is_empty());
         assert!(result.pending_calls.is_empty());
@@ -2010,7 +2169,7 @@ mod index_markdown_file_tests {
         fs::write(&path, content).unwrap();
 
         let store = open_store(&dir);
-        let result = index_markdown_file(&path, &dir, &store).unwrap();
+        let result = index_markdown_file(&path, &dir, &store, false).unwrap();
 
         assert!(result.fn_nodes.is_empty());
         let (nodes, _) = store.stats().unwrap();
@@ -2053,7 +2212,7 @@ mod read_source_capped_tests {
         }
 
         let store = open_store(&dir);
-        let result = index_markdown_file(&path, &dir, &store);
+        let result = index_markdown_file(&path, &dir, &store, false);
 
         // Skipped via a returned Err (the same path `index_directory`'s
         // per-file match already logs-and-continues on), not a panic.
@@ -2074,7 +2233,7 @@ mod read_source_capped_tests {
         fs::write(&path, &content).unwrap();
 
         let store = open_store(&dir);
-        let result = index_markdown_file(&path, &dir, &store);
+        let result = index_markdown_file(&path, &dir, &store, false);
         assert!(result.is_ok(), "small file must not be affected by the cap");
 
         let _ = fs::remove_dir_all(&dir);

@@ -21,6 +21,14 @@ pub struct Config {
     /// deliberate choice with exclusions applied before ingestion.
     #[serde(default)]
     pub config_index: ConfigIndexConfig,
+    /// Opt-in extraction of narrow Obsidian-style vault metadata from Markdown
+    /// (wikilink targets, inline `#tags`, and frontmatter `tags`/`aliases`
+    /// identifiers). Off by default: this stores structural identifiers and
+    /// locations only - never property values, callout bodies, embed contents,
+    /// Canvas text, formulas or fetched targets. Exclusions and `allowed_roots`
+    /// are applied by the ordinary ingest path before any file is read.
+    #[serde(default)]
+    pub vault_index: VaultIndexConfig,
     /// Human-registered external knowledge sources (e.g. an Obsidian vault).
     /// Registration is deliberately a CLI/control-plane act, never an MCP
     /// write path - agents can discover sources via `list_sources`, not
@@ -207,6 +215,16 @@ impl Default for ConfigIndexConfig {
             metadata_only: false,
         }
     }
+}
+
+/// Off-by-default gate for the narrow Markdown vault metadata extractor.
+/// Keeping this separate from `[config_index]` matters: YAML/JSON config
+/// indexing is a different, also-opt-in feature, and neither implies the
+/// other. A source registration never enables this automatically.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VaultIndexConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 impl Config {
@@ -467,6 +485,15 @@ mod tests {
         assert!(!config.is_path_allowed(std::path::Path::new(
             "/nexuscontext-test-does-not-exist-elsewhere"
         )));
+    }
+
+    #[test]
+    fn vault_index_is_off_by_default_and_opt_in() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(!config.vault_index.enabled);
+
+        let config: Config = toml::from_str("[vault_index]\nenabled = true\n").unwrap();
+        assert!(config.vault_index.enabled);
     }
 
     #[test]

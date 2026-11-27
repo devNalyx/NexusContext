@@ -1,0 +1,4 @@
+# Entries below are excluded before ingest; verify.py asserts their marker
+# strings never appear in any MCP response.
+secrets/
+excluded/

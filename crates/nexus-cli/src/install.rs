@@ -24,6 +24,17 @@ const PLUGIN_PANEL_DATA: &str =
 /// one prebuilt CommonJS file and cannot compile TSX at load time.
 const PLUGIN_GUI: &str =
     include_str!("../../../integrations/opencode-nexuscontext/dist/gui-experimental.cjs");
+/// User-level Obsidian adapter skill, embedded at build time like the plug
+/// sources so `nexus install opencode --global` works from a released binary.
+const SKILL_SECOND_BRAIN: &str = include_str!("../../../skills/secondbrain/SKILL.md");
+const SKILL_SECOND_BRAIN_TOOLS: &str =
+    include_str!("../../../skills/secondbrain/references/nexuscontext-tools.md");
+const SKILL_SECOND_BRAIN_FORMATS: &str =
+    include_str!("../../../skills/secondbrain/references/obsidian-formats.md");
+const SKILL_SECOND_BRAIN_HOSTS: &str =
+    include_str!("../../../skills/secondbrain/references/host-install.md");
+const SKILL_SECOND_BRAIN_EVAL: &str =
+    include_str!("../../../skills/secondbrain/references/eval-harness.md");
 const MANIFEST: &str = ".nexus/install-manifest.json";
 /// Project-local Claude Code settings: private to this checkout, never shared
 /// through git, matching the "local-first, per-repo" constraint.
@@ -185,6 +196,32 @@ fn install_opencode_scoped(yes: bool, scope: Scope) -> Result<()> {
     let panel_data = plugin_dir.join("panel-data.js");
     let gui = plugin_dir.join("gui-experimental.cjs");
     let package = plugin_dir.join("package.json");
+    // The adapter follows the user across projects, so only the global scope
+    // installs a user-level skill. Project-local installs still use the plug.
+    let skill_dir = opencode_root(scope)?.join("skills").join("secondbrain");
+    let skill_files: Vec<(PathBuf, &str)> = if scope == Scope::Global {
+        vec![
+            (skill_dir.join("SKILL.md"), SKILL_SECOND_BRAIN),
+            (
+                skill_dir.join("references/nexuscontext-tools.md"),
+                SKILL_SECOND_BRAIN_TOOLS,
+            ),
+            (
+                skill_dir.join("references/obsidian-formats.md"),
+                SKILL_SECOND_BRAIN_FORMATS,
+            ),
+            (
+                skill_dir.join("references/host-install.md"),
+                SKILL_SECOND_BRAIN_HOSTS,
+            ),
+            (
+                skill_dir.join("references/eval-harness.md"),
+                SKILL_SECOND_BRAIN_EVAL,
+            ),
+        ]
+    } else {
+        Vec::new()
+    };
     let config = config_path(scope)?;
     let manifest_file = manifest_path(scope)?;
 
@@ -211,6 +248,15 @@ fn install_opencode_scoped(yes: bool, scope: Scope) -> Result<()> {
     println!("  RPC      : {}", rpc.display());
     println!("  panel    : {}", panel_data.display());
     println!("  GUI      : {} (experimental)", gui.display());
+    if let Some((path, _)) = skill_files.first() {
+        println!(
+            "  skill    : {} ({} files, user-level)",
+            path.display(),
+            skill_files.len()
+        );
+    } else {
+        println!("  skill    : user-level skill is installed by --global only");
+    }
     println!(
         "  MCP      : mcp.servers.nexuscontext -> nexusd mcp in {}",
         config.display()
@@ -241,6 +287,17 @@ fn install_opencode_scoped(yes: bool, scope: Scope) -> Result<()> {
     }
 
     let mut files: Vec<PathBuf> = vec![index, control, tui, rpc, panel_data, gui, package];
+    if !skill_files.is_empty() {
+        std::fs::create_dir_all(skill_dir.join("references"))?;
+        for (path, contents) in &skill_files {
+            if path.exists() {
+                bail!("refusing to overwrite existing {}", path.display());
+            }
+            std::fs::write(path, contents)
+                .with_context(|| format!("writing {}", path.display()))?;
+            files.push(path.clone());
+        }
+    }
     let mut merged_config = false;
     let mut previous_server = None;
     if config.exists() {
@@ -371,6 +428,9 @@ fn uninstall_opencode_scoped(yes: bool, scope: Scope) -> Result<()> {
         Scope::Global => vec![
             opencode_root(Scope::Global)?.join("plugins/nexuscontext"),
             opencode_root(Scope::Global)?.join("plugins"),
+            opencode_root(Scope::Global)?.join("skills/secondbrain/references"),
+            opencode_root(Scope::Global)?.join("skills/secondbrain"),
+            opencode_root(Scope::Global)?.join("skills"),
         ],
     };
     for dir in dirs {
@@ -820,6 +880,13 @@ mod tests {
             .join("plugins/nexuscontext/gui-experimental.cjs")
             .exists());
         assert!(root.join("nexuscontext-install-manifest.json").exists());
+        assert!(root.join("skills/secondbrain/SKILL.md").exists());
+        assert!(root
+            .join("skills/secondbrain/references/nexuscontext-tools.md")
+            .exists());
+        assert!(root
+            .join("skills/secondbrain/references/host-install.md")
+            .exists());
         let config = read_json(&root.join("opencode.json"));
         assert_eq!(
             config["mcp"]["servers"]["nexuscontext"]["command"][1],
@@ -831,6 +898,7 @@ mod tests {
 
         uninstall_opencode_global(true).unwrap();
         assert!(!root.join("plugins/nexuscontext").exists());
+        assert!(!root.join("skills/secondbrain").exists());
         assert!(!root.join("nexuscontext-install-manifest.json").exists());
         assert!(!root.join("opencode.json").exists());
         assert!(
