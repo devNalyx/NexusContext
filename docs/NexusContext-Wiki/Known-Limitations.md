@@ -88,11 +88,11 @@ check-then-use window, a materially higher bar than the ordinary
 prompt-injection/confused-deputy threat model the rest of the security
 posture targets. See [[Security-Model]] and [[ADRs/README|ADR 0015]].
 
-## GNOME extension version churn
+## Legacy GNOME extension version churn
 
-Shell extensions frequently break across major GNOME releases. Treated as
-low-priority/optional by design and kept thin specifically to stay cheap
-to fix — see [[GUI-and-Extension]].
+Shell extensions frequently break across major GNOME releases. The GNOME
+indicator and GTK4 manager are deprecated/maintenance-only, kept thin
+specifically to stay cheap to fix — see [[GUI-and-Extension]].
 
 ## Platform scope
 
@@ -101,11 +101,13 @@ macOS on Apple Silicon (arm64) - a native macOS x86_64 build was attempted
 but dropped when GitHub's own runner class for it never assigned a
 runner (a real capacity constraint, not a workflow bug); Intel Mac users
 run the arm64 build under Rosetta 2 instead.
-Linux has full parity (daemon `mcp` + `serve`, CLI, GUI). macOS gets CLI +
-full daemon (`serve`/the control API works too — Unix domain sockets are
-native there) but no GUI (`nexus-gui` is Linux/GNOME-first, not portable).
-Windows gets `nexus` CLI + `nexusd mcp` only — `serve` (the control API,
-background watcher, GUI target) isn't supported there yet, since it's
+Linux has full parity (daemon `mcp` + `serve`, CLI, legacy GTK GUI). macOS
+gets CLI + full daemon (`serve`/the control API works too — Unix domain
+sockets are native there) but no legacy GTK GUI (`nexus-gui` is
+Linux/GNOME-first, not portable). OpenCode panels follow `serve` where
+OpenCode runs. Windows gets `nexus` CLI + `nexusd mcp` only — `serve` (the
+control API behind the panels, background watcher, legacy GUI target) isn't
+supported there yet, since it's
 built entirely on Unix domain sockets with no cross-platform abstraction
 (`crates/nexusd/src/control.rs`) — see [issue #16](https://github.com/devNalyx/NexusContext/issues/16)
 for the real blocker and what a future port would need. Every MCP tool

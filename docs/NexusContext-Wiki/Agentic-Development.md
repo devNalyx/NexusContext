@@ -15,7 +15,7 @@ nexus install opencode --yes
 This registers the `nexuscontext` MCP server and installs the OpenCode plugin.
 For Claude Code/Desktop, see [[CLI-Reference]] and [`INSTALL.md`](../../INSTALL.md).
 
-Run the daemon for GUI/control-plane features where supported:
+Run the daemon for OpenCode panel/control-plane features where supported:
 
 ```bash
 nexusd serve

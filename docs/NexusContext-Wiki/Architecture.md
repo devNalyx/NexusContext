@@ -15,7 +15,7 @@ sharing a transport across purposes.
                                ▼  shared SQLite graph.db (WAL mode)
                                ▲
                     ┌──────────────────────────────┐
-    GUI + Shell ext ──► nexusd serve (Unix socket, systemd)│
+ OpenCode panels ───► nexusd serve (Unix socket, systemd)│
                     │   status · projects · config    │
                     │   search.adhoc · reindex         │
                     └──────────────────────────────┘
@@ -50,7 +50,8 @@ sharing a transport across purposes.
   mattered.
 
 Two transports, deliberately kept apart: an MCP client attached to stdio
-never competes with a GUI session on the control socket, and vice versa.
+never competes with an OpenCode panel session on the control socket, and vice
+versa.
 
 ## Component breakdown
 
