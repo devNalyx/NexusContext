@@ -134,6 +134,17 @@ tool. Every other tool (`search_graph`, `trace_call_path`, `get_file_context`,
 works on any directory tree regardless of whether it's version-controlled
 at all.
 
+## Config indexing is source-linked, not rendered
+
+With `[config_index]` enabled, YAML/JSON key locations and literal text are
+indexed — no Helm/Jinja/template rendering, no effective-values merging, no
+cross-repository GitOps relationship edges, no federation, and no cluster or
+network access (issue #112). `partial`/`unsupported` files are labelled and
+remain literal-text-only; line locations come from a bounded line scanner,
+not a full AST with byte offsets, so they're provenance leads rather than
+semantic truth. `metadata_only` avoids storing raw values but is not secret
+detection or redaction.
+
 ## Related
 
 [[Indexing-Pipeline]] · [[MCP-Tools]] · [[Watcher-and-Freshness]]

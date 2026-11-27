@@ -17,7 +17,9 @@ pub use graph::{
     GroupedArchitecture, NodeKind, NodeRecord, TracedNode,
 };
 pub use ingest::{
-    content_signature, estimate_watch_count, index_directory, index_directory_checked, IndexStats,
+    content_signature, content_signature_with_config, estimate_watch_count, index_directory,
+    index_directory_checked, index_directory_checked_with_config, index_directory_with_config,
+    IndexStats,
 };
 pub use language::Language;
 pub use obsidian::export_obsidian;
@@ -29,5 +31,6 @@ pub use project::{
 pub use queries::{
     call_graph_dot, detect_changes, detect_changes_blast_radius, detect_dead_code,
     get_architecture, get_architecture_grouped, get_file_context, open_store, plan_query,
-    search_code, ArchitectureSummary, BlastRadiusResult, QueryPlanResult,
+    search_code, search_code_detailed, ArchitectureSummary, BlastRadiusResult, QueryPlanResult,
+    SearchCodeResult,
 };

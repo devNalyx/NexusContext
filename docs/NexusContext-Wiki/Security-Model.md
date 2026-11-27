@@ -145,6 +145,18 @@ control API's `status.get` (`crates/nexusd/src/control.rs`) reports:
   default 2) bounds how many server processes can be alive at once within
   one `nexusd`/`nexus` process.
 
+- **YAML/JSON config indexing (`[config_index]`, issue #112)** — default
+  `enabled = false`. When on, `.yaml`/`.yml`/`.json` source text and key
+  paths are added to the same FTS5 table that already holds code/markdown,
+  so `graph.db` becomes at least as sensitive as the config files it covers.
+  `include`/`exclude` globs apply to repository-relative paths before any
+  file is read, and exclusions win; the existing canonicalization,
+  `allowed_roots`, symlink/`O_NOFOLLOW`, 5MB file cap and response caps all
+  still apply. `metadata_only = true` omits raw values but is a conservative
+  content policy, **not** secret detection or redaction — don't treat it as
+  a guarantee. Unrendered templates (`{{ ... }}` / `${{ ... }}`) are never
+  rendered: they're labelled `unsupported` and remain literal-text-only.
+  No network access, no cluster calls, no Helm/effective-values evaluation.
 ## What a dedicated review pass found and fixed (v0.1.13/v0.1.14)
 
 Run explicitly against two questions — where can an agent burn unnecessary

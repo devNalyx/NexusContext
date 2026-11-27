@@ -626,6 +626,11 @@ fn projects_reindex(params: Value) -> Result<Value> {
     Ok(json!({
         "status": "indexed",
         "files_indexed": stats.files_indexed,
+        "config_files_indexed": stats.config_files_indexed,
+        "config_files_partial": stats.config_files_partial,
+        "config_files_unsupported": stats.config_files_unsupported,
+        "config_files_excluded": stats.config_files_excluded,
+        "config_files_skipped": stats.config_files_skipped,
         "nodes": stats.nodes,
         "edges": stats.edges
     }))

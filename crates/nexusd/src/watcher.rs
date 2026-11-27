@@ -295,7 +295,12 @@ fn run() -> anyhow::Result<()> {
                     // exactly the files indexing would touch catches that
                     // before it costs a real reindex; only a genuine
                     // difference proceeds past this point.
-                    let signature = nexus_index::content_signature(&root);
+                    // Config-aware so enabling/excluding YAML/JSON is visible
+                    // to this cheap pre-reindex check (issue #112).
+                    let paths = nexus_core::Paths::resolve();
+                    let config = nexus_core::Config::load(&paths.config_file()).unwrap_or_default();
+                    let signature =
+                        nexus_index::content_signature_with_config(&root, &config.config_index);
                     if content_signatures.get(&root) == Some(&signature) {
                         tracing::debug!(
                             project = %root.display(),

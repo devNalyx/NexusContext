@@ -1,9 +1,12 @@
 use crate::graph::{EdgeKind, GraphStore, NodeKind};
 use crate::language::{self, Language};
 use anyhow::{bail, Result};
-use ignore::WalkBuilder;
+use ignore::overrides::{Override, OverrideBuilder};
+use ignore::{Match, WalkBuilder};
+use nexus_core::ConfigIndexConfig;
 use regex::Regex;
-use std::collections::HashMap;
+use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::OnceLock;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
@@ -42,6 +45,16 @@ fn read_source_capped(path: &Path) -> Result<Vec<u8>> {
 #[derive(Debug, Clone, Default)]
 pub struct IndexStats {
     pub files_indexed: usize,
+    /// Config files actually ingested when `[config_index]` is enabled.
+    pub config_files_indexed: usize,
+    /// Config files read but flagged partial/unsupported (still searchable as
+    /// bounded literal text unless `metadata_only` is set).
+    pub config_files_partial: usize,
+    pub config_files_unsupported: usize,
+    /// Config files excluded by include/exclude rules before being read.
+    pub config_files_excluded: usize,
+    /// Config files that matched but could not be read (size cap, I/O error).
+    pub config_files_skipped: usize,
     pub nodes: i64,
     pub edges: i64,
     /// `None` for an ordinary reindex - LSP enrichment (issue #10) only
@@ -96,10 +109,29 @@ struct PendingCall {
 /// own file doesn't also define one, the call is left unresolved rather
 /// than guessing which one - wrong edges would be worse than missing ones.
 pub fn index_directory(root: &Path, store: &GraphStore) -> Result<IndexStats> {
-    index_directory_checked(root, store, || false)
+    index_directory_with_config(root, store, &ConfigIndexConfig::default())
 }
 
-/// Same as `index_directory`, plus a cooperative-cancellation checkpoint:
+/// Same as `index_directory`, but honors `[config_index]` (issue #112).
+pub fn index_directory_with_config(
+    root: &Path,
+    store: &GraphStore,
+    config: &ConfigIndexConfig,
+) -> Result<IndexStats> {
+    index_directory_checked_with_config(root, store, || false, config)
+}
+
+/// Same as `index_directory_checked`, with explicit config-index options.
+pub fn index_directory_checked(
+    root: &Path,
+    store: &GraphStore,
+    superseded: impl Fn() -> bool,
+) -> Result<IndexStats> {
+    index_directory_checked_with_config(root, store, superseded, &ConfigIndexConfig::default())
+}
+
+/// Same as `index_directory_checked`, plus opt-in YAML/JSON indexing.
+///
 /// `superseded` is polled between files in the main indexing loop (see
 /// `index_directory_inner`), and if it ever returns `true` the pass stops
 /// early and rolls back rather than committing a partial rebuild - the
@@ -110,13 +142,14 @@ pub fn index_directory(root: &Path, store: &GraphStore) -> Result<IndexStats> {
 /// can run long enough that further edits land before it finishes, and
 /// letting it run to completion anyway is pure wasted work once a follow-up
 /// pass is already guaranteed to happen.
-pub fn index_directory_checked(
+pub fn index_directory_checked_with_config(
     root: &Path,
     store: &GraphStore,
     superseded: impl Fn() -> bool,
+    config: &ConfigIndexConfig,
 ) -> Result<IndexStats> {
     store.begin_immediate()?;
-    match index_directory_inner(root, store, &superseded) {
+    match index_directory_inner(root, store, &superseded, config) {
         Ok(stats) if stats.superseded => {
             // Discard the partial rebuild entirely rather than committing
             // it - a rolled-back attempt leaves the previous (stale but
@@ -148,8 +181,16 @@ pub fn index_directory_checked(
 /// changed. Order-independent (entries are sorted before hashing), since a
 /// directory walk's yield order isn't guaranteed stable across runs.
 pub fn content_signature(root: &Path) -> u64 {
+    content_signature_with_config(root, &ConfigIndexConfig::default())
+}
+
+/// Config-aware counterpart to `content_signature`. Turning `[config_index]`
+/// on/off or changing its globs changes the set of files in the signature, so
+/// the watcher notices without a separate config-change signal.
+pub fn content_signature_with_config(root: &Path, config: &ConfigIndexConfig) -> u64 {
     use std::hash::{Hash, Hasher};
 
+    let config_matcher = build_config_matcher(config, root);
     let walker = WalkBuilder::new(root)
         .add_custom_ignore_filename(".nexusignore")
         .build();
@@ -161,7 +202,10 @@ pub fn content_signature(root: &Path) -> u64 {
             continue;
         }
         let path = entry.path();
-        if Language::from_path(path).is_none() && !is_markdown(path) {
+        if Language::from_path(path).is_none()
+            && !is_markdown(path)
+            && !config_path_allowed(path, root, &config_matcher)
+        {
             continue;
         }
         let Ok(metadata) = std::fs::metadata(path) else {
@@ -178,6 +222,12 @@ pub fn content_signature(root: &Path) -> u64 {
     entries.sort();
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    // Include the policy itself so changing include/exclude/metadata_only is
+    // observable to the watcher even when no source file changed.
+    config.enabled.hash(&mut hasher);
+    config.metadata_only.hash(&mut hasher);
+    config.include.hash(&mut hasher);
+    config.exclude.hash(&mut hasher);
     for (path, size, mtime_millis) in &entries {
         path.hash(&mut hasher);
         size.hash(&mut hasher);
@@ -241,10 +291,17 @@ fn index_directory_inner(
     root: &Path,
     store: &GraphStore,
     superseded: &impl Fn() -> bool,
+    config: &ConfigIndexConfig,
 ) -> Result<IndexStats> {
     store.clear()?;
 
+    let config_matcher = build_config_matcher(config, root);
     let mut files_indexed = 0;
+    let mut config_files_indexed = 0;
+    let mut config_files_partial = 0;
+    let mut config_files_unsupported = 0;
+    let mut config_files_excluded = 0;
+    let mut config_files_skipped = 0;
     let mut global_fn_registry: HashMap<String, Vec<i64>> = HashMap::new();
     let mut pending_calls: Vec<PendingCall> = Vec::new();
     // `(alias, original_name)` pairs collected from every file's `pub use
@@ -274,6 +331,11 @@ fn index_directory_inner(
             );
             return Ok(IndexStats {
                 files_indexed,
+                config_files_indexed,
+                config_files_partial,
+                config_files_unsupported,
+                config_files_excluded,
+                config_files_skipped,
                 nodes: 0,
                 edges: 0,
                 lsp_enrichment: None,
@@ -289,13 +351,18 @@ fn index_directory_inner(
             continue;
         }
         let path = entry.path();
+        let is_config_candidate = config.enabled && is_config_extension(path);
+        if is_config_candidate && !config_path_allowed(path, root, &config_matcher) {
+            config_files_excluded += 1;
+            continue;
+        }
 
         let result = if let Some(language) = Language::from_path(path) {
-            let config = match tags_configs.entry(language) {
+            let tags_config = match tags_configs.entry(language) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
                     match language.build_tags_config() {
-                        Ok(config) => e.insert(config),
+                        Ok(built) => e.insert(built),
                         Err(err) => {
                             tracing::warn!(?language, error = %err, "failed to build tags query for language, skipping its files");
                             continue;
@@ -303,7 +370,19 @@ fn index_directory_inner(
                     }
                 }
             };
-            index_file(path, config, &mut tags_context, root, store)
+            index_file(path, tags_config, &mut tags_context, root, store)
+        } else if is_config_candidate {
+            match index_config_file(path, root, store, config) {
+                Ok((result, status)) => {
+                    match status {
+                        ConfigStatus::Parsed => config_files_indexed += 1,
+                        ConfigStatus::Partial => config_files_partial += 1,
+                        ConfigStatus::Unsupported => config_files_unsupported += 1,
+                    }
+                    Ok(result)
+                }
+                Err(err) => Err(err),
+            }
         } else if is_markdown(path) {
             index_markdown_file(path, root, store)
         } else {
@@ -343,6 +422,9 @@ fn index_directory_inner(
                 }
             }
             Err(err) => {
+                if is_config_candidate {
+                    config_files_skipped += 1;
+                }
                 tracing::warn!(file = %path.display(), error = %err, "failed to index file, skipping");
                 continue;
             }
@@ -413,6 +495,11 @@ fn index_directory_inner(
     let (nodes, edges) = store.stats()?;
     Ok(IndexStats {
         files_indexed,
+        config_files_indexed,
+        config_files_partial,
+        config_files_unsupported,
+        config_files_excluded,
+        config_files_skipped,
         nodes,
         edges,
         lsp_enrichment: None,
@@ -675,6 +762,470 @@ fn is_markdown(path: &Path) -> bool {
         path.extension().and_then(|e| e.to_str()),
         Some("md") | Some("markdown")
     )
+}
+
+fn is_config_extension(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("yaml") | Some("yml") | Some("json")
+    )
+}
+
+/// Builds the include/exclude matcher once per reindex. Excludes are added
+/// after includes with gitignore-style `!` negation, so a path matching both
+/// is excluded before the file is ever read. Invalid patterns fail closed:
+/// no config files are indexed rather than silently ignoring policy.
+fn build_config_matcher(config: &ConfigIndexConfig, root: &Path) -> Option<Override> {
+    if !config.enabled {
+        return None;
+    }
+    let mut builder = OverrideBuilder::new(root);
+    for pattern in &config.include {
+        if let Err(err) = builder.add(pattern) {
+            tracing::warn!(pattern = %pattern, error = %err, "invalid config_index.include pattern; config indexing disabled for this pass");
+            return None;
+        }
+    }
+    for pattern in &config.exclude {
+        if let Err(err) = builder.add(&format!("!{pattern}")) {
+            tracing::warn!(pattern = %pattern, error = %err, "invalid config_index.exclude pattern; config indexing disabled for this pass");
+            return None;
+        }
+    }
+    builder.build().ok()
+}
+
+fn config_path_allowed(path: &Path, root: &Path, matcher: &Option<Override>) -> bool {
+    let Some(matcher) = matcher else {
+        return false;
+    };
+    if !is_config_extension(path) {
+        return false;
+    }
+    let Ok(rel) = path.strip_prefix(root) else {
+        return false;
+    };
+    matches!(matcher.matched(rel, false), Match::Whitelist(_))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigStatus {
+    Parsed,
+    Partial,
+    Unsupported,
+}
+
+impl ConfigStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            ConfigStatus::Parsed => "parsed",
+            ConfigStatus::Partial => "partial",
+            ConfigStatus::Unsupported => "unsupported",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ConfigKey {
+    doc: u32,
+    key_path: String,
+    parent: String,
+    indent: usize,
+    start_line: u32,
+    end_line: u32,
+    /// Last line of the YAML document (or the whole JSON file), so a top-level
+    /// key's range never spills into the next `---` document.
+    doc_end_line: u32,
+}
+
+fn strip_yaml_comment(line: &str) -> &str {
+    let mut single = false;
+    let mut double = false;
+    for (idx, ch) in line.char_indices() {
+        match ch {
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '#' if !single && !double => return &line[..idx],
+            _ => {}
+        }
+    }
+    line
+}
+
+fn find_unquoted_colon(line: &str) -> Option<usize> {
+    let mut single = false;
+    let mut double = false;
+    for (idx, ch) in line.char_indices() {
+        match ch {
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            ':' if !single && !double => return Some(idx),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Lightweight, line-based key extraction. It deliberately does not resolve
+/// aliases or template expressions; it only records where a key was written.
+fn extract_yaml_keys(text: &str) -> Vec<ConfigKey> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut keys = Vec::new();
+    let line_count = lines.len().max(1) as u32;
+    let mut doc_starts: Vec<(u32, u32)> = vec![(1, 1)];
+    let mut doc = 1u32;
+    let mut seen_start_marker = false;
+    let mut keys_in_doc = false;
+    // `(indent, key_path)` stack for the current document only.
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    // 1-based sequence-item counters, keyed by the `- ` line's indentation.
+    let mut array_indices: HashMap<usize, usize> = HashMap::new();
+
+    for (idx, raw) in lines.iter().enumerate() {
+        let line_no = idx as u32 + 1;
+        let trimmed = raw.trim();
+        if trimmed == "---" {
+            // A leading `---` opens document 1; each later one opens the
+            // next document, matching serde_yaml's document numbering.
+            if seen_start_marker || keys_in_doc {
+                doc += 1;
+                doc_starts.push((doc, line_no));
+            }
+            seen_start_marker = true;
+            keys_in_doc = false;
+            stack.clear();
+            array_indices.clear();
+            continue;
+        }
+        if trimmed.starts_with("...") {
+            stack.clear();
+            array_indices.clear();
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = raw.len() - raw.trim_start().len();
+        let content = strip_yaml_comment(trimmed).trim();
+        if content.is_empty() {
+            continue;
+        }
+        let (content, is_array_item) = match content.strip_prefix("- ") {
+            Some(rest) => (rest.trim(), true),
+            None => (content, false),
+        };
+        let Some(colon) = find_unquoted_colon(content) else {
+            continue;
+        };
+        let key = content[..colon]
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'')
+            .to_string();
+        if key.is_empty() {
+            continue;
+        }
+
+        // Sequence items get an explicit `[n]` component (1-based) so two
+        // items with the same key don't collapse into one fabricated path.
+        let effective_indent = if is_array_item { indent + 2 } else { indent };
+        if !is_array_item {
+            array_indices.retain(|&array_indent, _| array_indent < indent);
+        }
+        while stack
+            .last()
+            .is_some_and(|(last_indent, _)| *last_indent >= indent)
+        {
+            stack.pop();
+        }
+        let base = stack
+            .last()
+            .map(|(_, path)| path.clone())
+            .unwrap_or_default();
+        let parent = if is_array_item {
+            let index = array_indices.entry(indent).or_insert(0);
+            *index += 1;
+            if base.is_empty() {
+                format!("[{}]", *index)
+            } else {
+                format!("{base}[{}]", *index)
+            }
+        } else {
+            base
+        };
+        let key_path = if parent.is_empty() {
+            key.clone()
+        } else {
+            format!("{parent}.{key}")
+        };
+        keys.push(ConfigKey {
+            doc,
+            key_path: key_path.clone(),
+            parent: parent.clone(),
+            indent: effective_indent,
+            start_line: line_no,
+            end_line: line_no,
+            doc_end_line: line_count,
+        });
+        keys_in_doc = true;
+        // For a sequence item, subsequent sibling keys belong to the array
+        // element, not to the first item's scalar key.
+        // A sequence item is a sibling container at the dash's indentation;
+        // later keys inside that item keep it as their parent.
+        stack.push((indent, if is_array_item { parent } else { key_path }));
+    }
+    for key in &mut keys {
+        key.doc_end_line = doc_starts
+            .iter()
+            .find(|(next_doc, _)| *next_doc > key.doc)
+            .map(|(_, start)| start.saturating_sub(1))
+            .unwrap_or(line_count)
+            .max(key.start_line);
+    }
+    keys
+}
+
+/// JSON keys are validated with `serde_json`; line locations come from a
+/// bounded scan for `"key":` occurrences, so they are source-linked without
+/// pretending to be a full JSON AST with byte offsets.
+fn extract_json_keys(text: &str) -> Vec<ConfigKey> {
+    let re = Regex::new(r#""((?:\\.|[^"\\])*)"\s*:"#).expect("static JSON key regex");
+    let lines: Vec<&str> = text.lines().collect();
+    let mut keys = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        for caps in re.captures_iter(line) {
+            let key = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+            keys.push(ConfigKey {
+                doc: 1,
+                key_path: key.to_string(),
+                parent: String::new(),
+                indent: 0,
+                start_line: idx as u32 + 1,
+                end_line: idx as u32 + 1,
+                doc_end_line: lines.len().max(1) as u32,
+            });
+        }
+    }
+    keys
+}
+
+fn finish_key_ranges(keys: &mut [ConfigKey]) {
+    for i in 0..keys.len() {
+        // A key's subtree ends just before the next key in the same document
+        // at the same or a shallower indentation - not at the next key of
+        // any depth (that would cut nested values out of the range).
+        let next = keys
+            .iter()
+            .skip(i + 1)
+            .find(|k| {
+                k.doc == keys[i].doc
+                    && k.indent < keys[i].indent
+                    && k.start_line > keys[i].start_line
+            })
+            .map(|k| k.start_line.saturating_sub(1));
+        keys[i].end_line = next.unwrap_or(keys[i].doc_end_line).max(keys[i].start_line);
+    }
+}
+
+fn config_status(text: &str, is_json: bool, keys: &[ConfigKey]) -> (ConfigStatus, String) {
+    // Deliberately generic: `{{ ... }}` can be Helm, Jinja/Ansible, or any
+    // other unrendered template; `${{ ... }}` is common in GitHub Actions.
+    // We never render or evaluate any of them - they are simply outside the
+    // parseable subset, with bounded literal-text fallback instead.
+    // `}}` alone is ordinary JSON (nested object closes), so only the
+    // opening marker is consulted; `${{ ... }}` covers GitHub Actions-style
+    // expressions embedded in JSON strings too.
+    let has_template = if is_json {
+        text.contains("${{")
+    } else {
+        text.contains("{{")
+    };
+    if has_template {
+        return (ConfigStatus::Unsupported, "template_syntax".to_string());
+    }
+
+    let mut seen: HashSet<(u32, &str)> = HashSet::new();
+    let has_duplicate = keys
+        .iter()
+        .any(|key| !seen.insert((key.doc, key.key_path.as_str())));
+
+    if is_json {
+        if serde_json::from_str::<serde_json::Value>(text).is_err() {
+            // No parser error text: it can quote source snippets, which may
+            // contain secret values we do not want in graph.db.
+            return (ConfigStatus::Unsupported, "invalid_json".to_string());
+        }
+    } else {
+        let docs = serde_yaml::Deserializer::from_str(text);
+        for doc in docs {
+            if serde_yaml::Value::deserialize(doc).is_err() {
+                // A duplicate key is a well-known config pattern, not a
+                // reason to throw away the source-linked key locations: keep
+                // them as a partial index with an explicit note.
+                return if has_duplicate {
+                    (
+                        ConfigStatus::Partial,
+                        "duplicate_key_invalid_yaml".to_string(),
+                    )
+                } else {
+                    (ConfigStatus::Unsupported, "invalid_yaml".to_string())
+                };
+            }
+        }
+    }
+
+    let mut notes = Vec::new();
+    if has_duplicate {
+        notes.push("duplicate_key".to_string());
+    }
+    static ALIAS_RE: OnceLock<Regex> = OnceLock::new();
+    let alias_re = ALIAS_RE.get_or_init(|| {
+        Regex::new(r"(?m)(?:^|\s)[&*][A-Za-z_][A-Za-z0-9_-]*").expect("static alias regex")
+    });
+    if alias_re.is_match(text) {
+        notes.push("anchor_or_alias".to_string());
+    }
+    static TAG_RE: OnceLock<Regex> = OnceLock::new();
+    let tag_re = TAG_RE.get_or_init(|| {
+        Regex::new(r#"(?m)(?:^|\s)![A-Za-z_][A-Za-z0-9_-]*"#).expect("static tag regex")
+    });
+    if tag_re.is_match(text) {
+        notes.push("unsupported_tag".to_string());
+    }
+
+    if notes.is_empty() {
+        (ConfigStatus::Parsed, String::new())
+    } else {
+        (ConfigStatus::Partial, notes.join(","))
+    }
+}
+
+fn sanitize_note(note: &str) -> String {
+    let cleaned: String = note
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let cleaned = cleaned.trim_matches('_');
+    if cleaned.len() > 80 {
+        cleaned[..80].trim_matches('_').to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// Indexes a YAML/JSON config file using the same `File`/`Section` node model
+/// as Markdown docs: one File node, one Section per key location, and FTS
+/// content containing key paths plus (unless `metadata_only`) raw text.
+fn index_config_file(
+    path: &Path,
+    root: &Path,
+    store: &GraphStore,
+    config: &ConfigIndexConfig,
+) -> Result<(FileIndexResult, ConfigStatus)> {
+    let source = read_source_capped(path)?;
+    let rel_path = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string();
+    let text = String::from_utf8_lossy(&source).into_owned();
+    let line_count = text.lines().count().max(1) as u32;
+    let is_json = path.extension().and_then(|e| e.to_str()) == Some("json");
+
+    let mut keys = if is_json {
+        extract_json_keys(&text)
+    } else {
+        extract_yaml_keys(&text)
+    };
+    finish_key_ranges(&mut keys);
+    let (status, note) = config_status(&text, is_json, &keys);
+    if status == ConfigStatus::Unsupported {
+        // Never invent key nodes for a file we could not honestly parse.
+        keys.clear();
+    } else {
+        // `nodes.qualified_name` is UNIQUE: duplicate keys are reported in
+        // the note but represented by their first occurrence only.
+        let mut seen: HashSet<(u32, String)> = HashSet::new();
+        keys.retain(|key| seen.insert((key.doc, key.key_path.clone())));
+    }
+    let note_part = if note.is_empty() {
+        String::new()
+    } else {
+        format!("#note={}", sanitize_note(&note))
+    };
+
+    let file_id = store.insert_node(NodeKind::File, &rel_path, &rel_path, &rel_path, 0, 0)?;
+    // Raw text comes first so its line numbers stay aligned with `Section`
+    // ranges; key paths are appended after it as searchable metadata only.
+    // In `metadata_only` mode no raw text is stored at all.
+    let mut fts = String::new();
+    if !config.metadata_only {
+        fts.push_str(&text);
+        if !fts.ends_with('\n') {
+            fts.push('\n');
+        }
+    }
+    for key in &keys {
+        fts.push_str(&format!(
+            "key_path:{} doc={} status={}\n",
+            key.key_path,
+            key.doc,
+            status.as_str()
+        ));
+    }
+    if keys.is_empty() {
+        fts.push_str(&format!("config status={}\n", status.as_str()));
+    }
+    store.insert_file_content(&rel_path, &fts)?;
+
+    let mut node_ids: HashMap<(u32, String), i64> = HashMap::new();
+    if keys.is_empty() {
+        let qualified_name = format!(
+            "{rel_path}#doc=1#key=<document>#status={}{note_part}",
+            status.as_str()
+        );
+        let id = store.insert_node(
+            NodeKind::Section,
+            "<document>",
+            &qualified_name,
+            &rel_path,
+            1,
+            line_count,
+        )?;
+        store.insert_edge(file_id, id, EdgeKind::Defines)?;
+    }
+    for key in &keys {
+        let qualified_name = format!(
+            "{rel_path}#doc={}#key={}#status={}{note_part}",
+            key.doc,
+            key.key_path,
+            status.as_str()
+        );
+        let id = store.insert_node(
+            NodeKind::Section,
+            &key.key_path,
+            &qualified_name,
+            &rel_path,
+            key.start_line,
+            key.end_line,
+        )?;
+        if key.parent.is_empty() {
+            store.insert_edge(file_id, id, EdgeKind::Defines)?;
+        } else if let Some(parent_id) = node_ids.get(&(key.doc, key.parent.clone())) {
+            store.insert_edge(*parent_id, id, EdgeKind::Contains)?;
+        } else {
+            store.insert_edge(file_id, id, EdgeKind::Defines)?;
+        }
+        node_ids.insert((key.doc, key.key_path.clone()), id);
+    }
+
+    Ok((
+        FileIndexResult {
+            fn_nodes: Vec::new(),
+            pending_calls: Vec::new(),
+            reexport_aliases: Vec::new(),
+        },
+        status,
+    ))
 }
 
 /// Markdown's structural model is headings, not functions/calls - there's
@@ -1464,6 +2015,262 @@ mod index_directory_checked_tests {
         let (nodes, _) = store.stats().unwrap();
         assert!(nodes > 0);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod config_index_tests {
+    use super::{content_signature_with_config, index_directory_with_config};
+    use crate::graph::GraphStore;
+    use nexus_core::ConfigIndexConfig;
+    use std::fs;
+
+    fn temp_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nexus_config_index_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("secrets")).unwrap();
+        dir
+    }
+
+    fn enabled() -> ConfigIndexConfig {
+        ConfigIndexConfig {
+            enabled: true,
+            ..ConfigIndexConfig::default()
+        }
+    }
+
+    fn write_fixture(dir: &std::path::Path) {
+        fs::write(
+            dir.join("values.yaml"),
+            "---\ntelemetry:\n  enabled: true\n  endpoint: example.invalid\n---\nreplicas: 3\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("config.json"),
+            "{\"feature_flags\": {\"beta\": true}}\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn disabled_by_default_leaves_config_files_out_of_the_index() {
+        let dir = temp_project("disabled");
+        write_fixture(&dir);
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        let stats =
+            index_directory_with_config(&dir, &store, &ConfigIndexConfig::default()).unwrap();
+        assert_eq!(stats.config_files_indexed, 0);
+        assert!(store.search_by_name("telemetry", 10).unwrap().is_empty());
+        assert!(store.search_code("example.invalid", 10).unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enabled_indexes_documents_key_paths_and_source_ranges() {
+        let dir = temp_project("enabled");
+        write_fixture(&dir);
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        let stats = index_directory_with_config(&dir, &store, &enabled()).unwrap();
+        assert_eq!(stats.config_files_indexed, 2);
+
+        let keys = store.search_by_name("telemetry.enabled", 10).unwrap();
+        assert_eq!(keys.len(), 1, "expected one nested key node: {keys:?}");
+        assert!(keys[0].qualified_name.contains("#doc=1#"));
+        assert!(keys[0].qualified_name.contains("#status=parsed"));
+        assert_eq!((keys[0].start_line, keys[0].end_line), (3, 4));
+
+        let replicas = store.search_by_name("replicas", 10).unwrap();
+        assert_eq!(replicas.len(), 1);
+        assert!(replicas[0].qualified_name.contains("#doc=2#"));
+        assert_eq!(replicas[0].start_line, 6);
+
+        let hits = store.search_code("telemetry.enabled", 10).unwrap();
+        assert_eq!(hits.len(), 1, "key path must be searchable: {hits:?}");
+        assert_eq!(hits[0].key_path.as_deref(), Some("telemetry.enabled"));
+        assert_eq!(hits[0].document, Some(1));
+        assert_eq!(hits[0].parse_status.as_deref(), Some("parsed"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exclude_wins_over_include_before_any_content_is_read() {
+        let dir = temp_project("exclude");
+        write_fixture(&dir);
+        fs::write(
+            dir.join("secrets/creds.yaml"),
+            "password: top-secret-value-112\n",
+        )
+        .unwrap();
+        let config = ConfigIndexConfig {
+            exclude: vec!["**/secrets/**".to_string()],
+            ..enabled()
+        };
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        let stats = index_directory_with_config(&dir, &store, &config).unwrap();
+        assert_eq!(stats.config_files_excluded, 1);
+        assert!(store
+            .search_code("top-secret-value-112", 10)
+            .unwrap()
+            .is_empty());
+        // Exclusions happen before ingestion, so the secret must not appear
+        // in graph.db or its WAL/shm sidecars either - only in the source
+        // file that the exclusion protected.
+        for entry in fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some("secrets") {
+                continue;
+            }
+            for candidate in [
+                path.clone(),
+                path.with_extension("db-wal"),
+                path.with_extension("db-shm"),
+            ] {
+                if let Ok(bytes) = fs::read(&candidate) {
+                    assert!(
+                        !bytes.windows(20).any(|w| w == b"top-secret-value-112"),
+                        "excluded secret leaked into {}",
+                        candidate.display()
+                    );
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn metadata_only_stores_no_raw_values() {
+        let dir = temp_project("metadata_only");
+        write_fixture(&dir);
+        let config = ConfigIndexConfig {
+            metadata_only: true,
+            ..enabled()
+        };
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        index_directory_with_config(&dir, &store, &config).unwrap();
+        assert!(store.search_code("example.invalid", 10).unwrap().is_empty());
+        let hits = store.search_code("telemetry.enabled", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.contains("key_path:telemetry.enabled"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn partial_duplicate_keys_and_unsupported_templates_are_labelled() {
+        let dir = temp_project("states");
+        fs::write(
+            dir.join("duplicate.yaml"),
+            "service:\n  port: 80\nservice:\n  port: 8080\n",
+        )
+        .unwrap();
+        fs::write(dir.join("template.yaml"), "image: {{ .Values.image }}\n").unwrap();
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        let stats = index_directory_with_config(&dir, &store, &enabled()).unwrap();
+        assert_eq!(stats.config_files_partial, 1);
+        assert_eq!(stats.config_files_unsupported, 1);
+
+        let duplicate: Vec<_> = store
+            .search_by_name("service", 10)
+            .unwrap()
+            .into_iter()
+            .filter(|node| node.name == "service")
+            .collect();
+        assert_eq!(duplicate.len(), 1, "duplicate keys collapse to one node");
+        assert!(duplicate[0].qualified_name.contains("#status=partial"));
+        assert!(duplicate[0].qualified_name.contains("duplicate_key"));
+
+        let template = store.search_by_name("<document>", 10).unwrap();
+        assert_eq!(template.len(), 1);
+        assert!(template[0].qualified_name.contains("#status=unsupported"));
+        assert!(template[0].qualified_name.contains("template_syntax"));
+        // Unsupported files remain searchable as bounded literal text.
+        let hits = store.search_code(".Values.image", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].parse_status.as_deref(), Some("unsupported"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn signature_tracks_config_policy_and_config_files() {
+        let dir = temp_project("signature");
+        write_fixture(&dir);
+        fs::write(dir.join("secrets/creds.yaml"), "password: first-value\n").unwrap();
+        let disabled = ConfigIndexConfig::default();
+        let enabled_cfg = enabled();
+        let excluded = ConfigIndexConfig {
+            exclude: vec!["**/secrets/**".to_string()],
+            ..enabled()
+        };
+
+        let before = content_signature_with_config(&dir, &disabled);
+        fs::write(dir.join("values.yaml"), "replicas: 9\n").unwrap();
+        assert_eq!(
+            before,
+            content_signature_with_config(&dir, &disabled),
+            "disabled config indexing must not wake the watcher for YAML"
+        );
+        assert_ne!(
+            content_signature_with_config(&dir, &enabled_cfg),
+            content_signature_with_config(&dir, &excluded),
+            "changing config_index policy must be observable"
+        );
+
+        let before_excluded = content_signature_with_config(&dir, &excluded);
+        fs::write(dir.join("secrets/creds.yaml"), "password: second-value\n").unwrap();
+        assert_eq!(
+            before_excluded,
+            content_signature_with_config(&dir, &excluded)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn out_of_root_symlink_is_not_indexed() {
+        let dir = temp_project("symlink");
+        let outside =
+            std::env::temp_dir().join(format!("nexus_config_index_outside_{}", std::process::id()));
+        fs::write(&outside, "outside_key: outside-secret-value\n").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("linked.yaml")).unwrap();
+
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        let stats = index_directory_with_config(&dir, &store, &enabled()).unwrap();
+        assert_eq!(stats.config_files_indexed, 0);
+        assert!(store
+            .search_code("outside-secret-value", 10)
+            .unwrap()
+            .is_empty());
+        let _ = fs::remove_file(&outside);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn arrays_and_quoted_keys_get_distinct_source_linked_paths() {
+        let dir = temp_project("arrays");
+        fs::write(
+            dir.join("arrays.yaml"),
+            "servers:\n  - \"host name\": a.example\n    port: 80\n  - \"host name\": b.example\n    port: 443\n",
+        )
+        .unwrap();
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        index_directory_with_config(&dir, &store, &enabled()).unwrap();
+
+        for expected in [
+            "servers[1].host name",
+            "servers[1].port",
+            "servers[2].host name",
+            "servers[2].port",
+        ] {
+            let nodes = store.search_by_name(expected, 10).unwrap();
+            assert!(
+                nodes.iter().any(|node| node.name == expected),
+                "missing array/quoted key path {expected}: {nodes:?}"
+            );
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }

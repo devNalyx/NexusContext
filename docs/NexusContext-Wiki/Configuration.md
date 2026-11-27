@@ -25,6 +25,14 @@ server_command = "rust-analyzer" # Rust only for now - see below
 max_concurrent_servers = 2
 request_timeout_secs = 10
 
+# Opt-in YAML/JSON config indexing (issue #112). Off by default because
+# config files often contain secrets. Exclusions are applied before reading.
+[config_index]
+enabled = false
+include = ["**/*.yaml", "**/*.yml", "**/*.json"]
+exclude = []             # wins over include; e.g. ["**/secrets/**"]
+metadata_only = false    # true stores key paths/locations but no raw values
+
 # Human-registered external knowledge sources (issue #103). Normally written
 # by `nexus source add`, which canonicalizes root_path and indexes it at once.
 [[sources]]
@@ -55,6 +63,14 @@ enabled = true                       # default true
   [[Storage-and-Data-Model]] for the edge kind and [[Security-Model]] for
   why this is the one config section that runs an external binary rather
   than just connecting to one.
+- **`[config_index]`** — off by default. When on, `.yaml`/`.yml`/`.json`
+  files are indexed for `search_code`, with source-linked key paths, document
+  numbers, line ranges, and explicit parsed/partial/unsupported states.
+  `include`/`exclude` are repository-relative globs; `exclude` wins and is
+  applied before ingestion. `metadata_only = true` stores key paths and
+  locations but not raw values — useful when values may contain secrets, but
+  not secret detection or redaction. No Helm/template rendering, effective
+  values, or network access; see [[Security-Model]] and [[Known-Limitations]].
 - **`[[sources]]`** — human-registered external knowledge sources (e.g. an
   Obsidian vault). Written by `nexus source add`; the CLI canonicalizes the
   root, refuses duplicates and paths outside `allowed_roots`, and indexes

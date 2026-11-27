@@ -173,8 +173,28 @@ fn dot_escape(s: &str) -> String {
 }
 
 pub fn search_code(repo_path: &Path, query: &str, limit: u32) -> Result<Vec<CodeSearchHit>> {
+    Ok(search_code_detailed(repo_path, query, limit)?.hits)
+}
+
+/// `search_code` plus the canonical repository path and config-index coverage
+/// counters, for callers (MCP) that need to report provenance (issue #112).
+pub struct SearchCodeResult {
+    pub repo_path: std::path::PathBuf,
+    pub hits: Vec<CodeSearchHit>,
+    /// (parsed, partial, unsupported) config files currently in graph.db.
+    pub config_files: (u64, u64, u64),
+}
+
+pub fn search_code_detailed(repo_path: &Path, query: &str, limit: u32) -> Result<SearchCodeResult> {
     let repo_path = canonicalize_and_authorize(repo_path)?;
-    open_store(&repo_path)?.search_code(query, limit)
+    let store = open_store(&repo_path)?;
+    let hits = store.search_code(query, limit)?;
+    let config_files = store.config_index_stats()?;
+    Ok(SearchCodeResult {
+        repo_path,
+        hits,
+        config_files,
+    })
 }
 
 pub fn detect_changes(repo_path: &Path) -> Result<Vec<NodeRecord>> {

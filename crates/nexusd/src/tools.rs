@@ -239,7 +239,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "search_code",
-            "description": "Grep-like full-text search over indexed file content (not symbol names) via SQLite FTS5. Covers files tree-sitter parses (one of the 11 supported languages) plus markdown docs (.md/.markdown) - other file types aren't indexed yet. Query is matched as a literal phrase.",
+            "description": "Grep-like full-text search over indexed file content (not symbol names) via SQLite FTS5. Covers the 11 tree-sitter languages, markdown docs, and - only when [config_index] is explicitly enabled - YAML/JSON config key paths and values. Config hits carry document number, dotted key path, 1-based line range, parse status (parsed/partial/unsupported/template_syntax), and coverage; exclusions apply before ingestion and metadata_only stores no raw values. No templating language is rendered. Query is matched as a literal phrase.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -485,7 +485,7 @@ pub fn call(params: Value, config: &Config) -> Result<Value> {
         "get_architecture" => get_architecture(args),
         "detect_changes" => detect_changes(args),
         "detect_dead_code" => detect_dead_code(args),
-        "search_code" => search_code(args),
+        "search_code" => search_code(args, config),
         "query_graph" => query_graph(args),
         "query_planner" => query_planner(args),
         "get_session_usage" => get_session_usage(args, config),
@@ -668,6 +668,11 @@ fn index_repository(args: Value) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
         "status": "indexed",
         "files_indexed": stats.files_indexed,
+        "config_files_indexed": stats.config_files_indexed,
+        "config_files_partial": stats.config_files_partial,
+        "config_files_unsupported": stats.config_files_unsupported,
+        "config_files_excluded": stats.config_files_excluded,
+        "config_files_skipped": stats.config_files_skipped,
         "nodes": stats.nodes,
         "edges": stats.edges,
         "lsp_enrichment": stats.lsp_enrichment,
@@ -1050,7 +1055,7 @@ fn detect_dead_code(args: Value) -> Result<String> {
     }))?)
 }
 
-fn search_code(args: Value) -> Result<String> {
+fn search_code(args: Value, config: &Config) -> Result<String> {
     let repo_path = repo_path_arg(&args)?;
     let query = args
         .get("query")
@@ -1058,11 +1063,61 @@ fn search_code(args: Value) -> Result<String> {
         .ok_or_else(|| anyhow!("missing 'query' argument"))?;
     let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as u32);
 
-    let hits = index::search_code(&repo_path, query, limit)?;
-    Ok(serde_json::to_string_pretty(&json!(hits
+    let result = index::search_code_detailed(&repo_path, query, limit)?;
+    let hits: Vec<Value> = result
+        .hits
         .iter()
-        .map(|h| json!({ "file": h.file_path, "snippet": h.snippet }))
-        .collect::<Vec<_>>()))?)
+        .map(|h| {
+            let mut hit = json!({ "file": h.file_path, "snippet": h.snippet });
+            if let Some(obj) = hit.as_object_mut() {
+                let extras: [(&str, Option<Value>); 7] = [
+                    ("source_kind", h.source_kind.as_ref().map(|v| json!(v))),
+                    ("document", h.document.map(|v| json!(v))),
+                    ("key_path", h.key_path.as_ref().map(|v| json!(v))),
+                    ("start_line", h.start_line.map(|v| json!(v))),
+                    ("end_line", h.end_line.map(|v| json!(v))),
+                    ("parse_status", h.parse_status.as_ref().map(|v| json!(v))),
+                    ("note", h.note.as_ref().map(|v| json!(v))),
+                ];
+                for (key, value) in extras {
+                    if let Some(value) = value {
+                        obj.insert(key.to_string(), value);
+                    }
+                }
+            }
+            hit
+        })
+        .collect();
+
+    let (parsed, partial, unsupported) = result.config_files;
+    // `tools::call` is only reached through `nexusd mcp` (stdio), which does
+    // not start the watcher - make that explicit so a "warm" registry entry
+    // isn't mistaken for live syncing in this session.
+    let mut freshness = index_freshness_json(&result.repo_path, now_unix());
+    if let Some(obj) = freshness.as_object_mut() {
+        obj.insert("mode".to_string(), json!("stdio"));
+        obj.insert("watcher_active".to_string(), json!(false));
+        obj.insert(
+            "note".to_string(),
+            json!("This MCP session does not run the background watcher; warm/cold reflects the registry's last-indexed time, not live syncing."),
+        );
+    }
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "repository": result.repo_path.to_string_lossy(),
+        "hits": hits,
+        "coverage": {
+            "config_index_enabled": config.config_index.enabled,
+            "metadata_only": config.config_index.metadata_only,
+            "files_parsed": parsed,
+            "files_partial": partial,
+            "files_unsupported": unsupported,
+            "files_excluded": null,
+            "files_skipped": null,
+            "note": "Partial/unsupported files are literal-text fallback only. Excluded/skipped counts are reported by index_repository and reindex; they are not persisted in graph.db.",
+        },
+        "index_freshness": freshness,
+    }))?)
 }
 
 fn query_graph(args: Value) -> Result<String> {
@@ -1144,6 +1199,22 @@ mod tests {
         assert_eq!(value["sources"][0]["id"], "vault");
         assert_eq!(value["sources"][0]["resource"], "obsidian-vault://vault");
         assert_eq!(value["sources"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn search_code_schema_describes_opt_in_config_indexing() {
+        let definitions = tool_definitions();
+        let schema = definitions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "search_code")
+            .expect("search_code must stay in every preset");
+        let description = schema["description"].as_str().unwrap();
+        assert!(description.contains("[config_index]"), "{description}");
+        assert!(description.contains("YAML/JSON"), "{description}");
+        assert!(description.contains("metadata_only"), "{description}");
+        assert!(description.contains("literal phrase"), "{description}");
     }
 
     #[test]

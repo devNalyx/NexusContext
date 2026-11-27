@@ -110,6 +110,66 @@ pub struct TracedNode {
 pub struct CodeSearchHit {
     pub file_path: String,
     pub snippet: String,
+    /// `config` for opt-in YAML/JSON hits; `None` for code/markdown hits.
+    pub source_kind: Option<String>,
+    /// 1-based YAML document number (JSON always has one document).
+    pub document: Option<u32>,
+    /// Dotted key path, or `<document>` for a file-level fallback hit.
+    pub key_path: Option<String>,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+    /// `parsed`, `partial`, or `unsupported` (literal-text fallback only).
+    pub parse_status: Option<String>,
+    /// Bounded classification note such as `duplicate_key` or `template_syntax`.
+    pub note: Option<String>,
+}
+
+/// A config `Section` node's provenance, decoded from its qualified name.
+/// Keeping this metadata in the existing `nodes` table avoids a new schema or
+/// a second index; see issue #112.
+fn config_node_metadata(qualified_name: &str) -> Option<(u32, String, String, Option<String>)> {
+    fn between<'a>(s: &'a str, start: &str, end: &str) -> Option<&'a str> {
+        let rest = s.split_once(start)?.1;
+        Some(rest.split(end).next().unwrap_or(rest))
+    }
+    let document = between(qualified_name, "#doc=", "#")?.parse::<u32>().ok()?;
+    let key_path = between(qualified_name, "#key=", "#")?.to_string();
+    let status = between(qualified_name, "#status=", "#")?.to_string();
+    let note = qualified_name
+        .split_once("#note=")
+        .map(|(_, tail)| tail.to_string());
+    Some((document, key_path, status, note))
+}
+
+fn config_excerpt(content: &str, start_line: u32, end_line: u32, query: &str) -> String {
+    let needle = query.to_lowercase();
+    let metadata_only = content
+        .lines()
+        .next()
+        .is_some_and(|line| line.starts_with("key_path:") || line.starts_with("config status="));
+    let mut excerpt: Vec<String> = Vec::new();
+    if !metadata_only {
+        // Raw text is stored first and stays line-aligned with Section ranges.
+        excerpt.extend(
+            content
+                .lines()
+                .skip(start_line.saturating_sub(1) as usize)
+                .take((end_line.saturating_sub(start_line) + 1) as usize)
+                .take(3)
+                .map(|line| line.trim().to_string()),
+        );
+    }
+    if excerpt.is_empty() {
+        for line in content.lines() {
+            if line.to_lowercase().contains(&needle) {
+                excerpt.push(line.trim().to_string());
+                if excerpt.len() == 3 {
+                    break;
+                }
+            }
+        }
+    }
+    excerpt.join("\n")
 }
 
 /// One directory-path group in `GraphStore::directory_groups`'s grouped
@@ -478,18 +538,140 @@ impl GraphStore {
     pub fn search_code(&self, query: &str, limit: u32) -> Result<Vec<CodeSearchHit>> {
         let phrase = format!("\"{}\"", query.replace('"', "\"\""));
         let mut stmt = self.conn.prepare(
-            "SELECT file_path, snippet(file_contents_fts, 1, '>>>', '<<<', ' ... ', 20)
+            "SELECT file_path, content,
+                    snippet(file_contents_fts, 1, '>>>', '<<<', ' ... ', 20)
              FROM file_contents_fts WHERE file_contents_fts MATCH ?1
              ORDER BY rank LIMIT ?2",
         )?;
-        let rows = stmt.query_map(rusqlite::params![phrase, limit], |row| {
-            Ok(CodeSearchHit {
-                file_path: row.get(0)?,
-                snippet: row.get(1)?,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
+        let rows = stmt
+            .query_map(rusqlite::params![phrase, limit], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut config_nodes = self.conn.prepare_cached(
+            "SELECT qualified_name, start_line, end_line FROM nodes
+                 WHERE file_path = ?1 AND qualified_name LIKE '%#doc=%#key=%#status=%'
+                 ORDER BY start_line",
+        )?;
+        let needle = query.to_lowercase();
+        let mut hits = Vec::new();
+        for (file_path, content, snippet) in rows {
+            let nodes = config_nodes
+                .query_map(rusqlite::params![file_path], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, u32>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let config_nodes: Vec<_> = nodes
+                .into_iter()
+                .filter_map(|(qualified, start, end)| {
+                    config_node_metadata(&qualified).map(|m| (m, start, end))
+                })
+                .collect();
+
+            if config_nodes.is_empty() {
+                hits.push(CodeSearchHit {
+                    file_path,
+                    snippet,
+                    source_kind: None,
+                    document: None,
+                    key_path: None,
+                    start_line: None,
+                    end_line: None,
+                    parse_status: None,
+                    note: None,
+                });
+                continue;
+            }
+
+            let matching_lines: Vec<u32> = content
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| line.to_lowercase().contains(&needle))
+                .map(|(idx, _)| idx as u32 + 1)
+                .collect();
+            // Prefer key-path matches: on a single-line JSON object every key
+            // shares the same line range, so line-only matching would return
+            // every key as a hit instead of the one whose path matched.
+            let mut selected: Vec<usize> = config_nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, ((_, key_path, _, _), _, _))| {
+                    key_path.to_lowercase().contains(&needle)
+                })
+                .map(|(idx, _)| idx)
+                .collect();
+            if selected.is_empty() {
+                for line in &matching_lines {
+                    if let Some((idx, _)) = config_nodes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, ((_, _, _, _), start, end))| line >= start && line <= end)
+                        .max_by_key(|(_, ((_, key_path, _, _), start, _))| (*start, key_path.len()))
+                    {
+                        if !selected.contains(&idx) {
+                            selected.push(idx);
+                        }
+                    }
+                }
+                selected.sort_unstable();
+            }
+            if selected.is_empty() {
+                selected.push(0);
+            }
+            for idx in selected {
+                let ((document, key_path, status, note), start, end) = &config_nodes[idx];
+                hits.push(CodeSearchHit {
+                    file_path: file_path.clone(),
+                    snippet: config_excerpt(&content, *start, *end, query),
+                    source_kind: Some("config".to_string()),
+                    document: Some(*document),
+                    key_path: Some(key_path.clone()),
+                    start_line: Some(*start),
+                    end_line: Some(*end),
+                    parse_status: Some(status.clone()),
+                    note: note.clone(),
+                });
+                if hits.len() >= limit as usize {
+                    break;
+                }
+            }
+            if hits.len() >= limit as usize {
+                break;
+            }
+        }
+        hits.truncate(limit as usize);
+        Ok(hits)
+    }
+
+    /// Counts config files in the graph by parse status (issue #112). Counts
+    /// distinct `file_path`s from the `Section` nodes written during ingest,
+    /// so the search response can describe coverage without a second store.
+    pub fn config_index_stats(&self) -> Result<(u64, u64, u64)> {
+        fn count(self_: &GraphStore, status: &str) -> Result<u64> {
+            let pattern = format!("%#status={status}%");
+            let count: u64 = self_.conn.query_row(
+                "SELECT COUNT(DISTINCT file_path) FROM nodes
+                 WHERE qualified_name LIKE '%#doc=%#key=%#status=%'
+                   AND qualified_name LIKE ?1",
+                [pattern],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        }
+        Ok((
+            count(self, "parsed")?,
+            count(self, "partial")?,
+            count(self, "unsupported")?,
+        ))
     }
 
     pub fn node_by_id(&self, id: i64) -> Result<Option<NodeRecord>> {
