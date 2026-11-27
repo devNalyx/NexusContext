@@ -690,7 +690,7 @@
       <div class="card">
         <div class="node-mark"></div>
         <h3>A graph, not just vectors</h3>
-        <p>Tree-sitter parses 11 languages into a SQLite graph of functions, types, and call edges, resolved across file boundaries — plus full-text search and dead-code detection on the same graph, no embeddings layer at all.</p>
+        <p>Tree-sitter parses 11 languages into a SQLite graph of functions, types, and call edges, resolved across file boundaries — plus full-text search over code, docs and opt-in YAML/JSON config, and dead-code detection on the same graph, no embeddings layer at all.</p>
       </div>
       <div class="card">
         <div class="node-mark"></div>
@@ -790,7 +790,7 @@
         </div>
         <div class="tool-row">
           <div class="name">search_code</div>
-          <div class="desc">Grep-like full-text search over indexed file content via SQLite FTS5 — code and markdown alike.</div>
+          <div class="desc">Grep-like full-text search over indexed file content via SQLite FTS5 — code and markdown alike, plus opt-in YAML/JSON config key paths with document, line range and parse status (off by default; exclusions applied before ingestion, no template rendering).</div>
         </div>
         <div class="tool-row">
           <div class="name">trace_call_path</div>
