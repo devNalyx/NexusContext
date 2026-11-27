@@ -878,6 +878,10 @@ fn last_indexed_unix(repo_path: &std::path::Path) -> u64 {
 /// freshness. Does the real `Paths::resolve()`/`Registry::load` I/O; the
 /// actual shaping logic is factored into `index_freshness_json_from` below
 /// so it's testable without a real registry file.
+///
+/// Every caller here runs inside `nexusd mcp` (stdio), which starts no
+/// watcher, so the shared helper states that explicitly (issue #122). A
+/// "warm" registry entry means recently indexed, never verified-current.
 fn index_freshness_json(repo_path: &std::path::Path, now_unix: u64) -> Value {
     let paths = Paths::resolve();
     let hash = project_hash(repo_path);
@@ -896,15 +900,26 @@ fn index_freshness_json_from(
     now_unix: u64,
     warm_window_secs: u64,
 ) -> Value {
+    // One shape for every MCP tool: `warm` is only "indexed recently", not
+    // "verified against the working tree". The stdio process never owns a
+    // watcher, so claiming active syncing here would be false (#122).
+    const STDIO_NOTE: &str = "This MCP session does not run the background watcher; warm/cold only reflects the registry's last-indexed time. The graph may be behind the working tree even when warm — reindex after external edits or verify directly.";
     let Some(entry) = entry else {
-        return json!({ "indexed": false });
+        return json!({
+            "indexed": false,
+            "mode": "stdio",
+            "watcher_active": false,
+            "note": STDIO_NOTE,
+        });
     };
     json!({
         "indexed": true,
         "last_indexed_unix": entry.last_indexed_unix,
         "seconds_since_indexed": now_unix.saturating_sub(entry.last_indexed_unix),
         "warm": entry.is_warm(now_unix, warm_window_secs),
-        "note": "warm means the background watcher is actively keeping this project's graph in sync with the working tree; cold means it isn't (yet) and the graph may be behind - a tool result under a cold project is worth verifying, not treating as ground truth",
+        "mode": "stdio",
+        "watcher_active": false,
+        "note": STDIO_NOTE,
     })
 }
 
@@ -1090,18 +1105,8 @@ fn search_code(args: Value, config: &Config) -> Result<String> {
         .collect();
 
     let (parsed, partial, unsupported) = result.config_files;
-    // `tools::call` is only reached through `nexusd mcp` (stdio), which does
-    // not start the watcher - make that explicit so a "warm" registry entry
-    // isn't mistaken for live syncing in this session.
-    let mut freshness = index_freshness_json(&result.repo_path, now_unix());
-    if let Some(obj) = freshness.as_object_mut() {
-        obj.insert("mode".to_string(), json!("stdio"));
-        obj.insert("watcher_active".to_string(), json!(false));
-        obj.insert(
-            "note".to_string(),
-            json!("This MCP session does not run the background watcher; warm/cold reflects the registry's last-indexed time, not live syncing."),
-        );
-    }
+    // All MCP tools share the same stdio-aware freshness envelope (#122).
+    let freshness = index_freshness_json(&result.repo_path, now_unix());
 
     Ok(serde_json::to_string_pretty(&json!({
         "repository": result.repo_path.to_string_lossy(),
@@ -1383,6 +1388,40 @@ mod tests {
 
         let cold = index_freshness_json_from(Some(&entry), 1000 + 3601, 3600);
         assert_eq!(cold["warm"], false);
+    }
+
+    #[test]
+    fn stdio_freshness_never_claims_an_active_watcher() {
+        let entry = nexus_core::ProjectEntry {
+            root_path: "/tmp/whatever".to_string(),
+            hash: "deadbeef".to_string(),
+            last_indexed_unix: 1000,
+            nodes: 0,
+            edges: 0,
+            last_queried_unix: 1000,
+            auto_reindex_count: 0,
+            auto_reindex_fail_count: 0,
+            auto_reindex_total_ms: 0,
+            last_auto_reindex_ms: 0,
+            last_auto_reindex_unix: 0,
+            source_id: None,
+            source_kind: None,
+            source_resource: None,
+        };
+        for value in [
+            index_freshness_json_from(None, 1000, 3600),
+            index_freshness_json_from(Some(&entry), 1000, 3600),
+            index_freshness_json_from(Some(&entry), 100_000, 3600),
+        ] {
+            assert_eq!(value["mode"], "stdio");
+            assert_eq!(value["watcher_active"], false);
+            let note = value["note"].as_str().expect("freshness note");
+            assert!(
+                !note.contains("actively keeping"),
+                "stale watcher claim in note: {note}"
+            );
+            assert!(note.contains("may be behind"));
+        }
     }
 
     #[test]
