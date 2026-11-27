@@ -16,7 +16,7 @@ allowed_roots = []   # if non-empty, every MCP tool/CLI command that takes a
 warm_window_secs = 21600   # 6h default - see Watcher-and-Freshness
 
 [tools]
-preset = "standard"   # "minimal" (5) | "standard" (default, 13) | "full" (30)
+preset = "standard"   # "minimal" (5) | "standard" (default, 13) | "full" (31)
 # enabled = ["search_code", "get_architecture"]   # explicit list, overrides preset
 
 [lsp]
@@ -32,6 +32,13 @@ enabled = false
 include = ["**/*.yaml", "**/*.yml", "**/*.json"]
 exclude = []             # wins over include; e.g. ["**/secrets/**"]
 metadata_only = false    # true stores key paths/locations but no raw values
+
+# Opt-in Obsidian-style vault metadata (issue #133). Off by default; a source
+# registration never turns this on. See [[Obsidian-Secondbrain]].
+[vault_index]
+enabled = false          # true extracts wikilink targets, inline #tags and
+                         # frontmatter tags/aliases identifiers with line
+                         # numbers and resolution status only - no values
 
 # Human-registered external knowledge sources (issue #103). Normally written
 # by `nexus source add`, which canonicalizes root_path and indexes it at once.
@@ -53,7 +60,7 @@ enabled = true                       # default true
 - **`[watcher].warm_window_secs`** — how long a project stays "warm"
   (actively watched, auto-reindexed on change) after it was last queried.
   See [[Watcher-and-Freshness]].
-- **`[tools]`** — which of the 30 MCP tools get advertised to a calling
+- **`[tools]`** — which of the 31 MCP tools get advertised to a calling
   agent. See [[MCP-Tools]] for the preset breakdown.
 - **`[lsp]`** — off by default. When on, `index_repository`'s `deep`
   argument (or `nexus reindex --deep`) spawns `server_command` to resolve
@@ -75,13 +82,64 @@ enabled = true                       # default true
   its static keys with a `template_syntax` note, while unparseable template
   syntax is `unsupported` (#124). See [[Security-Model]] and
   [[Known-Limitations]].
+- **`[vault_index]`** — off by default, deliberately separate from
+  `[config_index]` and from source registration. When `enabled = true`, the
+  Markdown ingest pass extracts only wikilink targets, inline `#tags`, and
+  frontmatter `tags`/`aliases` identifiers, with line numbers and resolution
+  status. Property values, callout bodies, embed contents, Canvas text,
+  formulas and fetched targets are never stored. Reindex the vault after
+  enabling it; `vault_context` errors clearly while it is disabled. See
+  [[Obsidian-Secondbrain]] and ADR 0021.
 - **`[[sources]]`** — human-registered external knowledge sources (e.g. an
   Obsidian vault). Written by `nexus source add`; the CLI canonicalizes the
   root, refuses duplicates and paths outside `allowed_roots`, and indexes
   immediately. `resource` is the OKF-style provenance URI usable by
   `nexus memory add --source`; registration is metadata only and never
   implies human approval of a fact. Agents see sources read-only through
-  `list_sources`. See [[CLI-Reference]] and [[MCP-Tools]].
+  `list_sources`. Those `id`/`resource` values are what the explicit `sources`
+  fan-out accepts. See [[CLI-Reference]], [[MCP-Tools]] and
+  [[Obsidian-Secondbrain]].
+
+## Explicit `sources` fan-out
+
+Five read tools — `search_code`, `search_graph`, `get_file_context`,
+`get_architecture` and `vault_context` — accept an optional `sources` array of
+registered source IDs or resource URIs, e.g.
+`"sources": ["secondbrain", "obsidian-vault://secondbrain"]`. It is mutually
+exclusive with `repo_path` (use one or the other), capped at 16 entries, and
+resolves only to currently enabled registered sources; unknown, duplicate or
+disabled entries are errors rather than silent omissions. There is no new tool
+name and no implicit federation: a call without `sources` stays scoped to one
+`repo_path`.
+
+The response is grouped, with each source's own provenance and freshness kept
+attached to its `data`:
+
+```json
+{
+  "source_count": 1,
+  "selected_by": ["id"],
+  "sources": [
+    {
+      "id": "secondbrain",
+      "kind": "obsidian-vault",
+      "resource": "obsidian-vault://secondbrain",
+      "root_path": "/absolute/canonical/vault",
+      "index_freshness": {
+        "indexed": true,
+        "mode": "stdio",
+        "watcher_active": false,
+        "warm": true,
+        "note": "warm means recently indexed, not verified-current"
+      },
+      "data": { "...": "the tool's normal per-source result" }
+    }
+  ],
+  "note": "Explicit fan-out only; no implicit federation. Each result is independently authorized and freshness-labelled."
+}
+```
+
+See [[MCP-Tools]] and ADR 0022.
 
 ## Env var overrides
 

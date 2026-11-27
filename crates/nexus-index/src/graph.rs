@@ -19,6 +19,10 @@ pub enum NodeKind {
     /// A markdown heading and its body, down to (not including) the next
     /// heading of equal-or-shallower level - see `docs::extract_sections`.
     Section,
+    /// A tag from a note's YAML frontmatter or an inline `#tag`. Qualified
+    /// names are prefixed `tag:` so a tag can never collide with a file or
+    /// symbol of the same spelling.
+    Tag,
 }
 
 impl NodeKind {
@@ -28,6 +32,7 @@ impl NodeKind {
             NodeKind::Function => "Function",
             NodeKind::Type => "Type",
             NodeKind::Section => "Section",
+            NodeKind::Tag => "Tag",
         }
     }
 
@@ -36,6 +41,7 @@ impl NodeKind {
             "File" => NodeKind::File,
             "Function" => NodeKind::Function,
             "Section" => NodeKind::Section,
+            "Tag" => NodeKind::Tag,
             _ => NodeKind::Type,
         }
     }
@@ -60,6 +66,13 @@ pub enum EdgeKind {
     /// graph, so resolution only ever adds coverage, never changes existing
     /// static-only behavior when no LSP server ran.
     CallsResolved,
+    /// Resolved wikilink: source note/section -> target note. Mirrors
+    /// `CALLS` in carrying resolution metadata (kept in `vault_links`, not
+    /// on the edge row itself) so an ambiguous basename match is never
+    /// presented as an exact path match. Unresolved links create no edge.
+    LinksTo,
+    /// Note -> tag, from frontmatter or an inline `#tag`.
+    Tagged,
 }
 
 impl EdgeKind {
@@ -69,12 +82,16 @@ impl EdgeKind {
             EdgeKind::Calls => "CALLS",
             EdgeKind::Contains => "CONTAINS",
             EdgeKind::CallsResolved => "CALLS_RESOLVED",
+            EdgeKind::LinksTo => "LINKS_TO",
+            EdgeKind::Tagged => "TAGGED",
         }
     }
 
     fn from_edges_kind_str(s: &str) -> Self {
         match s {
             "CALLS_RESOLVED" => EdgeKind::CallsResolved,
+            "LINKS_TO" => EdgeKind::LinksTo,
+            "TAGGED" => EdgeKind::Tagged,
             _ => EdgeKind::Calls,
         }
     }
@@ -181,6 +198,26 @@ fn config_excerpt(content: &str, start_line: u32, end_line: u32, query: &str) ->
         }
     }
     excerpt.join("\n")
+}
+
+/// One recorded wikilink, with the paths of both endpoints already joined
+/// in so callers don't need a second `node_by_id` round trip per hit.
+#[derive(Debug, Clone)]
+pub struct VaultLinkRecord {
+    pub src_id: i64,
+    pub dst_id: Option<i64>,
+    pub src_path: String,
+    pub dst_path: Option<String>,
+    pub target: String,
+    pub heading: Option<String>,
+    pub display: Option<String>,
+    pub embed: bool,
+    pub line: u32,
+    /// `exact-path` | `alias` | `unique-basename` | `unresolved`
+    pub resolution: String,
+    /// `exact` | `heuristic` | `none` - mirrors the call graph's
+    /// provenance-first convention rather than silently guessing.
+    pub confidence: String,
 }
 
 /// One directory-path group in `GraphStore::directory_groups`'s grouped
@@ -316,6 +353,29 @@ impl GraphStore {
             CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id, kind);
             CREATE VIRTUAL TABLE IF NOT EXISTS file_contents_fts
                 USING fts5(file_path UNINDEXED, content);
+            -- Vault link metadata. Kept separate from `edges` so the existing
+            -- call-graph queries stay byte-for-byte unchanged and unresolved
+            -- links (which have no destination node) can still be recorded.
+            CREATE TABLE IF NOT EXISTS vault_links (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                src_id      INTEGER NOT NULL REFERENCES nodes(id),
+                dst_id      INTEGER REFERENCES nodes(id),
+                target      TEXT NOT NULL,
+                heading     TEXT,
+                display     TEXT,
+                embed       INTEGER NOT NULL DEFAULT 0,
+                line        INTEGER NOT NULL,
+                resolution  TEXT NOT NULL,
+                confidence  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_vault_links_src ON vault_links(src_id);
+            CREATE INDEX IF NOT EXISTS idx_vault_links_dst ON vault_links(dst_id);
+            CREATE TABLE IF NOT EXISTS vault_aliases (
+                alias   TEXT NOT NULL,
+                file_id INTEGER NOT NULL REFERENCES nodes(id),
+                PRIMARY KEY (alias, file_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_vault_aliases_alias ON vault_aliases(alias);
             ",
         )?;
         // Migration for existing databases created before the embeddings/
@@ -360,6 +420,11 @@ impl GraphStore {
     /// proposal and deferred past this vertical slice.
     pub fn clear(&self) -> Result<()> {
         self.conn.execute("DELETE FROM file_contents_fts", [])?;
+        // Children first: `vault_links`/`vault_aliases` reference `nodes`,
+        // and `edges` does too, so deleting them before `nodes` avoids a
+        // transient foreign-key violation mid-rebuild.
+        self.conn.execute("DELETE FROM vault_links", [])?;
+        self.conn.execute("DELETE FROM vault_aliases", [])?;
         self.conn.execute("DELETE FROM edges", [])?;
         self.conn.execute("DELETE FROM nodes", [])?;
         Ok(())
@@ -435,6 +500,196 @@ impl GraphStore {
             .prepare_cached("INSERT INTO edges (src_id, dst_id, kind) VALUES (?1, ?2, ?3)")?
             .execute(rusqlite::params![src_id, dst_id, kind.as_str()])?;
         Ok(())
+    }
+
+    /// Records a wikilink's resolution metadata. `dst_id` is `None` for an
+    /// unresolved/ambiguous link; the raw target text is still kept so the
+    /// vault tool can report it instead of silently dropping the link.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_vault_link(
+        &self,
+        src_id: i64,
+        dst_id: Option<i64>,
+        target: &str,
+        heading: Option<&str>,
+        display: Option<&str>,
+        embed: bool,
+        line: u32,
+        resolution: &str,
+        confidence: &str,
+    ) -> Result<()> {
+        self.conn
+            .prepare_cached(
+                "INSERT INTO vault_links
+                 (src_id, dst_id, target, heading, display, embed, line, resolution, confidence)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?
+            .execute(rusqlite::params![
+                src_id,
+                dst_id,
+                target,
+                heading,
+                display,
+                embed as i64,
+                line as i64,
+                resolution,
+                confidence
+            ])?;
+        Ok(())
+    }
+
+    pub fn insert_vault_alias(&self, alias: &str, file_id: i64) -> Result<()> {
+        self.conn
+            .prepare_cached("INSERT OR IGNORE INTO vault_aliases (alias, file_id) VALUES (?1, ?2)")?
+            .execute(rusqlite::params![alias, file_id])?;
+        Ok(())
+    }
+
+    fn vault_link_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<VaultLinkRecord> {
+        Ok(VaultLinkRecord {
+            src_id: row.get(0)?,
+            dst_id: row.get(1)?,
+            src_path: row.get(2)?,
+            dst_path: row.get(3)?,
+            target: row.get(4)?,
+            heading: row.get(5)?,
+            display: row.get(6)?,
+            embed: row.get::<_, i64>(7)? != 0,
+            line: row.get::<_, i64>(8)? as u32,
+            resolution: row.get(9)?,
+            confidence: row.get(10)?,
+        })
+    }
+
+    fn vault_links_where(
+        &self,
+        clause: &str,
+        param: i64,
+        limit: u32,
+    ) -> Result<Vec<VaultLinkRecord>> {
+        let sql = format!(
+            "SELECT vl.src_id, vl.dst_id, sn.file_path, dn.file_path, vl.target,
+                    vl.heading, vl.display, vl.embed, vl.line, vl.resolution, vl.confidence
+             FROM vault_links vl
+             JOIN nodes sn ON sn.id = vl.src_id
+             LEFT JOIN nodes dn ON dn.id = vl.dst_id
+             WHERE {clause}
+             ORDER BY vl.line
+             LIMIT ?2"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params![param, limit], Self::vault_link_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn vault_links_from(&self, src_id: i64, limit: u32) -> Result<Vec<VaultLinkRecord>> {
+        self.vault_links_where("vl.src_id = ?1", src_id, limit)
+    }
+
+    pub fn vault_links_to(&self, dst_id: i64, limit: u32) -> Result<Vec<VaultLinkRecord>> {
+        self.vault_links_where("vl.dst_id = ?1", dst_id, limit)
+    }
+
+    /// Resolved destination node ids only - the cheapest possible edge walk
+    /// for the bounded document-map BFS (no joins, no metadata rows).
+    pub fn vault_link_targets(&self, src_id: i64) -> Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT dst_id FROM vault_links WHERE src_id = ?1 AND dst_id IS NOT NULL")?;
+        let rows = stmt.query_map([src_id], |row| row.get::<_, i64>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// All links with a given raw target, regardless of whether they resolved.
+    ///
+    /// Used by the `backlinks` mode when the caller names a note rather than
+    /// passing a resolved node id.
+    pub fn vault_links_by_target(&self, target: &str, limit: u32) -> Result<Vec<VaultLinkRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT vl.src_id, vl.dst_id, sn.file_path, dn.file_path, vl.target,
+                    vl.heading, vl.display, vl.embed, vl.line, vl.resolution, vl.confidence
+             FROM vault_links vl
+             JOIN nodes sn ON sn.id = vl.src_id
+             LEFT JOIN nodes dn ON dn.id = vl.dst_id
+             WHERE vl.target = ?1 OR lower(dn.file_path) = lower(?1)
+             ORDER BY sn.file_path, vl.line
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![target, limit], Self::vault_link_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn all_file_nodes(&self) -> Result<Vec<NodeRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, name, qualified_name, file_path, start_line, end_line
+             FROM nodes WHERE kind = 'File' ORDER BY file_path",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(NodeRecord {
+                id: row.get(0)?,
+                kind: NodeKind::from_str(&row.get::<_, String>(1)?),
+                name: row.get(2)?,
+                qualified_name: row.get(3)?,
+                file_path: row.get(4)?,
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn all_vault_aliases(&self) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT alias, file_id FROM vault_aliases ORDER BY alias")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn notes_with_tag(&self, tag: &str, limit: u32) -> Result<Vec<NodeRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT f.id, f.kind, f.name, f.qualified_name, f.file_path,
+                    f.start_line, f.end_line
+             FROM nodes f
+             JOIN edges e ON e.src_id = f.id
+             JOIN nodes t ON t.id = e.dst_id
+             WHERE f.kind = 'File' AND e.kind = 'TAGGED' AND t.name = ?1
+             ORDER BY f.file_path LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![tag, limit], |row| {
+            Ok(NodeRecord {
+                id: row.get(0)?,
+                kind: NodeKind::from_str(&row.get::<_, String>(1)?),
+                name: row.get(2)?,
+                qualified_name: row.get(3)?,
+                file_path: row.get(4)?,
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn tags(&self, limit: u32) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.name, COUNT(*)
+             FROM nodes t
+             JOIN edges e ON e.dst_id = t.id
+             JOIN nodes f ON f.id = e.src_id
+             WHERE t.kind = 'Tag' AND e.kind = 'TAGGED'
+             GROUP BY t.name
+             ORDER BY COUNT(*) DESC, t.name
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn stats(&self) -> Result<(i64, i64)> {

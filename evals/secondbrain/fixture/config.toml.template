@@ -1,0 +1,70 @@
+# Fixture config for evals/secondbrain/verify.py.
+# Placement values (VAULT_ALPHA etc.) are substituted into a temp dir at run
+# time; this template is never used as a real config and is never copied to a
+# user config path. No secret values, no network settings, no approval tools.
+
+allowed_roots = ["{{VAULT_ALPHA}}", "{{VAULT_BRAVO}}", "{{DISABLED_STUB}}"]
+
+[watcher]
+warm_window_secs = 21600
+
+[tools]
+preset = "standard"
+# `vault_context` only exists in the full preset on some builds, so the fixture
+# opts in explicitly. `recall` is included to prove a vault note is not a
+# curated/human-approved fact. No curation/approval tool is advertised.
+enabled = [
+  "index_repository",
+  "list_sources",
+  "search_code",
+  "get_file_context",
+  "search_graph",
+  "vault_context",
+  "get_session_usage",
+  "recall",
+]
+
+[lsp]
+enabled = false
+
+[config_index]
+enabled = false
+include = ["**/*.yaml", "**/*.yml", "**/*.json"]
+exclude = []
+metadata_only = true
+
+# The opt-in gate exercised by the harness. verify.py makes a second config
+# with this flipped to false while leaving the tool advertised, to check the
+# gate itself rather than only tools/list filtering.
+[vault_index]
+enabled = true
+
+# Human-registered sources: provenance metadata only, never fact approval.
+# Disabled source is registered so the harness can prove it is not listed and
+# cannot be used in an explicit sources fan-out.
+[[sources]]
+id = "alpha-vault"
+kind = "obsidian-vault"
+root_path = "{{VAULT_ALPHA}}"
+resource = "obsidian-vault://alpha-vault"
+title = "Alpha vault"
+description = "Fixture vault with wikilinks, tags and ADR-0007"
+enabled = true
+
+[[sources]]
+id = "bravo-vault"
+kind = "obsidian-vault"
+root_path = "{{VAULT_BRAVO}}"
+resource = "obsidian-vault://bravo-vault"
+title = "Bravo vault"
+description = "Fixture vault with the cross-vault decision ADR-0008"
+enabled = true
+
+[[sources]]
+id = "disabled-vault"
+kind = "obsidian-vault"
+root_path = "{{DISABLED_STUB}}"
+resource = "obsidian-vault://disabled-vault"
+title = "Disabled fixture source"
+description = "Registered but disabled; must never be listed or queried"
+enabled = false

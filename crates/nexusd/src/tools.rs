@@ -1,6 +1,6 @@
 use crate::memory_tools;
 use anyhow::{anyhow, bail, Result};
-use nexus_core::{project_hash, Config, Paths, Registry, WatcherConfig};
+use nexus_core::{project_hash, Config, Paths, Registry, SourceConfig, WatcherConfig};
 use nexus_index::{self as index, index_project, Direction, NodeRecord};
 use nexus_memory::Ledger;
 use serde_json::{json, Value};
@@ -33,6 +33,24 @@ pub(crate) const SERVER_MAX_DEPTH: u32 = 10;
 
 pub(crate) fn clamp_depth(requested: u32) -> u32 {
     requested.min(SERVER_MAX_DEPTH)
+}
+
+/// Hard ceiling on explicit multi-source fan-out. This bounds daemon work
+/// and response size; there is deliberately no implicit federation across
+/// all registered sources.
+const SERVER_MAX_SOURCES: usize = 16;
+
+/// Shared schema fragment for the opt-in `sources` argument on the five
+/// read tools that support explicit fan-out. Kept in one place so the
+/// description cannot drift between tools.
+fn sources_schema() -> Value {
+    json!({
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 1,
+        "maxItems": SERVER_MAX_SOURCES,
+        "description": "Explicit registered source ids or resource URIs from list_sources. Mutually exclusive with repo_path; no implicit federation."
+    })
 }
 
 /// Per-tool call/error/byte counters for `get_session_usage`, scoped to
@@ -72,6 +90,7 @@ const READS_AVOIDED_TOOLS: &[&str] = &[
     "get_architecture",
     "detect_changes",
     "query_planner",
+    "vault_context",
 ];
 
 static SESSION_USAGE: std::sync::OnceLock<
@@ -161,10 +180,15 @@ pub fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {
                     "repo_path": { "type": "string" },
+                    "sources": sources_schema(),
                     "pattern": { "type": "string" },
                     "limit": { "type": "integer", "default": 20 }
                 },
-                "required": ["repo_path", "pattern"]
+                "required": ["pattern"],
+                "anyOf": [
+                    { "required": ["repo_path"] },
+                    { "required": ["sources"] }
+                ]
             }
         },
         {
@@ -189,12 +213,17 @@ pub fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {
                     "repo_path": { "type": "string" },
+                    "sources": sources_schema(),
                     "file": { "type": "string" },
                     "start_line": { "type": "integer" },
                     "end_line": { "type": "integer" },
                     "full": { "type": "boolean", "default": false }
                 },
-                "required": ["repo_path", "file"]
+                "required": ["file"],
+                "anyOf": [
+                    { "required": ["repo_path"] },
+                    { "required": ["sources"] }
+                ]
             }
         },
         {
@@ -204,10 +233,14 @@ pub fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {
                     "repo_path": { "type": "string" },
+                    "sources": sources_schema(),
                     "grouped": { "type": "boolean", "default": false },
                     "depth": { "type": "integer", "default": 1 }
                 },
-                "required": ["repo_path"]
+                "anyOf": [
+                    { "required": ["repo_path"] },
+                    { "required": ["sources"] }
+                ]
             }
         },
         {
@@ -253,6 +286,7 @@ pub fn tool_definitions() -> Value {
                 "type": "object",
                 "properties": {
                     "repo_path": { "type": "string" },
+                    "sources": sources_schema(),
                     "query": { "type": "string" },
                     "limit": { "type": "integer", "default": 20 },
                     "offset": {
@@ -261,7 +295,11 @@ pub fn tool_definitions() -> Value {
                         "description": "Skip this many hits (not files) and return the next page; use next_offset from a truncated response."
                     }
                 },
-                "required": ["repo_path", "query"]
+                "required": ["query"],
+                "anyOf": [
+                    { "required": ["repo_path"] },
+                    { "required": ["sources"] }
+                ]
             }
         },
         {
@@ -290,6 +328,32 @@ pub fn tool_definitions() -> Value {
                     "limit": { "type": "integer", "default": 20 }
                 },
                 "required": ["repo_path", "query"]
+            }
+        },
+        {
+            "name": "vault_context",
+            "description": "Obsidian-style vault queries over indexed Markdown: follow wikilinks, find backlinks, list frontmatter/inline tags, or walk a bounded document map. Modes: links, backlinks, tags, notes_with_tag, map. Link hits carry resolution/confidence (exact-path, alias, unique-basename or unresolved). Advertised via tools.enabled or preset=full and usable only when [vault_index] enabled = true; a source registration alone never enables it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo_path": { "type": "string" },
+                    "sources": sources_schema(),
+                    "mode": {
+                        "type": "string",
+                        "enum": ["links", "backlinks", "tags", "notes_with_tag", "map"]
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Note name/path for links, backlinks and map; tag name for notes_with_tag."
+                    },
+                    "depth": { "type": "integer", "default": 2, "description": "Max hops for map mode only." },
+                    "limit": { "type": "integer", "default": 50 }
+                },
+                "required": ["mode"],
+                "anyOf": [
+                    { "required": ["repo_path"] },
+                    { "required": ["sources"] }
+                ]
             }
         },
         {
@@ -344,6 +408,7 @@ const ALL_TOOL_NAMES: &[&str] = &[
     "search_code",
     "query_planner",
     "query_graph",
+    "vault_context",
     "get_session_usage",
     "record_observation",
     "list_warmup_queue",
@@ -400,6 +465,7 @@ const STANDARD_EXTRA_TOOLS: &[&str] = &[
 const FULL_EXTRA_TOOLS: &[&str] = &[
     "delete_project",
     "query_graph",
+    "vault_context",
     "record_observation",
     "list_warmup_queue",
     "promote_skill",
@@ -465,66 +531,12 @@ pub fn call(params: Value, config: &Config) -> Result<Value> {
         .ok_or_else(|| anyhow!("missing tool name"))?;
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
 
-    // Best-effort "this project is actually being used" signal, distinct
-    // from last_indexed_unix which only moves on a reindex - lets the
-    // registry answer "which of these have I actually touched lately" for
-    // someone who's indexed many projects over time, and catches a cold
-    // project up with a synchronous reindex first if the watcher had
-    // stopped watching it - see nexus_index::touch_and_catchup, the one
-    // shared entry point this, control.rs, and the CLI all call.
-    // delete_project is excluded entirely: the entry is gone right after,
-    // so there's nothing to mark warm. index_repository still marks the
-    // project warm (it's real usage too) but skips the catch-up check -
-    // it's about to unconditionally reindex itself, so checking staleness
-    // first would just double the work.
-    if name != "delete_project" {
-        if let Some(repo_path) = args.get("repo_path").and_then(|v| v.as_str()) {
-            let repo_path = std::path::Path::new(repo_path);
-            if name == "index_repository" {
-                index::touch_queried(repo_path);
-            } else {
-                index::touch_and_catchup(repo_path);
-            }
-        }
-    }
-
     let call_start = std::time::Instant::now();
-    let result = match name {
-        "index_repository" => index_repository(args),
-        "list_sources" => list_sources(config),
-        "delete_project" => delete_project(args),
-        "search_graph" => search_graph(args),
-        "trace_call_path" => trace_call_path(args),
-        "get_file_context" => get_file_context(args),
-        "get_architecture" => get_architecture(args),
-        "detect_changes" => detect_changes(args),
-        "detect_dead_code" => detect_dead_code(args),
-        "search_code" => search_code(args, config),
-        "query_graph" => query_graph(args),
-        "query_planner" => query_planner(args),
-        "get_session_usage" => get_session_usage(args, config),
-        // Procedural memory now lives behind this daemon's single MCP surface;
-        // the absorbed engine keeps its own store/config but not a second
-        // tool catalog for the agent to pay for.
-        "record_observation"
-        | "list_warmup_queue"
-        | "list_skills"
-        | "promote_skill"
-        | "record_skill_feedback"
-        | "mark_skill_used"
-        | "list_pending_review"
-        | "dismiss_pending_review"
-        | "archive_skill"
-        | "restore_skill"
-        | "render_skill_graph" => {
-            // Myelin returns a raw JSON value; NC tools return a pretty-printed
-            // string that the common MCP `content` wrapper below text-frames.
-            let value = myelind::tools::call(json!({ "name": name, "arguments": args }))?;
-            Ok(serde_json::to_string_pretty(&value)?)
-        }
-        "recall" | "list_facts" | "curate_fact" | "review_fact" | "export_memory"
-        | "import_memory" => memory_tools::call(name, args, config),
-        _ => bail!("unknown tool: {name}"),
+    let result = if args.get("sources").is_some() {
+        fanout_call(name, &args, config)
+    } else {
+        touch_for_call(name, &args);
+        call_single(name, args, config)
     };
 
     // Phase 1 usage observability: lifetime aggregate counters only (calls,
@@ -560,6 +572,198 @@ pub fn call(params: Value, config: &Config) -> Result<Value> {
             json!({ "content": [ { "type": "text", "text": err.to_string() } ], "isError": true }),
         ),
     }
+}
+
+/// Best-effort "this project is actually being used" signal, distinct from
+/// last_indexed_unix which only moves on a reindex. Extracted so explicit
+/// fan-out can apply it once per selected root.
+fn touch_repo_for_call(name: &str, repo_path: &std::path::Path) {
+    if name == "delete_project" {
+        return;
+    }
+    if name == "index_repository" {
+        index::touch_queried(repo_path);
+    } else {
+        index::touch_and_catchup(repo_path);
+    }
+}
+
+fn touch_for_call(name: &str, args: &Value) {
+    if let Some(repo_path) = args.get("repo_path").and_then(|v| v.as_str()) {
+        touch_repo_for_call(name, std::path::Path::new(repo_path));
+    }
+}
+
+fn call_single(name: &str, args: Value, config: &Config) -> Result<String> {
+    match name {
+        "index_repository" => index_repository(args),
+        "list_sources" => list_sources(config),
+        "delete_project" => delete_project(args),
+        "search_graph" => search_graph(args),
+        "trace_call_path" => trace_call_path(args),
+        "get_file_context" => get_file_context(args),
+        "get_architecture" => get_architecture(args),
+        "detect_changes" => detect_changes(args),
+        "detect_dead_code" => detect_dead_code(args),
+        "search_code" => search_code(args, config),
+        "query_graph" => query_graph(args),
+        "vault_context" => vault_context(args, config),
+        "query_planner" => query_planner(args),
+        "get_session_usage" => get_session_usage(args, config),
+        // Procedural memory now lives behind this daemon's single MCP surface;
+        // the absorbed engine keeps its own store/config but not a second
+        // tool catalog for the agent to pay for.
+        "record_observation"
+        | "list_warmup_queue"
+        | "list_skills"
+        | "promote_skill"
+        | "record_skill_feedback"
+        | "mark_skill_used"
+        | "list_pending_review"
+        | "dismiss_pending_review"
+        | "archive_skill"
+        | "restore_skill"
+        | "render_skill_graph" => {
+            let value = myelind::tools::call(json!({ "name": name, "arguments": args }))?;
+            Ok(serde_json::to_string_pretty(&value)?)
+        }
+        "recall" | "list_facts" | "curate_fact" | "review_fact" | "export_memory"
+        | "import_memory" => memory_tools::call(name, args, config),
+        _ => bail!("unknown tool: {name}"),
+    }
+}
+
+/// One canonical resource URI derivation for the catalog and fan-out, so
+/// callers can select by exactly the string `list_sources` showed them.
+fn source_resource(source: &SourceConfig) -> String {
+    source
+        .resource
+        .clone()
+        .unwrap_or_else(|| format!("{}://{}", source.kind, source.id))
+}
+
+struct QueryRoot<'a> {
+    source: &'a SourceConfig,
+    repo_path: PathBuf,
+    selected_by: &'static str,
+}
+
+/// Resolve an explicit `sources` selector against the enabled registry.
+/// Every failure is fail-closed: no wildcard matching, no partial results
+/// from a list containing an unknown/disabled/out-of-root source, and no
+/// implicit use of registered roots the caller did not name.
+fn resolve_query_roots<'a>(args: &Value, config: &'a Config) -> Result<Vec<QueryRoot<'a>>> {
+    let requested = args
+        .get("sources")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("'sources' must be a non-empty array"))?;
+    if requested.is_empty() {
+        bail!("'sources' must not be empty - omit it to use repo_path");
+    }
+    if requested.len() > SERVER_MAX_SOURCES {
+        bail!(
+            "'sources' exceeds the {SERVER_MAX_SOURCES}-source ceiling; select fewer sources explicitly"
+        );
+    }
+    if args.get("repo_path").is_some() {
+        bail!("'sources' and 'repo_path' are mutually exclusive");
+    }
+
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut roots = Vec::new();
+    for value in requested {
+        let selector = value
+            .as_str()
+            .ok_or_else(|| anyhow!("every 'sources' item must be a string"))?;
+        if selector.is_empty() || selector == "*" {
+            bail!("'sources' requires exact ids or resource URIs, not wildcards");
+        }
+        let (source, selected_by) = config
+            .sources
+            .iter()
+            .find_map(|candidate| {
+                if !candidate.enabled {
+                    return None;
+                }
+                if candidate.id == selector {
+                    Some((candidate, "id"))
+                } else if source_resource(candidate) == selector {
+                    Some((candidate, "resource"))
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                anyhow!("unknown or disabled source '{selector}' - call list_sources first")
+            })?;
+        if !seen_ids.insert(source.id.as_str()) {
+            continue;
+        }
+        let canonical = PathBuf::from(&source.root_path)
+            .canonicalize()
+            .map_err(|_| anyhow!("registered root for source '{}' does not exist", source.id))?;
+        if !config.is_path_allowed(&canonical) {
+            bail!(
+                "source '{}' is outside allowed_roots - registration never overrides path policy",
+                source.id
+            );
+        }
+        roots.push(QueryRoot {
+            source,
+            repo_path: canonical,
+            selected_by,
+        });
+    }
+    Ok(roots)
+}
+
+const FANOUT_TOOLS: &[&str] = &[
+    "search_code",
+    "search_graph",
+    "get_file_context",
+    "get_architecture",
+    "vault_context",
+];
+
+/// Explicit, bounded multi-source reads. Each source is authorized and
+/// queried independently; results are never merged into an unattributed
+/// "global truth", and freshness is labelled per source.
+fn fanout_call(name: &str, args: &Value, config: &Config) -> Result<String> {
+    if !FANOUT_TOOLS.contains(&name) {
+        bail!("'sources' fan-out is not supported by '{name}'");
+    }
+    let roots = resolve_query_roots(args, config)?;
+    let selected_by: Vec<&str> = roots.iter().map(|root| root.selected_by).collect();
+    let mut results = Vec::new();
+
+    for root in &roots {
+        touch_repo_for_call(name, &root.repo_path);
+        let mut child = args.clone();
+        if let Value::Object(map) = &mut child {
+            map.remove("sources");
+            map.insert(
+                "repo_path".to_string(),
+                json!(root.repo_path.to_string_lossy()),
+            );
+        }
+        let text = call_single(name, child, config)?;
+        let data = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!(text));
+        results.push(json!({
+            "id": root.source.id,
+            "kind": root.source.kind,
+            "resource": source_resource(root.source),
+            "root_path": root.repo_path.to_string_lossy(),
+            "index_freshness": index_freshness_json(&root.repo_path, now_unix()),
+            "data": data,
+        }));
+    }
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "sources": results,
+        "source_count": results.len(),
+        "selected_by": selected_by,
+        "note": "Explicit fan-out only; no implicit federation. Each result is independently authorized and freshness-labelled.",
+    }))?)
 }
 
 fn repo_path_arg(args: &Value) -> Result<PathBuf> {
@@ -653,9 +857,7 @@ pub(crate) fn list_sources_value(config: &Config) -> Value {
                 "id": source.id,
                 "kind": source.kind,
                 "root_path": source.root_path,
-                "resource": source.resource.as_ref().unwrap_or(
-                    &format!("{}://{}", source.kind, source.id)
-                ),
+                "resource": source_resource(source),
                 "title": source.title,
                 "description": source.description,
             })
@@ -1154,6 +1356,23 @@ fn query_graph(args: Value) -> Result<String> {
 
     let results = nexus_index::run_cypher_query(&repo_path, query, limit)?;
     Ok(serde_json::to_string_pretty(&records_to_json(&results))?)
+}
+
+fn vault_context(args: Value, config: &Config) -> Result<String> {
+    if !config.vault_index.enabled {
+        bail!("vault_context is disabled - set [vault_index] enabled = true and reindex the vault");
+    }
+    let repo_path = repo_path_arg(&args)?;
+    let mode = args
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing 'mode' argument"))?;
+    let note = args.get("note").and_then(|v| v.as_str());
+    let depth = clamp_depth(args.get("depth").and_then(|v| v.as_u64()).unwrap_or(2) as u32);
+    let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as u32);
+
+    let result = index::vault_context(&repo_path, mode, note, depth, limit)?;
+    Ok(serde_json::to_string_pretty(&result)?)
 }
 
 fn detect_changes(args: Value) -> Result<String> {
@@ -1737,5 +1956,182 @@ mod tests {
             landing_page.contains(&format!("{total} MCP tools, grouped by what they answer")),
             "docs/index.html's capabilities heading is stale"
         );
+    }
+
+    static FANOUT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct FanoutEnv {
+        prev_config: Option<std::ffi::OsString>,
+        prev_cache: Option<std::ffi::OsString>,
+        dir: std::path::PathBuf,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl FanoutEnv {
+        fn set(label: &str) -> Self {
+            let guard = FANOUT_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let prev_config = std::env::var_os("NEXUS_CONFIG_DIR");
+            let prev_cache = std::env::var_os("NEXUS_CACHE_DIR");
+            let dir = std::env::temp_dir().join(format!(
+                "nexus_d_fanout_test_{label}_{}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(dir.join("config")).unwrap();
+            std::fs::create_dir_all(dir.join("data")).unwrap();
+            std::env::set_var("NEXUS_CONFIG_DIR", dir.join("config"));
+            std::env::set_var("NEXUS_CACHE_DIR", dir.join("data"));
+            Self {
+                prev_config,
+                prev_cache,
+                dir,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for FanoutEnv {
+        fn drop(&mut self) {
+            match &self.prev_config {
+                Some(value) => std::env::set_var("NEXUS_CONFIG_DIR", value),
+                None => std::env::remove_var("NEXUS_CONFIG_DIR"),
+            }
+            match &self.prev_cache {
+                Some(value) => std::env::set_var("NEXUS_CACHE_DIR", value),
+                None => std::env::remove_var("NEXUS_CACHE_DIR"),
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn fanout_config(env: &FanoutEnv, enabled: bool) -> Config {
+        let roots: Vec<(String, String)> = [("a", "Alpha"), ("b", "Beta")]
+            .into_iter()
+            .map(|(id, heading)| {
+                let root = env.dir.join(id);
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join("Note.md"), format!("# {heading}\n")).unwrap();
+                index::index_project(&root).unwrap();
+                (id.to_string(), root.to_string_lossy().to_string())
+            })
+            .collect();
+        Config {
+            sources: roots
+                .into_iter()
+                .map(|(id, root_path)| SourceConfig {
+                    id,
+                    root_path,
+                    kind: "markdown".to_string(),
+                    resource: None,
+                    title: None,
+                    description: None,
+                    enabled,
+                })
+                .collect(),
+            vault_index: nexus_core::VaultIndexConfig { enabled: true },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn source_resolver_accepts_ids_and_resource_uris_and_rejects_bad_selectors() {
+        let _env = FanoutEnv::set("resolver");
+        let config = fanout_config(&_env, true);
+
+        let by_id = resolve_query_roots(&json!({ "sources": ["a"] }), &config).unwrap();
+        assert_eq!(by_id.len(), 1);
+        assert_eq!(by_id[0].source.id, "a");
+        assert_eq!(by_id[0].selected_by, "id");
+
+        let by_uri = resolve_query_roots(&json!({ "sources": ["markdown://b"] }), &config).unwrap();
+        assert_eq!(by_uri[0].source.id, "b");
+        assert_eq!(by_uri[0].selected_by, "resource");
+
+        let deduped =
+            resolve_query_roots(&json!({ "sources": ["a", "markdown://a"] }), &config).unwrap();
+        assert_eq!(deduped.len(), 1);
+
+        for bad in [
+            json!({ "sources": [] }),
+            json!({ "sources": ["*"] }),
+            json!({ "sources": ["missing"] }),
+            json!({ "sources": ["a"], "repo_path": "/tmp/a" }),
+        ] {
+            assert!(resolve_query_roots(&bad, &config).is_err(), "{bad}");
+        }
+
+        let disabled = fanout_config(&_env, false);
+        assert!(resolve_query_roots(&json!({ "sources": ["a"] }), &disabled).is_err());
+    }
+
+    #[test]
+    fn fanout_envelope_keeps_per_source_provenance_and_freshness() {
+        let _env = FanoutEnv::set("envelope");
+        let config = fanout_config(&_env, true);
+
+        let text = fanout_call(
+            "search_graph",
+            &json!({ "sources": ["a", "markdown://b"], "pattern": "Note" }),
+            &config,
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["source_count"], 2);
+        assert_eq!(value["sources"].as_array().unwrap().len(), 2);
+        assert_eq!(value["sources"][0]["id"], "a");
+        assert_eq!(value["sources"][0]["resource"], "markdown://a");
+        assert_eq!(value["sources"][1]["id"], "b");
+        assert_eq!(value["sources"][0]["index_freshness"]["mode"], "stdio");
+        assert!(value["note"]
+            .as_str()
+            .unwrap()
+            .contains("no implicit federation"));
+        assert!(value["sources"][0]["data"].is_array());
+    }
+
+    #[test]
+    fn fanout_rejects_unsupported_tools_and_mixed_selectors() {
+        let _env = FanoutEnv::set("reject");
+        let config = fanout_config(&_env, true);
+        assert!(fanout_call("delete_project", &json!({ "sources": ["a"] }), &config).is_err());
+        assert!(fanout_call(
+            "search_code",
+            &json!({ "sources": ["a"], "repo_path": "/tmp/a", "query": "x" }),
+            &config
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn vault_context_fails_closed_unless_vault_index_is_enabled() {
+        let config = Config::default();
+        let response = call(
+            json!({
+                "name": "vault_context",
+                "arguments": { "repo_path": "/tmp/anything", "mode": "tags" }
+            }),
+            &config,
+        )
+        .unwrap();
+        assert_eq!(response["isError"], true);
+        assert!(response["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("[vault_index] enabled = true"));
+    }
+
+    #[test]
+    fn fanout_tools_advertise_the_sources_argument() {
+        let definitions = tool_definitions();
+        let tools = definitions.as_array().unwrap();
+        for name in FANOUT_TOOLS {
+            let schema = tools
+                .iter()
+                .find(|tool| tool["name"] == *name)
+                .unwrap_or_else(|| panic!("missing tool definition {name}"));
+            assert!(schema["inputSchema"]["properties"]["sources"].is_object());
+            assert!(schema["inputSchema"]["anyOf"].is_array());
+        }
     }
 }

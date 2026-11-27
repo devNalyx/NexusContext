@@ -70,6 +70,8 @@ history stays legible.
 | [0018](0018-absorb-myelin-as-procedural-memory.md) | Absorb Myelin as NC's procedural memory, under MIT | Accepted |
 | [0019](0019-context-economy-is-the-flagship.md) | Make context economy, not graph coverage, the flagship | Accepted |
 | [0020](0020-export-facts-as-okf.md) | Export curated facts as OKF v0.3 bundles, not a bespoke NC format | Accepted |
+| [0021](0021-vault-metadata-in-existing-sqlite-graph.md) | Store a narrow vault metadata subset in the existing SQLite graph | Accepted |
+| [0022](0022-user-level-secondbrain-adapter-and-explicit-fan-out.md) | Ship a user-level secondbrain skill with explicit source fan-out | Accepted |
 
 ## Related
 

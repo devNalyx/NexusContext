@@ -17,6 +17,196 @@ pub struct Section {
     pub parent: Option<usize>,
 }
 
+/// One Obsidian-style `[[link]]` found in a note body. `target` is the raw
+/// link target (before `#heading` / `|display` are split off); resolution to
+/// an actual file happens later, in the project-wide ingest pass, so the
+/// parser here stays purely syntactic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultLink {
+    pub target: String,
+    pub heading: Option<String>,
+    pub display: Option<String>,
+    /// True for `![[embed]]` syntax. Embeds are links for graph purposes;
+    /// whether to render their contents is a client concern, not ours.
+    pub embed: bool,
+    /// 1-indexed, matching the rest of the index.
+    pub line: u32,
+}
+
+/// Vault-specific metadata extracted from a Markdown note: YAML frontmatter
+/// `tags`/`aliases` plus body wikilinks and inline `#tags`. Deliberately a
+/// narrow subset of Obsidian's property/link syntax - no Dataview fields,
+/// block references or link rendering are attempted here.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VaultNote {
+    pub tags: Vec<String>,
+    pub aliases: Vec<String>,
+    pub links: Vec<VaultLink>,
+}
+
+#[derive(Default)]
+struct Frontmatter {
+    tags: Vec<String>,
+    aliases: Vec<String>,
+}
+
+/// Returns `(first_body_line_index, frontmatter)`. When there is no closed
+/// leading `---` block, returns `(0, default)` so the body scan starts at the
+/// first line and a stray `---` further down a file is never mistaken for a
+/// frontmatter delimiter.
+fn parse_frontmatter(lines: &[&str]) -> (usize, Frontmatter) {
+    if lines.first().map(|line| line.trim() == "---") != Some(true) {
+        return (0, Frontmatter::default());
+    }
+    let Some(close) = lines
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, line)| line.trim() == "---")
+        .map(|(idx, _)| idx)
+    else {
+        return (0, Frontmatter::default());
+    };
+
+    let mut result = Frontmatter::default();
+    // `Some(true)` = tags, `Some(false)` = aliases: block-list items (`- x`)
+    // belong to whichever key was seen most recently, matching YAML's
+    // indentation-insensitive shape for these two simple properties.
+    let mut active: Option<bool> = None;
+    for line in &lines[1..close] {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("tags:") {
+            active = Some(true);
+            append_yaml_values(value, &mut result.tags);
+        } else if let Some(value) = trimmed.strip_prefix("aliases:") {
+            active = Some(false);
+            append_yaml_values(value, &mut result.aliases);
+        } else if let Some(value) = trimmed.strip_prefix("- ") {
+            match active {
+                Some(true) => push_property(&mut result.tags, value),
+                Some(false) => push_property(&mut result.aliases, value),
+                None => {}
+            }
+        }
+    }
+    (close + 1, result)
+}
+
+fn append_yaml_values(raw: &str, out: &mut Vec<String>) {
+    let value = raw.trim();
+    if value.is_empty() || value == "[]" {
+        return;
+    }
+    if let Some(inner) = value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+        for item in inner.split(',') {
+            push_property(out, item);
+        }
+    } else {
+        push_property(out, value);
+    }
+}
+
+fn push_property(out: &mut Vec<String>, raw: &str) {
+    let value = raw.trim().trim_matches('"').trim_matches('\'').trim();
+    let value = value.strip_prefix('#').unwrap_or(value).trim();
+    if !value.is_empty() {
+        out.push(value.to_string());
+    }
+}
+
+/// Extracts vault-specific metadata from a note's raw text. Fenced code is
+/// skipped with the same marker-matching rules as `extract_sections`, so a
+/// `[[link]]` inside an example shell block never creates a graph edge.
+pub fn extract_vault_note(text: &str) -> VaultNote {
+    let lines: Vec<&str> = text.lines().collect();
+    let (body_start, frontmatter) = parse_frontmatter(&lines);
+    let mut note = VaultNote {
+        tags: frontmatter.tags,
+        aliases: frontmatter.aliases,
+        links: Vec::new(),
+    };
+
+    let mut in_fence = false;
+    let mut fence_marker = ' ';
+    for (idx, line) in lines.iter().enumerate().skip(body_start) {
+        let trimmed = line.trim_start();
+        if let Some(marker) = fence_delim(trimmed) {
+            if !in_fence {
+                in_fence = true;
+                fence_marker = marker;
+            } else if marker == fence_marker {
+                in_fence = false;
+            }
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        collect_wikilinks(line, idx as u32 + 1, &mut note.links);
+        collect_inline_tags(line, &mut note.tags);
+    }
+
+    note.tags.sort();
+    note.tags.dedup();
+    note.aliases.sort();
+    note.aliases.dedup();
+    note
+}
+
+fn collect_wikilinks(line: &str, line_no: u32, out: &mut Vec<VaultLink>) {
+    let bytes = line.as_bytes();
+    let mut cursor = 0;
+    while let Some(rel) = line[cursor..].find("[[") {
+        let start = cursor + rel;
+        let Some(end_rel) = line[start + 2..].find("]]") else {
+            break;
+        };
+        let inner_end = start + 2 + end_rel;
+        let inner = &line[start + 2..inner_end];
+
+        let (target_part, display) = match inner.split_once('|') {
+            Some((target, display)) => (target, Some(display.trim().to_string())),
+            None => (inner, None),
+        };
+        let (target, heading) = match target_part.split_once('#') {
+            Some((target, heading)) => (target, Some(heading.trim().to_string())),
+            None => (target_part, None),
+        };
+        let target = target.trim();
+        if !target.is_empty() {
+            out.push(VaultLink {
+                target: target.to_string(),
+                heading,
+                display,
+                embed: start > 0 && bytes[start - 1] == b'!',
+                line: line_no,
+            });
+        }
+        cursor = inner_end + 2;
+    }
+}
+
+fn collect_inline_tags(line: &str, out: &mut Vec<String>) {
+    let mut prev_whitespace = true;
+    for (idx, ch) in line.char_indices() {
+        if ch == '#' && prev_whitespace {
+            let rest = &line[idx + 1..];
+            let mut end = 0;
+            for (offset, c) in rest.char_indices() {
+                if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/') {
+                    end = offset + c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if end > 0 && rest.as_bytes()[0].is_ascii_alphabetic() {
+                push_property(out, &rest[..end]);
+            }
+        }
+        prev_whitespace = ch.is_whitespace();
+    }
+}
+
 /// Detects `^#{1,6}\s+` ATX headings only - not Setext (`Title\n===`), which
 /// is a deliberate v1 exclusion despite READMEs commonly using it for the
 /// top title line. Skips detection entirely inside fenced code blocks
@@ -241,5 +431,49 @@ mod tests {
         let sections = extract_sections(text);
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].name, "Real Heading");
+    }
+
+    #[test]
+    fn frontmatter_flow_and_block_tags_and_aliases_are_read() {
+        let text =
+            "---\ntags: [moc, current]\naliases:\n  - Home\n  - \"Start here\"\n---\n# Body\n";
+        let note = extract_vault_note(text);
+        assert_eq!(note.tags, vec!["current", "moc"]);
+        assert_eq!(note.aliases, vec!["Home", "Start here"]);
+        assert!(note.links.is_empty());
+    }
+
+    #[test]
+    fn wikilinks_keep_target_heading_display_embed_and_line() {
+        let text = "# A\n\n[[Status]] and [[Roadmap#Next|the plan]] and ![[chart.png]]\n";
+        let note = extract_vault_note(text);
+        assert_eq!(note.links.len(), 3);
+
+        assert_eq!(note.links[0].target, "Status");
+        assert_eq!(note.links[0].heading, None);
+        assert!(!note.links[0].embed);
+        assert_eq!(note.links[0].line, 3);
+
+        assert_eq!(note.links[1].target, "Roadmap");
+        assert_eq!(note.links[1].heading.as_deref(), Some("Next"));
+        assert_eq!(note.links[1].display.as_deref(), Some("the plan"));
+
+        assert_eq!(note.links[2].target, "chart.png");
+        assert!(note.links[2].embed);
+    }
+
+    #[test]
+    fn wikilinks_inside_fenced_code_are_not_extracted() {
+        let text = "# A\n\n```markdown\n[[NotALink]]\n```\n\n[[RealLink]]\n";
+        let note = extract_vault_note(text);
+        let targets: Vec<&str> = note.links.iter().map(|l| l.target.as_str()).collect();
+        assert_eq!(targets, vec!["RealLink"]);
+    }
+
+    #[test]
+    fn inline_tags_do_not_swallow_headings_or_url_fragments() {
+        let text = "# Heading\n\nSee https://example.com#fragment and #moc #nested/tag.\n";
+        let note = extract_vault_note(text);
+        assert_eq!(note.tags, vec!["moc", "nested/tag"]);
     }
 }

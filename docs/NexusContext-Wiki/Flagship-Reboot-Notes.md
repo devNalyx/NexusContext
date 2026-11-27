@@ -4,6 +4,18 @@ Status: **P0 complete** — originally written 2026-11-24 as a reboot handoff;
 updated after the first implementation session so a fresh session resumes at P1
 without re-deriving the strategy.
 
+## Current-state note — issue #133 (2026-11-27)
+
+A fresh implementation session is working on branch
+`feat/obsidian-secondbrain-integration`; the handoff state below remains
+historical. In progress: an off-by-default `[vault_index]` (metadata-only)
+Markdown extractor feeding the existing SQLite graph, the opt-in
+`vault_context` read tool (31 tools total, presets 5 / 13 / 31), explicit
+`sources` fan-out across five read tools, and a user-level `secondbrain` Agent
+Skill shipped under `skills/secondbrain/` and installed by
+`nexus install opencode --global --yes`. No release evidence yet — see
+[[Obsidian-Secondbrain]] and ADRs 0021/0022 before touching docs or tests.
+
 ## Read these first, in order
 
 1. [[Flagship-Proposal]] — thesis, locked decisions, non-goals, risks.

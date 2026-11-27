@@ -9,12 +9,13 @@ pub mod obsidian;
 pub mod project;
 pub mod queries;
 pub mod secure_fs;
+pub mod vault;
 
 pub use cypher::run_query as run_cypher_query;
 pub use enrich::{enrich_with_lsp, EnrichmentReport};
 pub use graph::{
     CodeSearchHit, CrossGroupEdge, Direction, DirectoryGroup, EdgeKind, GraphStore,
-    GroupedArchitecture, NodeKind, NodeRecord, TracedNode,
+    GroupedArchitecture, NodeKind, NodeRecord, TracedNode, VaultLinkRecord,
 };
 pub use ingest::{
     content_signature, content_signature_with_config, estimate_watch_count, index_directory,
@@ -34,3 +35,4 @@ pub use queries::{
     search_code, search_code_detailed, search_code_detailed_at, ArchitectureSummary,
     BlastRadiusResult, QueryPlanResult, SearchCodeResult,
 };
+pub use vault::{vault_context, VaultContext, VaultHit, VaultMapHit, VaultTagHit};

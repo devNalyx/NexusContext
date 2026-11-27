@@ -22,7 +22,7 @@ for the handful of decisions worth defending later.
 
 - [[Architecture]] — the daemon, its two transports, and how the pieces fit
   together.
-- [[MCP-Tools]] — the 30 tools an agent can call, grouped, and why they're
+- [[MCP-Tools]] — the 31 tools an agent can call, grouped, and why they're
   gated behind presets.
 - [[Indexing-Pipeline]] — how a codebase becomes a graph: tree-sitter,
   two-pass call resolution, per-language quality tiers.
@@ -39,6 +39,8 @@ for the handful of decisions worth defending later.
 - [[Storage-and-Data-Model]] — the SQLite graph, the registry, on-disk
   layout.
 - [[Configuration]] — the full `config.toml` reference.
+- [[Obsidian-Secondbrain]] — opt-in vault metadata, `vault_context`, explicit
+  `sources` fan-out, and the user-level `secondbrain` Agent Skill.
 - [[Security-Model]] — what's opt-in, what's blocked by default, and what
   a review pass found and fixed.
 - [[CLI-Reference]] — `nexus` subcommands.

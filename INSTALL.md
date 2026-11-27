@@ -113,6 +113,8 @@ nexus install opencode --uninstall --yes  # undo exactly what was installed
 nexus install opencode --global --uninstall --yes  # undo the global install
 ```
 
+`nexus install opencode --global --yes` also installs the user-level `secondbrain` Agent Skill under `~/.config/opencode/skills/secondbrain/` (`$XDG_CONFIG_HOME/opencode/skills/secondbrain/` when `XDG_CONFIG_HOME` is set), so the adapter follows the user across projects rather than living inside a vault; project-local installs do not install the skill, and `--global --uninstall --yes` removes it from the install manifest.
+
 Claude Code is registered via its own `claude mcp add` CLI and, with `--yes`, gets a project-local `SessionEnd` hook in `.claude/settings.local.json` plus `.claude/hooks/nexus-session-end.sh`. That hook stages only explicitly signposted lines into the absorbed Myelin pending-review queue; it never stores a raw transcript or promotes an excerpt on its own. To undo a Claude install, remove the `nexuscontext` MCP entry with `claude mcp remove nexuscontext`, delete `.claude/hooks/nexus-session-end.sh`, and remove the matching `SessionEnd` group from `.claude/settings.local.json` (v1 has no `--uninstall` for Claude; OpenCode's manifest-based uninstall is the only automated one). Claude Desktop gets one entry merged into `claude_desktop_config.json` without touching anything else already in it. OpenCode V2 gets `.opencode/plugins/nexuscontext/` (server hook handlers, typed RPC contract, TUI status slot + session panel and its pure formatters) plus one `mcp.servers.nexuscontext` entry in `opencode.json`; with `--global` the plugin goes to `$XDG_CONFIG_HOME/opencode/plugins/nexuscontext` (default `~/.config/opencode`) and the same MCP entry is merged into that config's `opencode.json`. Uninstall restores the pre-install value of that entry (or removes it) and deletes only files from the matching project-local or global install manifest. Prints a generic config snippet for anything else, rather than guessing at a config format it can't verify.
 
 **Curated memory** — agent-staged, human-approved facts with file anchors and freshness (see the wiki's CLI Reference):
@@ -128,15 +130,17 @@ nexus memory bundles --project /path/to/project --root /path/to/workspace  # rou
 
 ## 5. MCP tools available to agents
 
-Once `nexusd mcp` is wired into an agent, tools are exposed through one catalog: 13 structural/graph tools, 11 absorbed Myelin procedural-skill tools, and 6 curated declarative-memory tools. No network calls of any kind.
+Once `nexusd mcp` is wired into an agent, tools are exposed through one catalog: 14 structural/graph tools (including `vault_context`), 11 absorbed Myelin procedural-skill tools, and 6 curated declarative-memory tools. No network calls of any kind.
 
-Structural (13): `index_repository`, `list_sources`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes`, `detect_dead_code`, `search_code`, `query_graph`, `query_planner`, `get_session_usage`, `delete_project`.
+Structural (14): `index_repository`, `list_sources`, `search_graph`, `trace_call_path`, `get_file_context`, `get_architecture`, `detect_changes`, `detect_dead_code`, `search_code`, `query_graph`, `query_planner`, `get_session_usage`, `delete_project`, `vault_context`.
 
 Curated memory (6): `recall`, `list_facts`, `curate_fact`, `review_fact`, `export_memory`, `import_memory`. Only `recall` is advertised by default; curation and review are opt-in. An agent cannot approve its own staging: auto-injection requires a current `human:` sign-off, `status: stable` and a non-stale anchor.
 
 Procedural memory (11): `record_observation`, `list_warmup_queue`, `list_skills`, `promote_skill`, `record_skill_feedback`, `mark_skill_used`, `list_pending_review`, `dismiss_pending_review`, `archive_skill`, `restore_skill`, `render_skill_graph`.
 
-By default only 13 of these 30 are actually advertised to an agent (the `standard` preset - see Section 8's `[tools]` block) to cut the fixed per-session token cost of loading tool schemas. Set `preset = "full"` to get all 30, `preset = "minimal"` for just the 5 core read tools, or list exact tool names via `enabled`.
+By default only 13 of these 31 are actually advertised to an agent (the `standard` preset - see Section 8's `[tools]` block) to cut the fixed per-session token cost of loading tool schemas. Set `preset = "full"` to get all 31, `preset = "minimal"` for just the 5 core read tools, or list exact tool names via `enabled`.
+
+`vault_context` is an opt-in read tool (`full` preset or explicit `enabled`) for wikilinks, backlinks, tags and a bounded note map. It requires `[vault_index] enabled = true` in `config.toml`, then a reindex of the vault; otherwise it errors clearly. Only link/tag identifiers, line numbers and resolution status are indexed — never note values, callout bodies, embeds, Canvas text or fetched targets. The five read tools `search_code`, `search_graph`, `get_file_context`, `get_architecture` and `vault_context` also accept an optional explicit `"sources": ["id-or-resource-uri", ...]` array (max 16, enabled registered sources only, mutually exclusive with `repo_path`) with a grouped, per-source response. There is no implicit federation and no new tool name. See the wiki's [[Obsidian-Secondbrain]] page.
 
 ## 6. Desktop GUI (deprecated — maintenance only)
 
@@ -175,8 +179,12 @@ warm_window_secs = 21600   # 6h default - a project not queried within this wind
                            # one synchronous reindex the next time it's actually queried again)
 
 [tools]
-preset = "standard"   # "minimal" (5 core read tools) | "standard" (default, 13) | "full" (all 30)
+preset = "standard"   # "minimal" (5 core read tools) | "standard" (default, 13) | "full" (all 31)
 # enabled = ["search_code", "get_architecture"]   # optional explicit list, overrides preset
+
+# Opt-in vault metadata (issue #133); off by default, independent of source registration.
+[vault_index]
+enabled = false
 ```
 
 Env var overrides: `NEXUS_CONFIG_DIR` (config dir, i.e. where `config.toml` lives), `NEXUS_CACHE_DIR` (data dir), `NEXUS_LOG_LEVEL` (`trace`/`debug`/`info`/`warn`/`error`), `NEXUS_LOG_FORMAT=json` (structured logs, `serve`/`mcp` modes both support it).

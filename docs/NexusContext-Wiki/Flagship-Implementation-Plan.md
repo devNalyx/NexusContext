@@ -10,6 +10,20 @@ This file is the work tracker. The proposal explains *why*; this file says exact
 *what to do, in what order, and what proves it worked*. Update checkboxes as work
 lands. Do not mark a phase done unless its gate passes on a clean tree.
 
+## Current-state note — issue #133 (2026-11-27)
+
+Implementation is **in progress on branch `feat/obsidian-secondbrain-integration`**;
+no release or dogfood evidence is claimed here yet. The planned catalog is 31
+tools (presets 5 / 13 / 31): `vault_context` joins the 30-tool v0.1.30 catalog.
+The work is an off-by-default `[vault_index] enabled = false` metadata extractor
+in the existing SQLite graph, an explicit opt-in `sources` fan-out on five read
+tools (no implicit federation, no new tool name), and a user-level
+`secondbrain` Agent Skill installed by `nexus install opencode --global --yes`.
+Decisions: [[ADRs/0021-vault-metadata-in-existing-sqlite-graph|0021]] and
+[[ADRs/0022-user-level-secondbrain-adapter-and-explicit-fan-out|0022]]. Current
+documentation is [[Obsidian-Secondbrain]]; the historical phase counts below
+stay as they were at the time.
+
 ## Preflight (do this in the first implementation session)
 
 - [x] Confirm clean tree: `git status --short` (only the new docs were untracked).
