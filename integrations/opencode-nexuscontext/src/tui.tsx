@@ -1,7 +1,13 @@
 import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import { For, Show, createEffect, createSignal } from "solid-js"
 import { Nexus } from "./rpc.js"
-import { PANEL_NAME, TAB_HELP, TAB_METHODS, formatTab } from "./panel-data.js"
+import {
+  PANEL_NAME,
+  TAB_HELP,
+  TAB_METHODS,
+  formatError,
+  formatTab,
+} from "./panel-data.js"
 
 /**
  * TUI contributions: a read-only session panel over the typed server RPC,
@@ -48,7 +54,7 @@ function NexusPanel(props: {
       const data = await client[TAB_METHODS[tab] ?? "status"](
         inputFor(tab, props.repoPath(), props.query()),
       )
-      setLines(formatTab(tab, data))
+      setLines(data?.error_type ? formatError(data) : formatTab(tab, data))
       setMessage("")
     } catch (error) {
       setLines([])
@@ -123,6 +129,10 @@ export default Plugin.define({
             break
           default:
             return
+        }
+        if (result?.error_type) {
+          toast(`${action} failed: ${result.message ?? result.error_type}`)
+          return
         }
         toast(`${action}: ${result?.status ?? "ok"}`)
         setTab("projects")

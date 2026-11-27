@@ -95,10 +95,12 @@ Open `.nexuscontext/vault/` as an Obsidian vault to browse functions/types and t
 nexus install                 # dry run — prints the plan, writes nothing
 nexus install --yes           # apply for Claude Code / Claude Desktop
 nexus install opencode --yes  # project-local OpenCode V2 plug + MCP + config
+nexus install opencode --global --yes  # or: ~/.config/opencode, one install for all projects
 nexus install opencode --uninstall --yes  # undo exactly what was installed
+nexus install opencode --global --uninstall --yes  # undo the global install
 ```
 
-Claude Code is registered via its own `claude mcp add` CLI and, with `--yes`, gets a project-local `SessionEnd` hook in `.claude/settings.local.json` plus `.claude/hooks/nexus-session-end.sh`. That hook stages only explicitly signposted lines into the absorbed Myelin pending-review queue; it never stores a raw transcript or promotes an excerpt on its own. To undo a Claude install, remove the `nexuscontext` MCP entry with `claude mcp remove nexuscontext`, delete `.claude/hooks/nexus-session-end.sh`, and remove the matching `SessionEnd` group from `.claude/settings.local.json` (v1 has no `--uninstall` for Claude; OpenCode's manifest-based uninstall is the only automated one). Claude Desktop gets one entry merged into `claude_desktop_config.json` without touching anything else already in it. OpenCode V2 gets `.opencode/plugins/nexuscontext/` (server hook handlers + TUI status slot) plus one `mcp.servers.nexuscontext` entry in `opencode.json`; uninstall restores the pre-install value of that entry (or removes it) and deletes only files from the install manifest. Prints a generic config snippet for anything else, rather than guessing at a config format it can't verify.
+Claude Code is registered via its own `claude mcp add` CLI and, with `--yes`, gets a project-local `SessionEnd` hook in `.claude/settings.local.json` plus `.claude/hooks/nexus-session-end.sh`. That hook stages only explicitly signposted lines into the absorbed Myelin pending-review queue; it never stores a raw transcript or promotes an excerpt on its own. To undo a Claude install, remove the `nexuscontext` MCP entry with `claude mcp remove nexuscontext`, delete `.claude/hooks/nexus-session-end.sh`, and remove the matching `SessionEnd` group from `.claude/settings.local.json` (v1 has no `--uninstall` for Claude; OpenCode's manifest-based uninstall is the only automated one). Claude Desktop gets one entry merged into `claude_desktop_config.json` without touching anything else already in it. OpenCode V2 gets `.opencode/plugins/nexuscontext/` (server hook handlers, typed RPC contract, TUI status slot + session panel and its pure formatters) plus one `mcp.servers.nexuscontext` entry in `opencode.json`; with `--global` the plugin goes to `$XDG_CONFIG_HOME/opencode/plugins/nexuscontext` (default `~/.config/opencode`) and the same MCP entry is merged into that config's `opencode.json`. Uninstall restores the pre-install value of that entry (or removes it) and deletes only files from the matching project-local or global install manifest. Prints a generic config snippet for anything else, rather than guessing at a config format it can't verify.
 
 **Curated memory** — agent-staged, human-approved facts with file anchors and freshness (see the wiki's CLI Reference):
 
@@ -123,13 +125,15 @@ Procedural memory (11): `record_observation`, `list_warmup_queue`, `list_skills`
 
 By default only 13 of these 30 are actually advertised to an agent (the `standard` preset - see Section 8's `[tools]` block) to cut the fixed per-session token cost of loading tool schemas. Set `preset = "full"` to get all 30, `preset = "minimal"` for just the 5 core read tools, or list exact tool names via `enabled`.
 
-## 6. Desktop GUI
+## 6. Desktop GUI (deprecated — maintenance only)
 
 ```bash
 nexuscontext-gui
 ```
 
-Requires `nexusd serve` (the systemd unit above) to be running - the GUI is a client of the control socket, not a standalone tool. Six tabs: Dashboard (status + auto-sync watcher count), Projects (index/reindex/delete), Search, Architecture (node/edge counts, busiest files, language breakdown), Visualize (renders a function's call neighborhood as an image via Graphviz - install `graphviz` for this one; everything else works without it), Logs.
+**Deprecated:** this GTK4/libadwaita app is Linux/GNOME-only and receives no new features. New interactive work goes into the OpenCode plug's TUI session panel (`/nexus`) and Desktop panel; see [#107](https://github.com/devNalyx/NexusContext/issues/107). It will be removed after those reach parity.
+
+Requires `nexusd serve` (the systemd unit above) to be running - the GUI is a client of the control socket, not a standalone tool. Current source has eight views: Dashboard (status + inotify watch budget), Projects (index/reindex/import/export/delete), Search, Architecture, Visualize (Graphviz PNG), Review (read-only), Usage (lifetime aggregates), Logs (last 300 lines). The Config tab described in older docs no longer exists.
 
 ## 7. GNOME Shell extension (optional)
 

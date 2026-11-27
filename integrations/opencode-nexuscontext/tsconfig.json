@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "allowSyntheticDefaultImports": true,
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["vite/client"]
+  },
+  // Only the Desktop GUI is checked here: the TUI uses @opentui/solid's JSX
+  // intrinsics and needs a different jsxImportSource.
+  "include": ["src/gui.tsx", "src/panel-data.js", "src/rpc.js", "vite.config.ts"]
+}

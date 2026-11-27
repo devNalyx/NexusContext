@@ -7,17 +7,28 @@
   "exports": {
     ".": "./src/index.js",
     "./tui": "./src/tui.tsx",
-    "./rpc": "./src/rpc.js"
+    "./rpc": "./src/rpc.js",
+    "./gui-experimental": "./dist/gui-experimental.cjs"
   },
   "files": [
-    "src"
+    "src",
+    "dist"
   ],
   "peerDependencies": {
     "@opentui/core": ">=0.6.6",
     "@opentui/solid": ">=0.6.6",
     "solid-js": ">=1.9.0"
   },
+  "devDependencies": {
+    "@opencode/plugin": "2.4.2",
+    "solid-js": "^1.9.0",
+    "typescript": "^5.7.0",
+    "vite": "^7.0.0",
+    "vite-plugin-solid": "^2.11.0"
+  },
   "scripts": {
-    "test": "node test/smoke.mjs"
+    "test": "node test/smoke.mjs",
+    "typecheck:gui": "tsc --noEmit -p tsconfig.json",
+    "build:gui": "vite build"
   }
 }

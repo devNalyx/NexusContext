@@ -190,6 +190,20 @@ export const PANEL_NAME = "nexuscontext.context"
 
 export const TAB_HELP = Object.keys(TAB_METHODS).join(" · ")
 
+/**
+ * OpenCode RPC failures come back as data, not thrown values. Render them
+ * explicitly instead of pretending a missing daemon is an empty panel.
+ */
+export function formatError(error) {
+  const e = error ?? {}
+  return [
+    ...heading("NexusContext · unavailable"),
+    `error: ${text(e.error_type ?? "control")}`,
+    text(e.message ?? "nexusd did not answer; start `nexusd serve` and retry."),
+    ...(e.data?.method ? [`method: ${text(e.data.method)}`] : []),
+  ]
+}
+
 /** Format an RPC result for a tab. Unknown data falls back to JSON. */
 export function formatTab(tab, data) {
   const formatter = FORMATTERS[tab]

@@ -1,6 +1,6 @@
 # NexusContext
 
-**Objective:** A self-hosted, lightweight binary daemon that provides a standardized MCP interface for local codebase indexing and structural code intelligence (knowledge graph, optionally enriched with LSP-resolved symbols) — with a native Linux desktop GUI on top.
+**Objective:** A self-hosted, lightweight binary daemon that provides a standardized MCP interface for local codebase indexing and structural code intelligence (knowledge graph, optionally enriched with LSP-resolved symbols) — with agent-harness integrations (OpenCode) as the primary interactive surface. The legacy Linux/GNOME desktop GUI is maintenance-only and deprecated.
 
 > **Note on the sections below:** Sections 1-3 and 5-6 describe the *current* system and are kept up to date. The old phase-by-phase build log is preserved as a frozen historical record in [`docs/Phase-History.md`](docs/Phase-History.md) - it intentionally keeps historical claims (old tool counts, removed subsystems) as they were at the time. For current behavior, use the wiki and the current README sections, not the archive.
 >
@@ -71,19 +71,14 @@ The daemon runs as a `systemd --user` service on Linux (Windows ships the MCP se
   - `query_planner`: a specific file goes straight to `get_file_context`, a single identifier-like token goes to `search_graph`, and a descriptive multi-word query gets a keyword fallback over the graph - there is no semantic-search arm.
   - `query_graph`: not full Cypher - exactly one pattern shape, `MATCH (a:Kind)-[:EDGE_KIND]->(b:Kind) [WHERE a.name = 'value' or b.name = 'value'] RETURN a|b`. `Kind` is `Function`, `Type`, `File`, or `Section`. Fails with a clear error for anything outside that shape rather than guessing.
 
-**Control API (for GUI/extension, not MCP)**
+**Control API (for OpenCode panels / legacy GUI, not MCP)**
 - Unix socket, same JSON-RPC framing for consistency, but a distinct method namespace (`status.*`, `config.*`, `search.adhoc`).
-- Exposes: indexing status/progress, per-project stats, config get/set, manual reindex trigger, ad-hoc search for the GUI's own search box.
+- Exposes: indexing status/progress, per-project stats, config get/set, manual reindex trigger, ad-hoc search for the panels' search box. The OpenCode plug wraps the read-only subset in a typed RPC contract; no view opens this socket directly.
 
-**Desktop GUI — "NexusContext Manager"**
-- GTK4 + `libadwaita` via `gtk-rs`, native Ubuntu/GNOME look, no Electron overhead.
-- Views:
-  - **Dashboard** — daemon status, projects indexed, auto-sync watcher count, last reindex time.
-  - **Projects** — index/reindex/delete a project, see node/edge counts per project.
-  - **Search** — ad-hoc structural query box with code-preview results (this is the main reason a GUI is worth building at all — trying queries without an agent in the loop).
-  - **Architecture** — node/edge counts, index freshness, busiest files, language breakdown by file extension.
-  - **Config** — embeddings endpoint/model, and the `allow_remote` opt-in for non-loopback endpoints.
-  - **Logs** — tail of daemon logs for troubleshooting.
+**Desktop GUI — "NexusContext Manager" (deprecated; maintenance-only)**
+- GTK4 + `libadwaita` via `gtk-rs`, native Ubuntu/GNOME look, Linux/GNOME-only. CI and release builds exclude it on macOS/Windows.
+- **Deprecation notice:** new interactive work belongs in the OpenCode plug (`integrations/opencode-nexuscontext/`), which exposes the same daemon data through a typed RPC contract, a cross-platform TUI session panel, and an experimental Desktop panel. See [#107](https://github.com/devNalyx/NexusContext/issues/107). The GTK app will be removed after that panel reaches parity; it receives no new features.
+- Views in current source: Dashboard (status + inotify watch budget), Projects (index/reindex/import/export/delete), Search, Architecture, Visualize (Graphviz PNG), Review (read-only), Usage (lifetime aggregates), Logs (last 300 lines). There is no Config view in current source, despite older docs.
 - Talks to the daemon exclusively over the control socket. Never touches stdio.
 - Not required to be running for the daemon or MCP integrations to work — it's a management/inspection tool.
 

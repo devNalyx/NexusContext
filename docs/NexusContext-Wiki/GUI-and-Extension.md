@@ -5,11 +5,37 @@ exist because a CLI is genuinely bad at certain things (browsing search
 results, seeing indexing status at a glance) without pulling in a web
 dashboard, which this project deliberately avoids.
 
-## NexusContext Manager (`nexuscontext-gui`)
+## OpenCode panels (primary interactive surface)
+
+The OpenCode plug (`integrations/opencode-nexuscontext/`) is the replacement
+for the GTK app. All views call one typed RPC contract provided by the
+plugin's server part; no view opens the daemon socket itself.
+
+- **TUI:** `/nexus` opens a `session.panel` with tabs for status, sources,
+  projects, search, review, architecture, graph, stats and logs. The footer
+  shows the live context-ledger estimate. Available in terminal OpenCode.
+- **Desktop (experimental):** the `./gui-experimental` entry contributes a
+  NexusContext tab beside Context in OpenCode Desktop. It uses the same RPC
+  methods and the same pure formatters as the TUI; the GUI SDK is explicitly
+  experimental and may change between releases.
+- **Install:** `nexus install opencode --global --yes` writes one plugin for all
+  projects; without `--global`, the install is project-local. The daemon
+  (`nexusd serve`) must still be running for live data.
+
+Registration of knowledge sources stays CLI-only (`nexus source add`); no
+panel can promote a fact or approve a source. See the
+[plug README](../../integrations/opencode-nexuscontext/README.md).
+
+## NexusContext Manager (`nexuscontext-gui`) — deprecated
+
+**Deprecated, maintenance-only. Do not add new features here.** New
+interactive work goes into the OpenCode panels above; the GTK app is scheduled
+for removal once the Desktop panel reaches parity. See
+[#107](https://github.com/devNalyx/NexusContext/issues/107).
 
 GTK4 + libadwaita, native Linux desktop look, no Electron/web-view
 overhead. Talks to the daemon **exclusively** over the control socket
-(`nexusd serve` must be running) — never stdio, never MCP. Six tabs:
+(`nexusd serve` must be running) — never stdio, never MCP. Current views:
 
 - **Dashboard** — daemon status, projects indexed, auto-sync watcher count,
   inotify watch budget/usage (see [[Watcher-and-Freshness]]).
@@ -26,6 +52,12 @@ overhead. Talks to the daemon **exclusively** over the control socket
   dependency — every other tab works without it.
 - **Usage** — the same `stats.get` data the control API exposes,
   per-tool/method call counts, latency, and auto-reindex history.
+- **Review** — read-only view of stale facts and skill candidates; no approval
+  buttons (approval stays human-side).
+- **Logs** — the last 300 daemon log lines, also exposed to panels as a bounded
+  `logs.tail` RPC method (max 500 lines, no caller-supplied path).
+
+There is no Config view in current source, despite older documentation.
 
 ## GNOME Shell extension
 
