@@ -822,35 +822,47 @@ mod blast_radius_tests {
     /// `allowed_roots`, which permits everything (see
     /// `nexus_core::config::empty_allowed_roots_permits_everything_unrestricted`).
     struct FakeConfigDir {
-        prev: Option<std::ffi::OsString>,
+        prev_config: Option<std::ffi::OsString>,
+        prev_cache: Option<std::ffi::OsString>,
+        _guard: std::sync::MutexGuard<'static, ()>,
     }
 
     impl FakeConfigDir {
         fn set(label: &str) -> Self {
-            let prev = std::env::var_os("NEXUS_CONFIG_DIR");
+            let guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let prev_config = std::env::var_os("NEXUS_CONFIG_DIR");
+            let prev_cache = std::env::var_os("NEXUS_CACHE_DIR");
             let dir = std::env::temp_dir().join(format!(
                 "nexus_blast_radius_test_config_{label}_{}",
                 std::process::id()
             ));
             let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::env::set_var("NEXUS_CONFIG_DIR", &dir);
-            Self { prev }
+            std::fs::create_dir_all(dir.join("config")).unwrap();
+            std::fs::create_dir_all(dir.join("data")).unwrap();
+            std::env::set_var("NEXUS_CONFIG_DIR", dir.join("config"));
+            std::env::set_var("NEXUS_CACHE_DIR", dir.join("data"));
+            Self {
+                prev_config,
+                prev_cache,
+                _guard: guard,
+            }
         }
     }
 
     impl Drop for FakeConfigDir {
         fn drop(&mut self) {
-            match &self.prev {
+            match &self.prev_config {
                 Some(v) => std::env::set_var("NEXUS_CONFIG_DIR", v),
                 None => std::env::remove_var("NEXUS_CONFIG_DIR"),
             }
+            match &self.prev_cache {
+                Some(v) => std::env::set_var("NEXUS_CACHE_DIR", v),
+                None => std::env::remove_var("NEXUS_CACHE_DIR"),
+            }
         }
     }
-
-    /// Serializes every test in this module against the process-global
-    /// `NEXUS_CONFIG_DIR` mutation `FakeConfigDir` performs.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn run_git(dir: &Path, args: &[&str]) {
         let status = Command::new("git")
@@ -909,7 +921,6 @@ fn isolated() {
 
     #[test]
     fn a_widely_called_function_surfaces_its_multi_hop_caller_set() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _fake_config = FakeConfigDir::set("widely_called");
         let dir = setup_repo("widely_called");
 
@@ -954,7 +965,6 @@ fn isolated() {
 
     #[test]
     fn an_isolated_leaf_change_reports_an_empty_transitive_set_not_an_error() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _fake_config = FakeConfigDir::set("isolated_leaf");
         let dir = setup_repo("isolated_leaf");
 
@@ -981,7 +991,6 @@ fn isolated() {
 
     #[test]
     fn default_detect_changes_output_is_unchanged_by_blast_radius_existing() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _fake_config = FakeConfigDir::set("default_unchanged");
         let dir = setup_repo("default_unchanged");
 

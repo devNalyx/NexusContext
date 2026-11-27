@@ -36,3 +36,12 @@ pub use queries::{
     BlastRadiusResult, QueryPlanResult, SearchCodeResult,
 };
 pub use vault::{vault_context, VaultContext, VaultHit, VaultMapHit, VaultTagHit};
+
+/// Process-wide lock for tests that mutate `NEXUS_CONFIG_DIR` / `NEXUS_CACHE_DIR`.
+/// Each test module used to have its own lock, but the env vars are global to
+/// the whole test binary: a vault test could swap the data dir while a git
+/// query test was indexing, which made the graph land in a different project
+/// store (and failed on macOS/Windows where temp-root canonicalization adds
+/// another path component). See the cross-platform CI failures on PR #134.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -83,9 +83,19 @@ fn open_vault_store(repo_path: &Path) -> Result<GraphStore> {
     GraphStore::open(&db_path)
 }
 
+/// One canonical key for both wikilink targets and stored `file_path`s.
+/// Obsidian links always use `/`; Windows paths from the walker use `\\`.
+/// Without this swap, `[[docs/Plan]]` cannot resolve on Windows even though
+/// the note exists at `docs\\Plan.md`.
+pub(crate) fn normalized_path_key(path: &str) -> String {
+    path.trim()
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_lowercase()
+}
+
 fn normalized_note_keys(note: &str) -> Vec<String> {
-    let trimmed = note.trim().trim_matches('/');
-    let lower = trimmed.to_lowercase();
+    let lower = normalized_path_key(note);
     let mut keys = vec![lower.clone()];
     if let Some(stem) = lower
         .strip_suffix(".markdown")
@@ -110,7 +120,7 @@ fn resolve_note(store: &GraphStore, note: &str) -> Result<NodeRecord> {
     for key in &keys {
         let mut matches: Vec<&NodeRecord> = files
             .iter()
-            .filter(|file| file.file_path.to_lowercase() == *key)
+            .filter(|file| normalized_path_key(&file.file_path) == *key)
             .collect();
         matches.sort_by_key(|file| &file.file_path);
         if matches.len() == 1 {
@@ -136,13 +146,12 @@ fn resolve_note(store: &GraphStore, note: &str) -> Result<NodeRecord> {
     }
 
     for key in &keys {
-        let basename = key.rsplit(['/', '\\']).next().unwrap_or(key);
+        let basename = key.rsplit('/').next().unwrap_or(key);
         let mut matches: Vec<&NodeRecord> = files
             .iter()
             .filter(|file| {
-                file.file_path
-                    .to_lowercase()
-                    .rsplit(['/', '\\'])
+                normalized_path_key(&file.file_path)
+                    .rsplit('/')
                     .next()
                     .unwrap_or("")
                     == basename
@@ -301,13 +310,11 @@ mod tests {
     use crate::project::index_project;
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::MutexGuard;
 
     /// `vault_context` resolves `Paths` from the environment, so tests that
-    /// call it need an isolated config/data dir - serialized because env
-    /// vars are process-global (same pattern as `queries.rs`'s git tests).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
+    /// call it need an isolated config/data dir. The lock is shared with all
+    /// other env-mutating tests in this test binary, not just this module.
     struct FakeEnv {
         prev_config: Option<std::ffi::OsString>,
         prev_cache: Option<std::ffi::OsString>,
@@ -316,7 +323,9 @@ mod tests {
 
     impl FakeEnv {
         fn set(label: &str) -> Self {
-            let guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+            let guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
             let prev_config = std::env::var_os("NEXUS_CONFIG_DIR");
             let prev_cache = std::env::var_os("NEXUS_CACHE_DIR");
             let dir = std::env::temp_dir().join(format!(
@@ -393,6 +402,10 @@ mod tests {
     fn note_keys_cover_path_with_and_without_extension() {
         assert_eq!(
             normalized_note_keys("docs/Home.md"),
+            vec!["docs/home.md", "docs/home"]
+        );
+        assert_eq!(
+            normalized_note_keys("docs\\Home.md"),
             vec!["docs/home.md", "docs/home"]
         );
         assert_eq!(normalized_note_keys("Status"), vec!["status", "status.md"]);

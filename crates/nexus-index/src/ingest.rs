@@ -1,5 +1,6 @@
 use crate::graph::{EdgeKind, GraphStore, NodeKind};
 use crate::language::{self, Language};
+use crate::vault::normalized_path_key;
 use anyhow::{bail, Result};
 use ignore::overrides::{Override, OverrideBuilder};
 use ignore::{Match, WalkBuilder};
@@ -570,7 +571,9 @@ fn resolve_vault_links(store: &GraphStore, links: &[PendingVaultLink]) -> Result
     let mut by_basename: std::collections::HashMap<String, Vec<i64>> =
         std::collections::HashMap::new();
     for file in &files {
-        let path_lower = file.file_path.to_lowercase();
+        // Obsidian links use `/` even on Windows, where the walker stores
+        // `docs\\Plan.md`. One shared normalizer keeps both sides comparable.
+        let path_lower = normalized_path_key(&file.file_path);
         by_path.insert(path_lower.clone(), file.id);
         let stem = path_lower
             .strip_suffix(".markdown")
@@ -579,7 +582,7 @@ fn resolve_vault_links(store: &GraphStore, links: &[PendingVaultLink]) -> Result
             .to_string();
         by_path.insert(stem.clone(), file.id);
         by_basename
-            .entry(stem.rsplit(['/', '\\']).next().unwrap_or(&stem).to_string())
+            .entry(stem.rsplit('/').next().unwrap_or(&stem).to_string())
             .or_default()
             .push(file.id);
     }
@@ -594,31 +597,29 @@ fn resolve_vault_links(store: &GraphStore, links: &[PendingVaultLink]) -> Result
     }
 
     for pending in links {
-        let target = pending.link.target.trim().trim_matches('/');
-        let lower = target.to_lowercase();
-        let (dst_id, resolution, confidence): (Option<i64>, &str, &str) =
-            if lower.contains('/') || lower.contains('\\') {
-                // A slash means the author named a path; don't silently fall
-                // back to a basename in another directory.
-                match by_path.get(&lower) {
-                    Some(id) => (Some(*id), "exact-path", "exact"),
-                    None => (None, "unresolved-path", "none"),
-                }
-            } else if let Some(ids) = by_alias.get(&lower) {
-                if ids.len() == 1 {
-                    (Some(ids[0]), "alias", "exact")
-                } else {
-                    (None, "ambiguous-alias", "none")
-                }
-            } else if let Some(ids) = by_basename.get(&lower) {
-                if ids.len() == 1 {
-                    (Some(ids[0]), "unique-basename", "heuristic")
-                } else {
-                    (None, "ambiguous-basename", "none")
-                }
+        let lower = normalized_path_key(&pending.link.target);
+        let (dst_id, resolution, confidence): (Option<i64>, &str, &str) = if lower.contains('/') {
+            // A slash means the author named a path; don't silently fall
+            // back to a basename in another directory.
+            match by_path.get(&lower) {
+                Some(id) => (Some(*id), "exact-path", "exact"),
+                None => (None, "unresolved-path", "none"),
+            }
+        } else if let Some(ids) = by_alias.get(&lower) {
+            if ids.len() == 1 {
+                (Some(ids[0]), "alias", "exact")
             } else {
-                (None, "unresolved", "none")
-            };
+                (None, "ambiguous-alias", "none")
+            }
+        } else if let Some(ids) = by_basename.get(&lower) {
+            if ids.len() == 1 {
+                (Some(ids[0]), "unique-basename", "heuristic")
+            } else {
+                (None, "ambiguous-basename", "none")
+            }
+        } else {
+            (None, "unresolved", "none")
+        };
 
         if let Some(dst_id) = dst_id {
             if dst_id != pending.src_id {
