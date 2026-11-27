@@ -44,8 +44,8 @@ for the handful of decisions worth defending later.
 - [[Security-Model]] — what's opt-in, what's blocked by default, and what
   a review pass found and fixed.
 - [[CLI-Reference]] — `nexus` subcommands.
-- [[GUI-and-Extension]] — the GTK4 Manager app and the GNOME Shell
-  indicator.
+- [[GUI-and-Extension]] — OpenCode TUI/Desktop panels (primary), plus the
+  deprecated GTK4 Manager app and GNOME Shell indicator.
 - [[Known-Limitations]] — stated plainly, not smoothed over.
 - [[ADRs/README|ADRs]] — the architectural decisions that shaped the above,
   why each was made, and what it commits future work to.

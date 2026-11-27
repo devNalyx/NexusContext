@@ -34,8 +34,10 @@ sharing a transport across purposes.
   `$XDG_RUNTIME_DIR/nexuscontext/nexuscontext.sock`, same JSON-RPC framing
   as the MCP transport but a distinct method namespace (`status.*`,
   `config.*`, `projects.*`, `search.adhoc`, `viz.call_graph`, `stats.get`).
-  This is what the GTK4 Manager app and the GNOME Shell extension talk to —
-  never MCP, never stdio. **Linux and macOS only** — the control API is
+  This is what the OpenCode plug's TUI/Desktop panels talk to through one
+  typed RPC contract — never MCP, never stdio, and no view opens the socket
+  itself. The legacy GTK4 Manager app and GNOME Shell indicator also use it,
+  but are deprecated. **Linux and macOS only** — the control API is
   Unix-domain-socket-only with no cross-platform abstraction, so `mod
   control` (and `mod watcher` alongside it, since the background watcher is
   a `serve`-only concern) are compiled out entirely on Windows; running
@@ -66,9 +68,12 @@ never competes with a GUI session on the control socket, and vice versa.
   `deep` reindex, adding `CallsResolved` edges alongside the static
   `Calls` ones. Off by default; see [[Storage-and-Data-Model]].
 - **Control API** — the `serve`-mode Unix socket described above. Linux/macOS only.
-- **Desktop GUI** — "NexusContext Manager", GTK4 + libadwaita. See
+- **OpenCode panels (primary)** — typed RPC over the control API: `/nexus` TUI
+  session panel and an experimental OpenCode Desktop panel. See
   [[GUI-and-Extension]].
-- **GNOME Shell extension** — a thin top-bar status indicator, GJS. Also in
+- **Legacy GTK4 Manager app** — deprecated, maintenance-only, Linux/GNOME-only.
+  See [[GUI-and-Extension]].
+- **Legacy GNOME Shell extension** — thin top-bar status indicator, GJS. Also in
   [[GUI-and-Extension]].
 
 ## Design principle: the agent is the intelligence, NexusContext is the memory

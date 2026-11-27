@@ -704,8 +704,8 @@
       </div>
       <div class="card">
         <div class="node-mark"></div>
-        <h3>Desktop-first on Linux</h3>
-        <p>A native GTK4 + libadwaita manager app and a thin GNOME Shell status indicator — not a web dashboard bolted on afterward. Call-graph visualization renders a bounded neighborhood, not an unreadable whole-project hairball.</p>
+        <h3>Agent-first, not dashboard-first</h3>
+        <p>The primary interactive surface is the OpenCode plug: a typed-RPC TUI session panel (<code>/nexus</code>) plus an experimental Desktop panel, both read-only over the same daemon data. The older GTK4 manager and GNOME Shell indicator are deprecated/legacy, not the roadmap. Call-graph visualization renders a bounded neighborhood, not an unreadable whole-project hairball.</p>
       </div>
       <div class="card">
         <div class="node-mark"></div>
@@ -848,10 +848,10 @@
     <div class="section-head">
       <div class="kicker">How it fits together</div>
       <h2>One daemon, two transports, one optional resolver</h2>
-      <p>stdio is reserved for MCP agents; a Unix socket serves the GUI and Shell extension — they never compete for the same pipe. LSP enrichment runs only inside an explicit <code>deep</code> reindex.</p>
+      <p>stdio is reserved for MCP agents; a Unix socket serves the OpenCode panels through one typed RPC contract (and the legacy GTK/GNOME surfaces) — they never compete for the same pipe. LSP enrichment runs only inside an explicit <code>deep</code> reindex.</p>
     </div>
     <div class="diagram-wrap">
-      <svg viewBox="0 0 730 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Architecture diagram: MCP clients connect to nexusd mcp over stdio, GUI and Shell extension connect to nexusd serve over a Unix socket, both share graph.db, and an explicit deep reindex spawns an optional rust-analyzer process feeding resolved edges back into graph.db.">
+      <svg viewBox="0 0 730 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Architecture diagram: MCP clients connect to nexusd mcp over stdio, OpenCode panels connect to nexusd serve over a Unix socket through typed RPC, both share graph.db, and an explicit deep reindex spawns an optional rust-analyzer process feeding resolved edges back into graph.db.">
         <defs>
           <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M0,0 L8,4 L0,8 z" fill="var(--line-strong)"></path>
@@ -872,7 +872,7 @@
         <text x="165" y="38" class="lbl">nexusd mcp</text>
         <text x="165" y="55" class="sub">stdio · per-session</text>
 
-        <text x="18" y="256" class="sub">GUI + Shell ext</text>
+        <text x="18" y="256" class="sub">OpenCode panels</text>
         <rect x="150" y="228" width="230" height="58" rx="2" class="box"></rect>
         <text x="165" y="252" class="lbl">nexusd serve</text>
         <text x="165" y="269" class="sub">Unix socket · systemd</text>
@@ -979,7 +979,7 @@
     <div class="platform-table-wrap">
       <table class="platform-table">
         <thead>
-          <tr><th>Platform</th><th>Architectures</th><th><code>nexusd mcp</code></th><th><code>nexusd serve</code></th><th>GUI</th></tr>
+          <tr><th>Platform</th><th>Architectures</th><th><code>nexusd mcp</code></th><th><code>nexusd serve</code></th><th>Legacy GTK GUI</th></tr>
         </thead>
         <tbody>
           <tr>
@@ -1007,7 +1007,7 @@
       </table>
     </div>
     <p class="install-note" style="margin-top:16px;">
-      Windows doesn't have <code>serve</code> (the control API, background watcher, GUI target) yet - see <a href="https://github.com/devNalyx/NexusContext/issues/16">issue #16</a>. Every MCP tool works fully without it; reindex manually rather than relying on the background watcher.
+      Windows doesn't have <code>serve</code> (the control API behind the OpenCode panels, plus the background watcher) yet - see <a href="https://github.com/devNalyx/NexusContext/issues/16">issue #16</a>. Every MCP tool works fully without it; reindex manually rather than relying on the background watcher.
     </p>
     <div class="code-block">
       <div class="code-head"><span>v0.1.31</span><span>bash</span></div>
@@ -1028,7 +1028,7 @@ nexus install</pre>
     </div>
     <p class="install-note">
       Prefer a prebuilt binary? Grab a <code>.deb</code>, <code>.rpm</code>, or <code>.tar.gz</code> for Linux/macOS, or a <code>.zip</code> for Windows, for either architecture, from
-      <a href="https://github.com/devNalyx/NexusContext/releases/latest">the latest release</a> instead. Full walkthrough — GUI, GNOME extension, config, packaging — in
+      <a href="https://github.com/devNalyx/NexusContext/releases/latest">the latest release</a> instead. Full walkthrough — OpenCode install, config, packaging, and the legacy GTK/GNOME notes — in
       <a href="https://github.com/devNalyx/NexusContext/blob/main/INSTALL.md">INSTALL.md</a>.
     </p>
   </section>
