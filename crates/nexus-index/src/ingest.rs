@@ -2444,6 +2444,50 @@ mod config_index_tests {
     }
 
     #[test]
+    fn search_code_pages_hits_without_duplicates_or_gaps() {
+        let dir = temp_project("search_pages");
+        // One matching file expands into four config key hits: paging must
+        // split hits, not just files (issue #123).
+        fs::write(
+            dir.join("page.yaml"),
+            "page:\n  alpha: 1\n  beta: 2\n  gamma: 3\n",
+        )
+        .unwrap();
+        let store = GraphStore::open(&dir.join("graph.db")).unwrap();
+        index_directory_with_config(&dir, &store, &enabled()).unwrap();
+
+        let mut paged = Vec::new();
+        for offset in 0..4 {
+            let page = store.search_code_page("page", offset, 1).unwrap();
+            assert_eq!(page.hits.len(), 1, "offset {offset}");
+            assert_eq!(page.has_more, offset < 3, "offset {offset}");
+            paged.push(page.hits[0].key_path.clone().unwrap());
+        }
+        let exhausted = store.search_code_page("page", 4, 1).unwrap();
+        assert!(exhausted.hits.is_empty());
+        assert!(!exhausted.has_more);
+
+        let mut unique = paged.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            paged.len(),
+            "duplicate across pages: {paged:?}"
+        );
+
+        let mut whole: Vec<_> = store
+            .search_code("page", 10)
+            .unwrap()
+            .into_iter()
+            .map(|hit| hit.key_path.unwrap())
+            .collect();
+        whole.sort_unstable();
+        assert_eq!(whole, unique, "paged results differ from one full search");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn partial_duplicate_keys_and_unsupported_templates_are_labelled() {
         let dir = temp_project("states");
         fs::write(

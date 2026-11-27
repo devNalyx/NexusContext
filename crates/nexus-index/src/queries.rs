@@ -183,17 +183,39 @@ pub struct SearchCodeResult {
     pub hits: Vec<CodeSearchHit>,
     /// (parsed, partial, unsupported) config files currently in graph.db.
     pub config_files: (u64, u64, u64),
+    /// True when the page ended before the last matching hit (issue #123).
+    pub has_more: bool,
+    /// Offset for the next page; `None` when the search is exhausted.
+    pub next_offset: Option<u32>,
 }
 
 pub fn search_code_detailed(repo_path: &Path, query: &str, limit: u32) -> Result<SearchCodeResult> {
+    search_code_detailed_at(repo_path, query, limit, 0)
+}
+
+/// `search_code_detailed` with deterministic continuation. `offset` counts
+/// *hits*, not files, so a config file that expands into several key hits is
+/// paged correctly. Filters (path/type/config-only) must be applied before
+/// this boundary when they are added.
+pub fn search_code_detailed_at(
+    repo_path: &Path,
+    query: &str,
+    limit: u32,
+    offset: u32,
+) -> Result<SearchCodeResult> {
     let repo_path = canonicalize_and_authorize(repo_path)?;
     let store = open_store(&repo_path)?;
-    let hits = store.search_code(query, limit)?;
+    let page = store.search_code_page(query, offset, limit)?;
     let config_files = store.config_index_stats()?;
+    let next_offset = page
+        .has_more
+        .then(|| offset.saturating_add(page.hits.len() as u32));
     Ok(SearchCodeResult {
         repo_path,
-        hits,
+        hits: page.hits,
         config_files,
+        has_more: page.has_more,
+        next_offset,
     })
 }
 

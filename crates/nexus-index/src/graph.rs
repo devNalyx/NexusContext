@@ -124,6 +124,15 @@ pub struct CodeSearchHit {
     pub note: Option<String>,
 }
 
+/// One page of literal-phrase content search. `has_more` is derived from one
+/// extra hit beyond the page, so an agent can tell a capped answer from an
+/// exhausted one without paying for an exact count (issue #123).
+#[derive(Debug, Default)]
+pub struct SearchCodePage {
+    pub hits: Vec<CodeSearchHit>,
+    pub has_more: bool,
+}
+
 /// A config `Section` node's provenance, decoded from its qualified name.
 /// Keeping this metadata in the existing `nodes` table avoids a new schema or
 /// a second index; see issue #112.
@@ -538,15 +547,25 @@ impl GraphStore {
     /// query syntax - safer for arbitrary free-text input, at the cost of
     /// not exposing FTS5's AND/OR/NOT/prefix operators in this version.
     pub fn search_code(&self, query: &str, limit: u32) -> Result<Vec<CodeSearchHit>> {
+        Ok(self.search_code_page(query, 0, limit)?.hits)
+    }
+
+    /// Deterministic continuation for `search_code` (issue #123). `rowid`
+    /// breaks FTS rank ties, so an unchanged index yields the same order on
+    /// every page. A single matching file can expand into several config key
+    /// hits, so page boundaries are applied to *hits*, not FTS rows; one extra
+    /// hit is enough to compute `has_more` without an exact COUNT query.
+    pub fn search_code_page(&self, query: &str, offset: u32, limit: u32) -> Result<SearchCodePage> {
+        let fetch = offset.saturating_add(limit).saturating_add(1);
         let phrase = format!("\"{}\"", query.replace('"', "\"\""));
         let mut stmt = self.conn.prepare(
             "SELECT file_path, content,
                     snippet(file_contents_fts, 1, '>>>', '<<<', ' ... ', 20)
              FROM file_contents_fts WHERE file_contents_fts MATCH ?1
-             ORDER BY rank LIMIT ?2",
+             ORDER BY rank, rowid LIMIT ?2",
         )?;
         let rows = stmt
-            .query_map(rusqlite::params![phrase, limit], |row| {
+            .query_map(rusqlite::params![phrase, fetch], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -642,16 +661,21 @@ impl GraphStore {
                     parse_status: Some(status.clone()),
                     note: note.clone(),
                 });
-                if hits.len() >= limit as usize {
+                if hits.len() >= fetch as usize {
                     break;
                 }
             }
-            if hits.len() >= limit as usize {
+            if hits.len() >= fetch as usize {
                 break;
             }
         }
-        hits.truncate(limit as usize);
-        Ok(hits)
+        let start = (offset as usize).min(hits.len());
+        let end = start.saturating_add(limit as usize).min(hits.len());
+        let has_more = hits.len() > end;
+        Ok(SearchCodePage {
+            hits: hits[start..end].to_vec(),
+            has_more,
+        })
     }
 
     /// Counts config files in the graph by parse status (issue #112). Counts
