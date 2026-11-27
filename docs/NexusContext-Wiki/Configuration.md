@@ -70,7 +70,11 @@ enabled = true                       # default true
   applied before ingestion. `metadata_only = true` stores key paths and
   locations but not raw values — useful when values may contain secrets, but
   not secret detection or redaction. No Helm/template rendering, effective
-  values, or network access; see [[Security-Model]] and [[Known-Limitations]].
+  values, or network access. `parsed` means valid syntax plus complete mapping
+  key paths (YAML flow mappings included); a quoted template-like string keeps
+  its static keys with a `template_syntax` note, while unparseable template
+  syntax is `unsupported` (#124). See [[Security-Model]] and
+  [[Known-Limitations]].
 - **`[[sources]]`** — human-registered external knowledge sources (e.g. an
   Obsidian vault). Written by `nexus source add`; the CLI canonicalizes the
   root, refuses duplicates and paths outside `allowed_roots`, and indexes
